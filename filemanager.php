@@ -2374,10 +2374,53 @@
           </table>
       </div>
 
+      <!-- GRID VIEW -->
+      <div class="grid-view-container" id="main-grid">
+          <?php
+          // Folders
+          foreach ($folders as $f) {
+              $is_link = is_link($path . '/' . $f);
+              $full_path = '?p=' . urlencode(trim(FM_PATH . '/' . $f, '/'));
+              ?>
+              <div class="grid-item" onclick="window.location.href='<?=$full_path?>'">
+                  <div class="grid-check" onclick="event.stopPropagation()">
+                      <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
+                  </div>
+                  <div class="grid-icon"><i class="fa fa-folder-o"></i></div>
+                  <div class="grid-name" title="<?=fm_enc($f)?>"><?=fm_convert_win(fm_enc($f))?></div>
+              </div>
+              <?php
+          }
+          // Files
+          foreach ($files as $f) {
+              $file_path = $path . '/' . $f;
+              $is_img = in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp'));
+              $icon_class = fm_get_file_icon_class($file_path);
+              $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
+              $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
+              ?>
+              <div class="grid-item" onclick="window.location.href='<?=$view_link?>'">
+                  <div class="grid-check" onclick="event.stopPropagation()">
+                      <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
+                  </div>
+                  <?php if($is_img): ?>
+                      <img src="<?=$img_src?>" loading="lazy">
+                  <?php else: ?>
+                      <div class="grid-icon"><i class="<?=$icon_class?>"></i></div>
+                  <?php endif; ?>
+                  <div class="grid-name" title="<?=fm_enc($f)?>"><?=fm_convert_win(fm_enc($f))?></div>
+              </div>
+              <?php
+          }
+          ?>
+          <div style="clear:both;"></div>
+      </div>
+
       <div class="row">
           <?php if (!FM_READONLY): ?>
               <div class="col-xs-12 col-sm-9">
                   <div class="btn-group flex-wrap" data-toggle="buttons" role="toolbar">
+                      <a href="#" class="btn btn-small btn-outline-primary btn-2" onclick="toggleView();return false;" title="Toggle View"><i class="fa fa-th-large" id="view-icon"></i></a>
                       <a href="#/select-all" class="btn btn-small btn-outline-primary btn-2" onclick="select_all();return false;"><i class="fa fa-check-square"></i> <?php echo lng('SelectAll') ?> </a>
                       <a href="#/unselect-all" class="btn btn-small btn-outline-primary btn-2" onclick="unselect_all();return false;"><i class="fa fa-window-close"></i> <?php echo lng('UnSelectAll') ?> </a>
                       <a href="#/invert-all" class="btn btn-small btn-outline-primary btn-2" onclick="invert_all();return false;"><i class="fa fa-th-list"></i> <?php echo lng('InvertSelection') ?> </a>
@@ -3794,6 +3837,15 @@
 
               <div class="col-xs-6 col-sm-7">
                   <ul class="navbar-nav justify-content-end" data-bs-theme="<?php echo FM_THEME; ?>">
+                      <li class="nav-item">
+                          <a class="nav-link" href="index.php" title="Dashboard"><i class="fa fa-th"></i></a>
+                      </li>
+                      <li class="nav-item">
+                          <a class="nav-link" href="adminer.php" title="Database"><i class="fa fa-database"></i></a>
+                      </li>
+                      <li class="nav-item">
+                          <a class="nav-link" href="monitor.php" title="Monitor"><i class="fa fa-chart-line"></i></a>
+                      </li>
                       <li class="nav-item mr-2">
                           <div class="input-group input-group-sm mr-1" style="margin-top:4px;">
                               <input type="text" class="form-control" placeholder="<?php echo lng('Search') ?>" aria-label="<?php echo lng('Search') ?>" aria-describedby="search-addon2" id="search-addon">
@@ -4691,6 +4743,24 @@
               .fs-7 {
                   font-size: 14px;
               }
+              
+              /* GRID VIEW STYLES */
+              .grid-view-container { display: none; padding: 15px; }
+              .grid-view-container .grid-item {
+                  float: left; width: 120px; height: 140px; margin: 10px; text-align: center;
+                  background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px;
+                  overflow: hidden; cursor: pointer; transition: transform 0.2s; position: relative;
+              }
+              .grid-view-container .grid-item:hover { transform: scale(1.05); border-color: var(--accent); }
+              .grid-view-container .grid-item .grid-icon { font-size: 48px; margin-top: 20px; color: var(--text-secondary); }
+              .grid-view-container .grid-item img { width: 100%; height: 90px; object-fit: cover; }
+              .grid-view-container .grid-item .grid-name {
+                  padding: 5px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                  color: var(--text-primary);
+              }
+              .grid-view-container .grid-item .grid-check { position: absolute; top: 5px; left: 5px; }
+              .grid-view-show { display: block !important; }
+              .list-view-hide { display: none !important; }
           </style>
           <?php
           // Force dark theme logic if needed, but primarily style overrides.
@@ -4848,7 +4918,6 @@
 
                   /* Dropzone */
                   .dropzone {
-                      background: var(--bg-input);
                       border: 2px dashed var(--border-color);
                   }
 
@@ -5371,7 +5440,32 @@
                       $(".fm-upload-wrapper .card-tabs-container").addClass('hidden');
                       $(target).removeClass('hidden');
                   });
+                  
+                  // Restore View Preference
+                  if (localStorage.getItem('fm_view') === 'grid') {
+                      toggleView(false);
+                  }
               });
+
+              function toggleView(save = true) {
+                  const table = $('.table-responsive');
+                  const grid = $('#main-grid');
+                  const icon = $('#view-icon');
+                  
+                  if (grid.hasClass('grid-view-show')) {
+                      // Switch to List
+                      grid.removeClass('grid-view-show');
+                      table.removeClass('list-view-hide');
+                      icon.removeClass('fa-list').addClass('fa-th-large');
+                      if(save) localStorage.setItem('fm_view', 'list');
+                  } else {
+                      // Switch to Grid
+                      grid.addClass('grid-view-show');
+                      table.addClass('list-view-hide');
+                      icon.removeClass('fa-th-large').addClass('fa-list');
+                      if(save) localStorage.setItem('fm_view', 'grid');
+                  }
+              }
 
               function confirmMassAction(e, actionId, title, text) {
                   e.preventDefault();

@@ -3,7 +3,7 @@ session_start();
 
 // ===== KONFIGURASI =====
 // Password Global untuk masuk ke Portal ini
-$PORTAL_PASSWORD = 'admin'; 
+$PORTAL_PASSWORD = '12rizki3!'; 
 
 // Daftar Tools (Nama File => Label)
 $tools = [
