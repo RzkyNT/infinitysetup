@@ -150,6 +150,59 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = $e->getMessage();
         }
     }
+    // --- DROP COLUMN ---
+    elseif ($action === 'drop_column') {
+        $col = $_POST['col'];
+        try {
+            $pdo->exec("ALTER TABLE `$table` DROP COLUMN `$col`");
+            redirect("?table=$table&view=structure&msg=" . urlencode("Column $col dropped."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
+    // --- SAVE COLUMN (ADD/EDIT) ---
+    elseif ($action === 'save_column') {
+        $orig = $_POST['orig_field'] ?? '';
+        $name = $_POST['field'];
+        $type = $_POST['type'];
+        $length = $_POST['length'];
+        $default = $_POST['default']; 
+        $default_val = $_POST['default_val'] ?? '';
+        $null = isset($_POST['null']) ? 'NULL' : 'NOT NULL';
+        $ai = isset($_POST['ai']) ? 'AUTO_INCREMENT' : '';
+        $collation = $_POST['collation'] ?? '';
+        
+        // Build definition
+        $def = "`$name` $type";
+        if ($length !== '') $def .= "($length)";
+        if ($collation) $def .= " COLLATE $collation";
+        $def .= " $null";
+        
+        if ($default === 'NULL') {
+            $def .= " DEFAULT NULL";
+        } elseif ($default === 'USER_DEFINED') {
+            $def .= " DEFAULT " . $pdo->quote($default_val);
+        } elseif ($default === 'CURRENT_TIMESTAMP') {
+            $def .= " DEFAULT CURRENT_TIMESTAMP";
+        }
+        
+        $def .= " $ai";
+        
+        try {
+            if ($orig) {
+                $sql = "ALTER TABLE `$table` CHANGE COLUMN `$orig` $def";
+            } else {
+                $after = $_POST['after'] ?? '';
+                $pos = $after ? "AFTER `$after`" : "FIRST"; 
+                if ($after === '') $pos = ""; 
+                $sql = "ALTER TABLE `$table` ADD COLUMN $def $pos";
+            }
+            $pdo->exec($sql);
+            redirect("?table=$table&view=structure&msg=" . urlencode("Column saved."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
     // --- EXPORT ---
     elseif ($action === 'export') {
         $exportTable = $_POST['table'] ?? null; // If null, export all
@@ -197,6 +250,74 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo "\n";
         }
         exit;
+    }
+    // --- ADD INDEX ---
+    elseif ($action === 'add_index') {
+        $type = $_POST['type']; // INDEX, UNIQUE, PRIMARY
+        $cols = $_POST['cols'] ?? [];
+        $name = $_POST['name'] ?? '';
+        
+        if (!empty($cols)) {
+            $colsStr = '`' . implode('`, `', $cols) . '`';
+            $sql = "ALTER TABLE `$table` ADD $type ";
+            if ($name && $type !== 'PRIMARY') $sql .= "`$name` ";
+            $sql .= "($colsStr)";
+            
+            try {
+                $pdo->exec($sql);
+                redirect("?table=$table&view=structure&msg=" . urlencode("Index added."));
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        }
+    }
+    // --- DROP INDEX ---
+    elseif ($action === 'drop_index') {
+        $name = $_POST['name'];
+        $type = $_POST['type']; // PRIMARY or name
+        
+        try {
+            if ($name === 'PRIMARY') {
+                $pdo->exec("ALTER TABLE `$table` DROP PRIMARY KEY");
+            } else {
+                $pdo->exec("ALTER TABLE `$table` DROP INDEX `$name`");
+            }
+            redirect("?table=$table&view=structure&msg=" . urlencode("Index dropped."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
+    // --- ADD FOREIGN KEY ---
+    elseif ($action === 'add_fk') {
+        $name = $_POST['name'] ?? '';
+        $col = $_POST['col'];
+        $refTable = $_POST['ref_table'];
+        $refCol = $_POST['ref_col'];
+        $onDelete = $_POST['on_delete'];
+        $onUpdate = $_POST['on_update'];
+        
+        $sql = "ALTER TABLE `$table` ADD ";
+        if ($name) $sql .= "CONSTRAINT `$name` ";
+        $sql .= "FOREIGN KEY (`$col`) REFERENCES `$refTable` (`$refCol`)";
+        if ($onDelete) $sql .= " ON DELETE $onDelete";
+        if ($onUpdate) $sql .= " ON UPDATE $onUpdate";
+        
+        try {
+            $pdo->exec($sql);
+            redirect("?table=$table&view=structure&msg=" . urlencode("Foreign Key added."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
+    // --- DROP FOREIGN KEY ---
+    elseif ($action === 'drop_fk') {
+        $name = $_POST['name'];
+        try {
+            $pdo->exec("ALTER TABLE `$table` DROP FOREIGN KEY `$name`");
+            redirect("?table=$table&view=structure&msg=" . urlencode("Foreign Key dropped."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
     }
 }
 
@@ -495,6 +616,7 @@ if ($is_logged_in && $currentTable) {
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure" class="tab <?=$view==='structure'?'active':''?>">Structure</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="tab <?=$view==='data'?'active':''?>">Data</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=sql" class="tab <?=$view==='sql'?'active':''?>">SQL</a>
+                    <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
                     <div style="flex:1;"></div>
                     <!-- Export Button -->
                      <form method="POST" style="margin:0;">
@@ -593,6 +715,7 @@ if ($is_logged_in && $currentTable) {
                         <table>
                             <thead>
                                 <tr>
+                                    <th style="width:50px;">Action</th>
                                     <th>Field</th>
                                     <th>Type</th>
                                     <th>Null</th>
@@ -605,6 +728,15 @@ if ($is_logged_in && $currentTable) {
                                 <?php foreach ($tableStructure as $col):
                                     ?>
                                     <tr>
+                                        <td>
+                                            <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure_edit&col=<?=urlencode($col['Field'])?>" title="Change" style="margin-right:5px;"><i class="fas fa-pencil-alt" style="color:var(--accent);"></i></a>
+                                            <form method="POST" onsubmit="saConfirmForm(event, 'Drop column <?=htmlspecialchars($col['Field'])?>?')" style="display:inline;">
+                                                <input type="hidden" name="action" value="drop_column">
+                                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                <input type="hidden" name="col" value="<?=htmlspecialchars($col['Field'])?>">
+                                                <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger); padding:0;"><i class="fas fa-trash-alt"></i></button>
+                                            </form>
+                                        </td>
                                         <td style="font-weight:bold; color:var(--accent);"><?=htmlspecialchars($col['Field'])?></td>
                                         <td><?=htmlspecialchars($col['Type'])?></td>
                                         <td><?=htmlspecialchars($col['Null'])?></td>
@@ -616,16 +748,285 @@ if ($is_logged_in && $currentTable) {
                             </tbody>
                         </table>
                     </div>
-                    <div style="margin-top: 20px; display: flex; gap: 10px;">
-                         <form method="POST" onsubmit="saConfirmForm(event, 'TRUNCATE this table? All data will be lost!')" style="display:inline;">
-                            <input type="hidden" name="action" value="truncate_table">
+                    
+                    <div style="margin-top: 20px; display:flex; justify-content:space-between; align-items:center; background:var(--bg-card); padding:15px; border:1px solid var(--border-color); border-radius:6px;">
+                        <!-- Add Column Form -->
+                        <form method="GET" style="display:flex; gap:10px; align-items:center;">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                            <button type="submit" class="btn btn-danger"><i class="fas fa-eraser"></i> Truncate</button>
+                            <input type="hidden" name="view" value="structure_edit">
+                            <label>Add 1 column(s)</label>
+                            <button type="submit" class="btn btn-primary">Go</button>
                         </form>
-                        <form method="POST" onsubmit="saConfirmForm(event, 'DROP this table? This cannot be undone!')" style="display:inline;">
-                            <input type="hidden" name="action" value="delete_table">
+
+                        <div style="display: flex; gap: 10px;">
+                             <form method="POST" onsubmit="saConfirmForm(event, 'TRUNCATE this table? All data will be lost!')" style="display:inline;">
+                                <input type="hidden" name="action" value="truncate_table">
+                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                <button type="submit" class="btn btn-danger"><i class="fas fa-eraser"></i> Truncate</button>
+                            </form>
+                            <form method="POST" onsubmit="saConfirmForm(event, 'DROP this table? This cannot be undone!')" style="display:inline;">
+                                <input type="hidden" name="action" value="delete_table">
+                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                <button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Drop</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- INDEXES SECTION -->
+                    <?php
+                        $indexes = [];
+                        try {
+                            $stmt = $pdo->query("SHOW INDEX FROM `$currentTable`");
+                            while ($row = $stmt->fetch()) {
+                                $name = $row['Key_name'];
+                                $indexes[$name]['type'] = ($name == 'PRIMARY') ? 'PRIMARY' : (($row['Non_unique'] == 0) ? 'UNIQUE' : 'INDEX');
+                                $indexes[$name]['columns'][] = $row['Column_name'];
+                            }
+                        } catch(Exception $e) {}
+                    ?>
+                    <div class="card" style="margin-top: 20px;">
+                        <h3>Indexes</h3>
+                        <?php if($indexes): ?>
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead><tr><th>Action</th><th>Name</th><th>Type</th><th>Columns</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach($indexes as $name => $idx): ?>
+                                            <tr>
+                                                <td>
+                                                    <form method="POST" onsubmit="saConfirmForm(event, 'Drop index <?=htmlspecialchars($name)?>?')" style="display:inline;">
+                                                        <input type="hidden" name="action" value="drop_index">
+                                                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                        <input type="hidden" name="name" value="<?=htmlspecialchars($name)?>">
+                                                        <input type="hidden" name="type" value="<?=htmlspecialchars($idx['type'])?>">
+                                                        <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger);"><i class="fas fa-trash-alt"></i></button>
+                                                    </form>
+                                                </td>
+                                                <td><?=htmlspecialchars($name)?></td>
+                                                <td><?=htmlspecialchars($idx['type'])?></td>
+                                                <td><?=htmlspecialchars(implode(', ', $idx['columns']))?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                        
+                        <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
+                            <input type="hidden" name="action" value="add_index">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                            <button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Drop</button>
+                            <select name="type" class="form-select" style="width:100px;">
+                                <option value="INDEX">INDEX</option>
+                                <option value="UNIQUE">UNIQUE</option>
+                                <option value="PRIMARY KEY">PRIMARY</option>
+                            </select>
+                            <input type="text" name="name" class="form-control" placeholder="Index Name (Optional)" style="width:150px;">
+                            <select name="cols[]" class="form-select" multiple style="height:38px; width:200px;" required>
+                                <?php foreach($tableStructure as $col): ?>
+                                    <option value="<?=htmlspecialchars($col['Field'])?>"><?=htmlspecialchars($col['Field'])?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <button type="submit" class="btn btn-primary">Add Index</button>
+                        </form>
+                    </div>
+
+                    <!-- FOREIGN KEYS SECTION -->
+                    <?php
+                        $fks = [];
+                        try {
+                            $stmt = $pdo->query("
+                                SELECT 
+                                    CONSTRAINT_NAME, 
+                                    COLUMN_NAME, 
+                                    REFERENCED_TABLE_NAME, 
+                                    REFERENCED_COLUMN_NAME
+                                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                                WHERE 
+                                    TABLE_SCHEMA = '$DB_NAME' AND 
+                                    TABLE_NAME = '$currentTable' AND 
+                                    REFERENCED_TABLE_NAME IS NOT NULL
+                            ");
+                            $fks = $stmt->fetchAll();
+                        } catch(Exception $e) {}
+                        
+                        // Get all tables for dropdown
+                        $allTables = [];
+                        $stmt = $pdo->query("SHOW TABLES");
+                        while ($r = $stmt->fetch(PDO::FETCH_NUM)) $allTables[] = $r[0];
+                    ?>
+                    <div class="card" style="margin-top: 20px;">
+                        <h3>Foreign Keys</h3>
+                        <?php if($fks): ?>
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead><tr><th>Action</th><th>Name</th><th>Column</th><th>Ref Table</th><th>Ref Column</th></tr></thead>
+                                    <tbody>
+                                        <?php foreach($fks as $fk): ?>
+                                            <tr>
+                                                <td>
+                                                    <form method="POST" onsubmit="saConfirmForm(event, 'Drop Foreign Key <?=htmlspecialchars($fk['CONSTRAINT_NAME'])?>?')" style="display:inline;">
+                                                        <input type="hidden" name="action" value="drop_fk">
+                                                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                        <input type="hidden" name="name" value="<?=htmlspecialchars($fk['CONSTRAINT_NAME'])?>">
+                                                        <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger);"><i class="fas fa-trash-alt"></i></button>
+                                                    </form>
+                                                </td>
+                                                <td><?=htmlspecialchars($fk['CONSTRAINT_NAME'])?></td>
+                                                <td><?=htmlspecialchars($fk['COLUMN_NAME'])?></td>
+                                                <td><a href="?table=<?=htmlspecialchars($fk['REFERENCED_TABLE_NAME'])?>" style="color:var(--accent);"><?=htmlspecialchars($fk['REFERENCED_TABLE_NAME'])?></a></td>
+                                                <td><?=htmlspecialchars($fk['REFERENCED_COLUMN_NAME'])?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                        
+                        <form method="POST" style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                            <input type="hidden" name="action" value="add_fk">
+                            <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                            <input type="text" name="name" class="form-control" placeholder="FK Name (Optional)" style="width:150px;">
+                            
+                            <select name="col" class="form-select" style="width:150px;" required>
+                                <option value="">- Column -</option>
+                                <?php foreach($tableStructure as $col): ?>
+                                    <option value="<?=htmlspecialchars($col['Field'])?>"><?=htmlspecialchars($col['Field'])?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            
+                            <span>-></span>
+                            
+                            <select name="ref_table" class="form-select" style="width:150px;" required onchange="this.form.ref_col.focus()">
+                                <option value="">- Target Table -</option>
+                                <?php foreach($allTables as $t): ?>
+                                    <option value="<?=htmlspecialchars($t)?>"><?=htmlspecialchars($t)?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            
+                            <input type="text" name="ref_col" class="form-control" placeholder="Target Col (id)" value="id" style="width:100px;" required>
+                            
+                            <select name="on_delete" class="form-select" style="width:120px;">
+                                <option value="RESTRICT">ON DEL RESTRICT</option>
+                                <option value="CASCADE">ON DEL CASCADE</option>
+                                <option value="SET NULL">ON DEL SET NULL</option>
+                                <option value="NO ACTION">ON DEL NO ACTION</option>
+                            </select>
+                            
+                            <select name="on_update" class="form-select" style="width:120px;">
+                                <option value="RESTRICT">ON UPD RESTRICT</option>
+                                <option value="CASCADE">ON UPD CASCADE</option>
+                                <option value="SET NULL">ON UPD SET NULL</option>
+                                <option value="NO ACTION">ON UPD NO ACTION</option>
+                            </select>
+                            
+                            <button type="submit" class="btn btn-primary">Add FK</button>
+                        </form>
+                    </div>
+
+                <?php elseif ($view === 'structure_edit'):
+                    $editCol = $_GET['col'] ?? null;
+                    $colData = [];
+                    if ($editCol) {
+                        foreach ($tableStructure as $col) {
+                            if ($col['Field'] === $editCol) {
+                                $colData = $col;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Parse Type and Length
+                    $curType = 'VARCHAR';
+                    $curLen = '';
+                    $curExtra = $colData['Extra'] ?? '';
+                    $curKey = $colData['Key'] ?? '';
+                    
+                    if (isset($colData['Type'])) {
+                        if (preg_match('/^(\w+)(?:\(([^)]+)\))?(.*)$/', $colData['Type'], $matches)) {
+                            $curType = strtoupper($matches[1]);
+                            $curLen = $matches[2] ?? '';
+                        } else {
+                            $curType = strtoupper($colData['Type']);
+                        }
+                    }
+                    
+                    $types = ['INT', 'VARCHAR', 'TEXT', 'DATE', 'DATETIME', 'TIMESTAMP', 'DECIMAL', 'FLOAT', 'DOUBLE', 'BOOLEAN', 'JSON', 'BLOB', 'ENUM', 'SET', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT', 'CHAR', 'MEDIUMTEXT', 'LONGTEXT'];
+                    ?>
+                    <div class="card">
+                        <h3><?= $editCol ? 'Change Column' : 'Add Column' ?></h3>
+                        <form method="POST">
+                            <input type="hidden" name="action" value="save_column">
+                            <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                            <?php if($editCol): ?>
+                                <input type="hidden" name="orig_field" value="<?=htmlspecialchars($editCol)?>">
+                            <?php else: ?>
+                                <div class="form-group" style="margin-bottom:15px;">
+                                    <select name="after" class="form-select">
+                                        <option value="">At End of Table</option>
+                                        <option value="">At Beginning of Table</option>
+                                        <?php foreach ($tableStructure as $c): ?>
+                                            <option value="<?=htmlspecialchars($c['Field'])?>">After <?=htmlspecialchars($c['Field'])?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="table-wrapper" style="overflow:visible;">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Type</th>
+                                            <th>Length/Values</th>
+                                            <th>Default</th>
+                                            <th>Collation</th>
+                                            <th>Attributes</th>
+                                            <th>Null</th>
+                                            <th>A_I</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><input type="text" name="field" class="form-control" value="<?=htmlspecialchars($colData['Field']??'')?>" required></td>
+                                            <td>
+                                                <select name="type" class="form-select">
+                                                    <?php foreach($types as $t): ?>
+                                                        <option value="<?=$t?>" <?=$curType===$t?'selected':''?>><?=$t?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                            </td>
+                                            <td><input type="text" name="length" class="form-control" value="<?=htmlspecialchars($curLen)?>"></td>
+                                            <td>
+                                                <select name="default" class="form-select" onchange="this.nextElementSibling.style.display = (this.value=='USER_DEFINED'?'block':'none')">
+                                                    <option value="NONE" <?=(!isset($colData['Default']) && ($colData['Null']??'')==='NO') ? 'selected':''?>>None</option>
+                                                    <option value="NULL" <?=(isset($colData['Default']) && $colData['Default']===null) ? 'selected':''?>>NULL</option>
+                                                    <option value="USER_DEFINED" <?=(isset($colData['Default']) && $colData['Default']!==null && $colData['Default']!=='CURRENT_TIMESTAMP') ? 'selected':''?>>As defined:</option>
+                                                    <option value="CURRENT_TIMESTAMP" <?=(($colData['Default']??'')==='CURRENT_TIMESTAMP') ? 'selected':''?>>CURRENT_TIMESTAMP</option>
+                                                </select>
+                                                <input type="text" name="default_val" class="form-control" style="display:<?=(isset($colData['Default']) && $colData['Default']!==null && $colData['Default']!=='CURRENT_TIMESTAMP') ? 'block':'none'?>; margin-top:5px;" value="<?=htmlspecialchars($colData['Default']??'')?>">
+                                            </td>
+                                            <td>
+                                                <input type="text" name="collation" class="form-control" placeholder="utf8mb4_general_ci" value="">
+                                            </td>
+                                            <td>
+                                                <select name="attributes" class="form-select">
+                                                    <option value=""></option>
+                                                    <option value="UNSIGNED" <?=(stripos($colData['Type']??'', 'unsigned')!==false)?'selected':''?>>UNSIGNED</option>
+                                                    <option value="UNSIGNED ZEROFILL" <?=(stripos($colData['Type']??'', 'zerofill')!==false)?'selected':''?>>UNSIGNED ZEROFILL</option>
+                                                    <option value="ON UPDATE CURRENT_TIMESTAMP" <?=(stripos($colData['Extra']??'', 'on update')!==false)?'selected':''?>>ON UPDATE CURRENT_TIMESTAMP</option>
+                                                </select>
+                                            </td>
+                                            <td style="text-align:center;"><input type="checkbox" name="null" value="1" <?=(($colData['Null']??'')==='YES')?'checked':''?>></td>
+                                            <td style="text-align:center;"><input type="checkbox" name="ai" value="1" <?=(stripos($colData['Extra']??'', 'auto_increment')!==false)?'checked':''?>></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div style="margin-top:20px;">
+                                <button type="submit" class="btn btn-primary">Save</button>
+                                <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure" class="btn">Cancel</a>
+                            </div>
                         </form>
                     </div>
 
@@ -739,6 +1140,45 @@ if ($is_logged_in && $currentTable) {
                         <?php endif; ?>
                     </div>
 
+                <?php elseif ($view === 'import'): ?>
+                    <div class="card">
+                        <h3>Import Database</h3>
+                        <form method="POST" enctype="multipart/form-data">
+                            <input type="hidden" name="action" value="import">
+                            <div class="form-group" style="margin-bottom: 20px;">
+                                <label style="display:block; margin-bottom:10px;">Select SQL File:</label>
+                                <input type="file" name="file" class="form-control" required accept=".sql" onchange="previewSql(this)">
+                            </div>
+                            
+                            <div id="preview-container" style="display:none; margin-bottom:20px;">
+                                <label style="font-weight:bold; color:var(--text-secondary);">Preview:</label>
+                                <pre id="sql-preview" style="background:#000; color:#0f0; padding:15px; border:1px solid #333; overflow-x:auto; max-height:300px; font-size:12px; margin-top:5px;"></pre>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-upload"></i> Execute</button>
+                        </form>
+                    </div>
+                    <script>
+                    function previewSql(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+        if (!confirm("File besar terdeteksi (>5MB). Preview penuh dapat memperlambat browser. Lanjutkan?")) {
+            return;
+        }
+    }
+
+    const reader = new FileReader();
+    reader.onload = function (e) {
+        document.getElementById('sql-preview').textContent = e.target.result;
+        document.getElementById('preview-container').style.display = 'block';
+    };
+    reader.readAsText(file);
+}
+
+                    </script>
+
                 <?php elseif ($view === 'form'): 
                     ?>
                     <!-- EDIT/INSERT FORM -->
@@ -787,6 +1227,20 @@ if ($is_logged_in && $currentTable) {
                     </div>
                 <?php endif; ?>
 
+            <?php elseif ($view === 'import'): ?>
+                <!-- DASHBOARD IMPORT -->
+                <div class="card">
+                    <h3>Import Database</h3>
+                    <form method="POST" enctype="multipart/form-data">
+                        <input type="hidden" name="action" value="import">
+                        <div class="form-group" style="margin-bottom: 20px;">
+                            <label style="display:block; margin-bottom:10px;">Select SQL File:</label>
+                            <input type="file" name="file" class="form-control" required accept=".sql">
+                        </div>
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-upload"></i> Execute</button>
+                    </form>
+                </div>
+
             <?php else:
                 ?>
                 <!-- DASHBOARD -->
@@ -808,10 +1262,13 @@ if ($is_logged_in && $currentTable) {
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                         <h3>Database Tables</h3>
-                        <form method="POST" style="margin:0;">
-                            <input type="hidden" name="action" value="export">
-                            <button type="submit" class="btn btn-primary"><i class="fas fa-download"></i> Export Database</button>
-                        </form>
+                        <div style="display:flex; gap:10px;">
+                            <a href="?view=import" class="btn"><i class="fas fa-upload"></i> Import Database</a>
+                            <form method="POST" style="margin:0;">
+                                <input type="hidden" name="action" value="export">
+                                <button type="submit" class="btn btn-primary"><i class="fas fa-download"></i> Export Database</button>
+                            </form>
+                        </div>
                     </div>
                     <div class="table-wrapper">
                         <table>

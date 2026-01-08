@@ -487,7 +487,44 @@
       //search : get list of files from the current folder
       if (isset($_POST['type']) && $_POST['type'] == "search") {
           $dir = $_POST['path'] == "." ? '' : $_POST['path'];
-          $response = scan(fm_clean_path($dir), $_POST['content']);
+          $search_query = $_POST['content'];
+          $is_content_search = isset($_POST['is_content']) && $_POST['is_content'] === 'true';
+          
+          if ($is_content_search) {
+              // Content Search (Grep)
+              $files = array();
+              $path = FM_ROOT_PATH . '/' . fm_clean_path($dir);
+              if (is_dir($path)) {
+                  $ite = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path));
+                  foreach ($ite as $file) {
+                      if ($file->isFile()) {
+                          $fname = $file->getFilename();
+                          // Skip hidden files/dots
+                          if (substr($fname, 0, 1) === '.') continue;
+                          
+                          // Check extension (only text based)
+                          $ext = strtolower($file->getExtension());
+                          if (in_array($ext, fm_get_text_exts())) {
+                              // Read content (limit to 1MB files for performance)
+                              if ($file->getSize() < 1000000) {
+                                  $content = file_get_contents($file->getPathname());
+                                  if (stripos($content, $search_query) !== false) {
+                                      $files[] = array(
+                                          "name" => $fname,
+                                          "type" => "file",
+                                          "path" => str_replace(FM_ROOT_PATH, '', $file->getPath())
+                                      );
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              $response = $files;
+          } else {
+              // Normal Filename Search
+              $response = scan(fm_clean_path($dir), $search_query);
+          }
           echo json_encode($response);
           exit();
       }
@@ -4876,6 +4913,10 @@
                                       <input type="text" class="form-control" placeholder="<?php echo lng('Search') ?> <?php echo lng('a files') ?>" aria-label="<?php echo lng('Search') ?>" aria-describedby="search-addon3" id="advanced-search" autofocus required>
                                       <span class="input-group-text" id="search-addon3"><i class="fa fa-search"></i></span>
                                   </div>
+                                  <div class="form-check form-switch" style="font-size: 0.9rem;">
+                                      <input class="form-check-input" type="checkbox" id="js-search-content">
+                                      <label class="form-check-label" for="js-search-content">Search in file content (Grep)</label>
+                                  </div>
                               </h5>
                               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                           </div>
@@ -5199,6 +5240,7 @@
                   var searchTxt = $("input#advanced-search").val(),
                       searchWrapper = $("ul#search-wrapper"),
                       path = $("#js-search-modal").attr("href"),
+                      isContent = $("#js-search-content").is(':checked'),
                       _html = "",
                       $loader = $("div.lds-facebook");
                   if (!!searchTxt && searchTxt.length > 2 && path) {
@@ -5207,6 +5249,7 @@
                           content: searchTxt,
                           path: path,
                           type: 'search',
+                          is_content: isContent,
                           token: window.csrf
                       };
                       $.ajax({
