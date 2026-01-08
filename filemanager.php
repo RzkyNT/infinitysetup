@@ -3,8 +3,8 @@
   $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":false,"hide_Cols":false,"theme":"light"}';
 
   /**
-   * H3K ~ Tiny File Manager V2.6
-   * @author CCP Programmers
+   * H3K ~ RFILE Manager V2.6
+   * @author @RzkyNT
    * @github https://github.com/prasathmani/tinyfilemanager
    * @link https://tinyfilemanager.github.io
    */
@@ -13,7 +13,7 @@
   define('VERSION', '2.6');
 
   //Application Title
-  define('APP_TITLE', 'Tiny File Manager');
+  define('APP_TITLE', 'RFILE Manager');
 
   // --- EDIT BELOW CONFIGURATION CAREFULLY ---
 
@@ -356,13 +356,33 @@
                                   <form class="form-signin" action="" method="post" autocomplete="off">
                                       <div class="mb-3">
                                           <div class="brand">
-                                              <svg version="1.0" xmlns="http://www.w3.org/2000/svg" M1008 width="100%" height="80px" viewBox="0 0 238.000000 140.000000" aria-label="H3K Tiny File Manager">
-                                                  <g transform="translate(0.000000,140.000000) scale(0.100000,-0.100000)" fill="#000000" stroke="none">
-                                                      <path d="M160 700 l0 -600 110 0 110 0 0 260 0 260 70 0 70 0 0 -260 0 -260 110 0 110 0 0 600 0 600 -110 0 -110 0 0 -260 0 -260 -70 0 -70 0 0 260 0 260 -110 0 -110 0 0 -600z" />
-                                                      <path fill="#003500" d="M1008 1227 l-108 -72 0 -117 0 -118 110 0 110 0 0 110 0 110 70 0 70 0 0 -180 0 -180 -125 0 c-69 0 -125 -3 -125 -6 0 -3 23 -39 52 -80 l52 -74 73 0 73 0 0 -185 0 -185 -70 0 -70 0 0 115 0 115 -110 0 -110 0 0 -190 0 -190 181 0 181 0 109 73 108 72 1 181 0 181 -69 48 -68 49 68 50 69 49 0 249 0 248 -182 -1 -183 0 -107 -72z" />
-                                                      <path d="M1640 700 l0 -600 110 0 110 0 0 208 0 208 35 34 35 34 35 -34 35 -34 0 -208 0 -208 110 0 110 0 0 212 0 213 -87 87 -88 88 88 88 87 87 0 213 0 212 -110 0 -110 0 0 -208 0 -208 -70 -69 -70 -69 0 277 0 277 -110 0 -110 0 0 -600z" />
-                                                  </g>
-                                              </svg>
+                                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 140" width="100%" height="80" aria-label="RFILE Manager Logo">
+                                                <defs>
+                                                    <style>
+                                                    .text { font-family: 'Segoe UI', 'Inter', Arial, sans-serif; font-weight: 800; }
+                                                    </style>
+                                                </defs>
+
+                                                <!-- FILE ICON -->
+                                                <g transform="translate(0,10)">
+                                                    <path d="M20 0h60l30 30v80a10 10 0 0 1-10 10H20a10 10 0 0 1-10-10V10A10 10 0 0 1 20 0z"
+                                                        fill="#003500"/>
+                                                    <path d="M80 0v30h30" fill="#0a5f0a"/>
+                                                    <rect x="30" y="50" width="60" height="8" rx="4" fill="#ffffff"/>
+                                                    <rect x="30" y="70" width="50" height="8" rx="4" fill="#ffffff"/>
+                                                </g>
+
+                                                <!-- RFILE TEXT -->
+                                                <text x="140" y="95" class="text" font-size="72" fill="#ffff">
+                                                    RFILE
+                                                </text>
+
+                                                <!-- TAGLINE -->
+                                                <text x="142" y="120" font-size="16" fill="#fff">
+                                                    File Manager
+                                                </text>
+                                                </svg>
+
                                           </div>
                                           <div class="text-center">
                                               <h1 class="card-title"><?php echo APP_TITLE; ?></h1>
@@ -393,7 +413,7 @@
                           </div>
                           <div class="footer text-center">
                               &mdash;&mdash; &copy;
-                              <a href="https://tinyfilemanager.github.io/" target="_blank" class="text-decoration-none text-muted" data-version="<?php echo VERSION; ?>">CCP Programmers</a> &mdash;&mdash;
+                              <a href="https://tinyfilemanager.github.io/" target="_blank" class="text-decoration-none text-muted" data-version="<?php echo VERSION; ?>">@RzkyNT</a> &mdash;&mdash;
                           </div>
                       </div>
                   </div>
@@ -1665,7 +1685,7 @@
                   <div class="row">
                       <div class="col-xs-12 col-sm-6">
                           <p>
-                          <h3><a href="https://github.com/prasathmani/tinyfilemanager" target="_blank" class="app-v-title"> Tiny File Manager <?php echo VERSION; ?></a></h3>
+                          <h3><a href="https://github.com/prasathmani/tinyfilemanager" target="_blank" class="app-v-title"> RFILE Manager <?php echo VERSION; ?></a></h3>
                           </p>
                           <p>Author: PRAŚATH MANİ</p>
                           <p>Mail Us: <a href="mailto:ccpprogrammers@gmail.com">ccpprogrammers [at] gmail [dot] com</a> </p>
@@ -2280,10 +2300,12 @@
                       <td class="inline-actions">
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
+                              <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
                               <a title="<?php echo lng('CopyTo') ?>..."
                                   href="?p=<?php echo urlencode(FM_PATH) ?>&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o"></i></a>
                           <?php endif; ?>
+                          <a title="Preview" href="#" onclick="preview_file('<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>', '<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>'); return false;"><i class="fa fa-eye"></i></a>
                           <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>" target="_blank"><i class="fa fa-link"></i></a>
                           <a title="<?php echo lng('Download') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1211, '<?php echo lng('Download'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-download"></i></a>
                       </td>
@@ -2322,19 +2344,19 @@
                       <a href="#/select-all" class="btn btn-small btn-outline-primary btn-2" onclick="select_all();return false;"><i class="fa fa-check-square"></i> <?php echo lng('SelectAll') ?> </a>
                       <a href="#/unselect-all" class="btn btn-small btn-outline-primary btn-2" onclick="unselect_all();return false;"><i class="fa fa-window-close"></i> <?php echo lng('UnSelectAll') ?> </a>
                       <a href="#/invert-all" class="btn btn-small btn-outline-primary btn-2" onclick="invert_all();return false;"><i class="fa fa-th-list"></i> <?php echo lng('InvertSelection') ?> </a>
-                      <input type="submit" class="hidden" name="delete" id="a-delete" value="Delete" onclick="return confirm('<?php echo lng('Delete selected files and folders?'); ?>')">
-                      <a href="javascript:document.getElementById('a-delete').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-trash"></i> <?php echo lng('Delete') ?> </a>
-                      <input type="submit" class="hidden" name="zip" id="a-zip" value="zip" onclick="return confirm('<?php echo lng('Create archive?'); ?>')">
-                      <a href="javascript:document.getElementById('a-zip').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Zip') ?> </a>
-                      <input type="submit" class="hidden" name="tar" id="a-tar" value="tar" onclick="return confirm('<?php echo lng('Create archive?'); ?>')">
-                      <a href="javascript:document.getElementById('a-tar').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Tar') ?> </a>
+                      <input type="submit" class="hidden" name="delete" id="a-delete" value="Delete">
+                      <a href="#" onclick="confirmMassAction(event, 'a-delete', 'Delete Selection?', '<?php echo lng('Delete selected files and folders?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-trash"></i> <?php echo lng('Delete') ?> </a>
+                      <input type="submit" class="hidden" name="zip" id="a-zip" value="zip">
+                      <a href="#" onclick="confirmMassAction(event, 'a-zip', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Zip') ?> </a>
+                      <input type="submit" class="hidden" name="tar" id="a-tar" value="tar">
+                      <a href="#" onclick="confirmMassAction(event, 'a-tar', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Tar') ?> </a>
                       <input type="submit" class="hidden" name="copy" id="a-copy" value="Copy">
                       <a href="javascript:document.getElementById('a-copy').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?> </a>
                   </div>
               </div>
-              <div class="col-3 d-none d-sm-block"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">Tiny File Manager <?php echo VERSION; ?></a></div>
+              <div class="col-3 d-none d-sm-block"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">RFILE Manager <?php echo VERSION; ?></a></div>
           <?php else: ?>
-              <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">Tiny File Manager <?php echo VERSION; ?></a></div>
+              <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">RFILE Manager <?php echo VERSION; ?></a></div>
           <?php endif; ?>
       </div>
   </form>
@@ -3663,7 +3685,7 @@
           if (strlen($CONFIG)) {
               $data = fm_object_to_array(json_decode($CONFIG));
           } else {
-              $msg = 'Tiny File Manager<br>Error: Cannot load configuration';
+              $msg = 'RFILE Manager<br>Error: Cannot load configuration';
               if (substr($fm_url, -1) == '/') {
                   $fm_url = rtrim($fm_url, '/');
                   $msg .= '<br>';
@@ -3816,8 +3838,8 @@
       <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-          <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with Tiny File Manager">
-          <meta name="author" content="CCP Programmers">
+          <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with RFILE Manager">
+          <meta name="author" content="@RzkyNT">
           <meta name="robots" content="noindex, nofollow">
           <meta name="googlebot" content="noindex">
           <?php if ($favicon_path) {
@@ -3826,6 +3848,7 @@
           <title><?php echo fm_enc(APP_TITLE) ?></title>
           <?php print_external('pre-jsdelivr'); ?>
           <?php print_external('css-bootstrap'); ?>
+          <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
           <style>
               body.fm-login-page {
                   background-color: #f7f9fb;
@@ -3998,18 +4021,19 @@
       <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-          <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with Tiny File Manager">
-          <meta name="author" content="CCP Programmers">
+          <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with RFILE Manager">
+          <meta name="author" content="@RzkyNT">
           <meta name="robots" content="noindex, nofollow">
           <meta name="googlebot" content="noindex">
           <?php if ($favicon_path) {
               echo '<link rel="icon" href="' . fm_enc($favicon_path) . '" type="image/png">';
           } ?>
-          <title><?php echo fm_enc(APP_TITLE) ?> | <?php echo (isset($_GET['view']) ? $_GET['view'] : ((isset($_GET['edit'])) ? $_GET['edit'] : "H3K")); ?></title>
+          <title><?php echo fm_enc(APP_TITLE) ?> | <?php echo (isset($_GET['view']) ? $_GET['view'] : ((isset($_GET['edit'])) ? $_GET['edit'] : "Rfile")); ?></title>
           <?php print_external('pre-jsdelivr'); ?>
           <?php print_external('pre-cloudflare'); ?>
           <?php print_external('css-bootstrap'); ?>
           <?php print_external('css-font-awesome'); ?>
+          <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
           <?php if (FM_USE_HIGHLIGHTJS && isset($_GET['view'])): ?>
               <?php print_external('css-highlightjs'); ?>
           <?php endif; ?>
@@ -4143,7 +4167,10 @@
               pre.maxheight {
                   max-height: 512px
               }
-
+              .hljs {
+                background: #1f1f1f;
+                color: #fff;
+              }
               .fa.fa-caret-right {
                   font-size: 1.2em;
                   margin: 0 4px;
@@ -4888,6 +4915,21 @@
                   </div>
               </div>
 
+              <!-- Preview Modal -->
+              <div class="modal fade" id="previewModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+                  <div class="modal-dialog modal-lg" role="document">
+                      <div class="modal-content">
+                          <div class="modal-header">
+                              <h5 class="modal-title">Preview</h5>
+                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                          </div>
+                          <div class="modal-body text-center" id="preview-content">
+                              <!-- Content populated by JS -->
+                          </div>
+                      </div>
+                  </div>
+              </div>
+
               <!-- Confirm Modal -->
               <script type="text/html" id="js-tpl-confirm">
                   <div class="modal modal-alert confirmDailog" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="confirmDailog-<%this.id%>" data-bs-theme="<?php echo FM_THEME; ?>">
@@ -4951,6 +4993,30 @@
                       $("#js-rename-from").val(t);
                       $("#js-rename-to").val(t);
                       $("#renameDailog").modal('show');
+                  }
+              }
+              
+              function preview_file(url, ext) {
+                  var content = $('#preview-content');
+                  content.html('<div class="spinner-border text-primary" role="status"></div>');
+                  $("#previewModal").modal('show');
+                  
+                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
+                      content.html('<img src="'+url+'" style="max-width:100%; max-height:80vh;">');
+                  } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
+                      content.html('<video controls style="max-width:100%;"><source src="'+url+'"></video>');
+                  } else if (['mp3', 'wav'].includes(ext)) {
+                      content.html('<audio controls><source src="'+url+'"></audio>');
+                  } else if (['txt', 'css', 'js', 'php', 'html', 'sql', 'json', 'xml', 'md'].includes(ext)) {
+                      $.get(url, function(data) {
+                          content.html('<pre style="text-align:left; max-height:80vh; overflow:auto;">'+
+                              $('<div>').text(data).html() + 
+                          '</pre>');
+                      }).fail(function() {
+                          content.html('Error loading file content.');
+                      });
+                  } else {
+                      content.html('<p>Preview not available for this file type.</p><a href="'+url+'" target="_blank" class="btn btn-primary">Download/View</a>');
                   }
               }
 
@@ -5263,6 +5329,23 @@
                       $(target).removeClass('hidden');
                   });
               });
+
+              function confirmMassAction(e, actionId, title, text) {
+                  e.preventDefault();
+                  Swal.fire({
+                      title: title,
+                      text: text,
+                      icon: 'warning',
+                      showCancelButton: true,
+                      confirmButtonColor: '#3085d6',
+                      cancelButtonColor: '#d33',
+                      confirmButtonText: 'Yes, proceed!'
+                  }).then((result) => {
+                      if (result.isConfirmed) {
+                          document.getElementById(actionId).click();
+                      }
+                  });
+              }
           </script>
 
           <?php if (isset($_GET['edit']) && isset($_GET['env']) && FM_EDIT_FILE && !FM_READONLY):
@@ -5276,7 +5359,7 @@
                       path: "ace/mode/<?php echo $ext; ?>",
                       inline: true
                   });
-                  //editor.setTheme("ace/theme/twilight"); // Dark Theme
+                  editor.setTheme("ace/theme/clouds_midnight"); // Dark Theme
                   editor.setShowPrintMargin(false); // Hide the vertical ruler
                   function ace_commend(cmd) {
                       editor.commands.exec(cmd, editor);
@@ -5591,7 +5674,7 @@
           global $lang;
 
           // English Language
-          $tr['en']['AppName']        = 'Tiny File Manager';
+          $tr['en']['AppName']        = 'RFILE Manager';
           $tr['en']['AppTitle']       = 'File Manager';
           $tr['en']['Login']          = 'Sign in';
           $tr['en']['Username']       = 'Username';
