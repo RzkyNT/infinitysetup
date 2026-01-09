@@ -1,10 +1,21 @@
 <?php
 session_start();
 
+// ===== SSO LOGIC =====
+if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === true) {
+    if (!isset($_SESSION['db_host'])) {
+        // DEFAULT CREDENTIALS (SSO)
+        $_SESSION['db_host'] = 'sql110.infinityfree.com';
+        $_SESSION['db_user'] = 'if0_40199145';
+        $_SESSION['db_pass'] = '12rizqi3';
+        $_SESSION['db_name'] = 'if0_40199145_masjid';
+    }
+}
+
 // ===== LOGOUT LOGIC =====
 if (isset($_GET['logout'])) {
     session_destroy();
-    header("Location: " . $_SERVER['PHP_SELF']);
+    header("Location: index.php");
     exit;
 }
 
@@ -13,30 +24,10 @@ $is_logged_in = isset($_SESSION['db_host']) && isset($_SESSION['db_user']);
 $error = '';
 $msg = '';
 
-if (!$is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'login') {
-    $host = $_POST['host'] ?? '';
-    $user = $_POST['user'] ?? '';
-    $pass = $_POST['pass'] ?? '';
-    $name = $_POST['name'] ?? '';
-
-    try {
-        $dsn = "mysql:host=$host;dbname=$name;charset=utf8mb4";
-        $pdo = new PDO($dsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-        ]);
-        
-        // Login Success
-        $_SESSION['db_host'] = $host;
-        $_SESSION['db_user'] = $user;
-        $_SESSION['db_pass'] = $pass;
-        $_SESSION['db_name'] = $name;
-        
-        header("Location: " . $_SERVER['PHP_SELF']);
-        exit;
-    } catch (Exception $e) {
-        $error = "Login Failed: " . $e->getMessage();
-    }
+if (!$is_logged_in) {
+    // Force Redirect to Portal
+    header("Location: index.php");
+    exit;
 }
 
 // ===== DB CONNECTION (IF LOGGED IN) =====
@@ -531,35 +522,6 @@ if ($is_logged_in && $currentTable) {
     </style>
 </head>
 <body>
-
-<?php if (!$is_logged_in): ?>
-    <div class="login-wrapper">
-        <div class="login-box">
-            <div class="login-header"><i class="fas fa-database"></i> Login Database</div>
-            <?php if($error): ?><div class="alert alert-danger"><?=$error?></div><?php endif; ?>
-            <form method="POST">
-                <input type="hidden" name="action" value="login">
-                <div style="margin-bottom: 15px;">
-                    <label style="display:block; margin-bottom: 5px; color: var(--text-secondary);">Host</label>
-                    <input type="text" name="host" class="form-control" value="sql110.infinityfree.com" required placeholder="localhost">
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display:block; margin-bottom: 5px; color: var(--text-secondary);">User</label>
-                    <input type="text" name="user" class="form-control" required placeholder="root">
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="display:block; margin-bottom: 5px; color: var(--text-secondary);">Password</label>
-                    <input type="password" name="pass" class="form-control" placeholder="Password">
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <label style="display:block; margin-bottom: 5px; color: var(--text-secondary);">Database Name</label>
-                    <input type="text" name="name" class="form-control" required placeholder="my_db">
-                </div>
-                <button type="submit" class="login-btn">LOGIN <i class="fas fa-arrow-right"></i></button>
-            </form>
-        </div>
-    </div>
-<?php else: ?>
 
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar">
@@ -1306,7 +1268,6 @@ if ($is_logged_in && $currentTable) {
             <?php endif; ?>
         </div>
     </div>
-<?php endif; ?>
 
 <script>
     // Global SweetAlert Helpers

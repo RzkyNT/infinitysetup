@@ -228,7 +228,7 @@
       }
 
       session_cache_limiter('nocache'); // Prevent logout issue after page was cached
-      session_name(FM_SESSION_ID);
+      // session_name(FM_SESSION_ID); // Commented out to share session with index.php
       function session_error_handling_function($code, $msg, $file, $line)
       {
           // Permission denied for default session, try to create a new one
@@ -241,6 +241,13 @@
       set_error_handler('session_error_handling_function');
       session_start();
       restore_error_handler();
+
+      // SSO Logic from Portal
+      if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === true) {
+          if (!isset($_SESSION[FM_SESSION_ID]['logged'])) {
+              $_SESSION[FM_SESSION_ID]['logged'] = 'admin';
+          }
+      }
   }
 
   //Generating CSRF Token
@@ -275,7 +282,7 @@
   if (isset($_GET['logout'])) {
       unset($_SESSION[FM_SESSION_ID]['logged']);
       unset($_SESSION['token']);
-      fm_redirect(FM_SELF_URL);
+      fm_redirect('index.php');
   }
 
   // Validate connection IP
@@ -345,83 +352,12 @@
       } else {
           // Form
           unset($_SESSION[FM_SESSION_ID]['logged']);
-          fm_show_header_login();
+          fm_redirect('index.php');
+          // fm_show_header_login();
   ?>
-          <section class="h-100">
-              <div class="container h-100">
-                  <div class="row justify-content-md-center align-content-center h-100vh">
-                      <div class="card-wrapper">
-                          <div class="card fat" data-bs-theme="<?php echo FM_THEME; ?>">
-                              <div class="card-body">
-                                  <form class="form-signin" action="" method="post" autocomplete="off">
-                                      <div class="mb-3">
-                                          <div class="brand">
-                                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 140" width="100%" height="80" aria-label="RFILE Manager Logo">
-                                                <defs>
-                                                    <style>
-                                                    .text { font-family: 'Segoe UI', 'Inter', Arial, sans-serif; font-weight: 800; }
-                                                    </style>
-                                                </defs>
-
-                                                <!-- FILE ICON -->
-                                                <g transform="translate(0,10)">
-                                                    <path d="M20 0h60l30 30v80a10 10 0 0 1-10 10H20a10 10 0 0 1-10-10V10A10 10 0 0 1 20 0z"
-                                                        fill="#003500"/>
-                                                    <path d="M80 0v30h30" fill="#0a5f0a"/>
-                                                    <rect x="30" y="50" width="60" height="8" rx="4" fill="#ffffff"/>
-                                                    <rect x="30" y="70" width="50" height="8" rx="4" fill="#ffffff"/>
-                                                </g>
-
-                                                <!-- RFILE TEXT -->
-                                                <text x="140" y="95" class="text" font-size="72" fill="#ffff">
-                                                    RFILE
-                                                </text>
-
-                                                <!-- TAGLINE -->
-                                                <text x="142" y="120" font-size="16" fill="#fff">
-                                                    File Manager
-                                                </text>
-                                                </svg>
-
-                                          </div>
-                                          <div class="text-center">
-                                              <h1 class="card-title"><?php echo APP_TITLE; ?></h1>
-                                          </div>
-                                      </div>
-                                      <hr />
-                                      <div class="mb-3">
-                                          <label for="fm_usr" class="pb-2"><?php echo lng('Username'); ?></label>
-                                          <input type="text" class="form-control" id="fm_usr" name="fm_usr" required autofocus>
-                                      </div>
-
-                                      <div class="mb-3">
-                                          <label for="fm_pwd" class="pb-2"><?php echo lng('Password'); ?></label>
-                                          <input type="password" class="form-control" id="fm_pwd" name="fm_pwd" required>
-                                      </div>
-
-                                      <div class="mb-3">
-                                          <?php fm_show_message(); ?>
-                                      </div>
-                                      <input type="hidden" name="token" value="<?php echo htmlentities($_SESSION['token']); ?>" />
-                                      <div class="mb-3">
-                                          <button type="submit" class="btn btn-success btn-block w-100 mt-4" role="button">
-                                              <?php echo lng('Login'); ?>
-                                          </button>
-                                      </div>
-                                  </form>
-                              </div>
-                          </div>
-                          <div class="footer text-center">
-                              &mdash;&mdash; &copy;
-                              <a href="https://tinyfilemanager.github.io/" target="_blank" class="text-decoration-none text-muted" data-version="<?php echo VERSION; ?>">@RzkyNT</a> &mdash;&mdash;
-                          </div>
-                      </div>
-                  </div>
-              </div>
-          </section>
-
+          <!-- Login Form Removed - Redirecting to Portal -->
       <?php
-          fm_show_footer_login();
+          // fm_show_footer_login();
           exit;
       }
   }
