@@ -599,7 +599,6 @@ if ($is_logged_in && $currentTable) {
                 <div style="display:flex; gap:10px; margin-right:10px; border-right:1px solid #333; padding-right:15px;">
                     <a href="index.php" title="Dashboard"><i class="fas fa-th"></i></a>
                     <a href="filemanager.php" title="File Manager"><i class="fas fa-folder"></i></a>
-                    <a href="monitor.php" title="Monitor"><i class="fas fa-chart-line"></i></a>
                 </div>
                 <span style="color:var(--text-secondary); font-size:0.85rem;"><i class="fas fa-user"></i> <?=htmlspecialchars($_SESSION['db_user'])?></span>
                 <a href="?logout=1" class="logout-link"><i class="fas fa-sign-out-alt"></i> Logout</a>

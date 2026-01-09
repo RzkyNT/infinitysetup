@@ -3844,7 +3844,6 @@
                           <a class="nav-link" href="adminer.php" title="Database"><i class="fa fa-database"></i></a>
                       </li>
                       <li class="nav-item">
-                          <a class="nav-link" href="monitor.php" title="Monitor"><i class="fa fa-chart-line"></i></a>
                       </li>
                       <li class="nav-item mr-2">
                           <div class="input-group input-group-sm mr-1" style="margin-top:4px;">

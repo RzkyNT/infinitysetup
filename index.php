@@ -7,7 +7,6 @@ $PORTAL_PASSWORD = '12rizki3!';
 
 // Daftar Tools (Nama File => Label)
 $tools = [
-    'monitor.php' => ['icon' => 'fa-chart-line', 'label' => 'System Monitor', 'color' => '#17a2b8'],
     'filemanager.php' => ['icon' => 'fa-folder-open', 'label' => 'File Manager', 'color' => '#ffc107'],
     'adminer.php' => ['icon' => 'fa-database', 'label' => 'Database', 'color' => '#28a745'],
 ];
