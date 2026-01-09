@@ -450,8 +450,11 @@ if ($is_logged_in && $currentTable) {
         .login-btn:hover { opacity: 0.9; }
 
         /* LAYOUT */
-        .sidebar { width: var(--sidebar-width); background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; height: 100%; flex-shrink: 0; }
-        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; width: 0; } /* width 0 fixes flex overflow */
+        .sidebar { width: var(--sidebar-width); background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; height: 100%; flex-shrink: 0; transition: width 0.3s ease; position: relative; }
+        .sidebar.collapsed { width: 50px; }
+        .sidebar.collapsed .brand, .sidebar.collapsed .db-info, .sidebar.collapsed .nav-header, .sidebar.collapsed .nav-item span { display: none; }
+        .sidebar.collapsed .nav-item { justify-content: center; padding: 8px 0; }
+        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; width: 0; transition: margin-left 0.3s ease; } /* width 0 fixes flex overflow */
         
         /* SIDEBAR COMPONENTS */
         .brand { padding: 20px; font-size: 1.1rem; font-weight: 700; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px; color: var(--accent); }
@@ -460,6 +463,8 @@ if ($is_logged_in && $currentTable) {
         .nav-item { padding: 8px 20px; display: flex; align-items: center; gap: 10px; color: var(--text-secondary); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .nav-item:hover, .nav-item.active { background: var(--bg-hover); color: var(--text-primary); border-left: 3px solid var(--accent); }
         .nav-header { padding: 15px 20px 5px; font-size: 0.75rem; text-transform: uppercase; color: #555; font-weight: bold; margin-top: 10px; }
+        .sidebar-toggle { cursor: pointer; font-size: 1.2rem; color: var(--text-secondary); padding: 10px; position: absolute; top: 10px; right: -33px; background: var(--bg-sidebar); border: 1px solid var(--border-color); border-left: none; border-radius: 0 4px 4px 0; z-index: 10; }
+        .sidebar-toggle:hover { color: var(--text-primary); }
 
         /* TOP BAR */
         .top-bar { height: 50px; background: var(--bg-card); border-bottom: 1px solid var(--border-color); display: flex; align-items: center; padding: 0 20px; justify-content: space-between; }
@@ -514,8 +519,11 @@ if ($is_logged_in && $currentTable) {
         .stat-label { color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; }
 
         @media (max-width: 768px) {
-            .sidebar { position: absolute; left: -100%; z-index: 50; width: 80%; transition: 0.3s; }
-            .sidebar.open { left: 0; box-shadow: 10px 0 50px rgba(0,0,0,0.5); }
+            .sidebar { position: absolute; left: 0; z-index: 50; width: 100%; height: 100%; transition: transform 0.3s ease; transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); box-shadow: 10px 0 50px rgba(0,0,0,0.5); }
+            .sidebar.collapsed { width: 50px; transform: translateX(0); }
+            .sidebar.collapsed.open { transform: translateX(0); }
+            .top-bar .breadcrumb .sidebar-mobile-toggle { display: block !important; }
             .search-bar { flex-direction: column; align-items: stretch; }
             .search-group { width: 100%; }
         }
@@ -526,23 +534,29 @@ if ($is_logged_in && $currentTable) {
     <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar">
         <div class="brand">
-            <i class="fas fa-database"></i> Adminer Lite
+            <i class="fas fa-database"></i> <span>Adminer Lite</span>
         </div>
         <div class="db-info">
-            <div style="color:white; margin-bottom:4px;"><?=htmlspecialchars($_SESSION['db_name'])?></div>
-            <small><i class="fas fa-server"></i> <?=htmlspecialchars($_SESSION['db_host'])?></small>
+            <div style="color:white; margin-bottom:4px;"><span><?=htmlspecialchars($_SESSION['db_name'])?></span></div>
+            <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
         </div>
         <div class="nav-list">
+            <div style="padding: 0 20px 10px;">
+                <input type="text" id="tableSearch" class="form-control" placeholder="Search tables..." style="width: 100%;">
+            </div>
             <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
-                <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> Dashboard
+                <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
-            <div class="nav-header">Tables (<?=count($tables)?>)</div>
+            <div class="nav-header"><span>Tables (<?=count($tables)?>)</span></div>
             <?php foreach ($tables as $t): ?>
                 <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>">
                     <i class="fas fa-table" style="width:20px; text-align:center;"></i> 
-                    <?=htmlspecialchars($t['Name'])?>
+                    <span><?=htmlspecialchars($t['Name'])?></span>
                 </a>
             <?php endforeach; ?>
+        </div>
+        <div class="sidebar-toggle" id="sidebarToggle">
+            <i class="fas fa-angle-left"></i>
         </div>
     </aside>
 
@@ -550,8 +564,8 @@ if ($is_logged_in && $currentTable) {
     <div class="main-content">
         <div class="top-bar">
             <div class="breadcrumb">
-                <i class="fas fa-bars" onclick="document.getElementById('sidebar').classList.toggle('open')" style="cursor:pointer; margin-right:10px; display:none;"></i>
-                <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> Dashboard</a>
+                <i class="fas fa-bars sidebar-mobile-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')" style="cursor:pointer; margin-right:10px; display:none;"></i>
+                <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> <span>Dashboard</span></a>
                 <?php if ($currentTable): ?>
                     <span style="color:var(--text-secondary);">/</span>
                     <span><?=htmlspecialchars($currentTable)?></span>
@@ -1306,6 +1320,39 @@ if ($is_logged_in && $currentTable) {
             }
         });
     }
+
+    // Sidebar Toggle Functionality
+    const sidebar = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const toggleIcon = sidebarToggle.querySelector('i');
+    
+    sidebarToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('collapsed');
+        if (sidebar.classList.contains('collapsed')) {
+            toggleIcon.classList.remove('fa-angle-left');
+            toggleIcon.classList.add('fa-angle-right');
+        } else {
+            toggleIcon.classList.remove('fa-angle-right');
+            toggleIcon.classList.add('fa-angle-left');
+        }
+    });
+
+    // Table Search Functionality
+    const tableSearchInput = document.getElementById('tableSearch');
+    const navList = document.querySelector('.nav-list');
+    const tableItems = navList.querySelectorAll('.nav-item'); // Get all nav items
+
+    tableSearchInput.addEventListener('keyup', function() {
+        const searchTerm = this.value.toLowerCase();
+        tableItems.forEach(item => {
+            const tableName = item.textContent.toLowerCase();
+            if (tableName.includes(searchTerm)) {
+                item.style.display = 'flex'; // Show matching items
+            } else {
+                item.style.display = 'none'; // Hide non-matching items
+            }
+        });
+    });
 </script>
 </body>
 </html>
