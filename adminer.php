@@ -6,9 +6,9 @@ if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === tr
     if (!isset($_SESSION['db_host'])) {
         // DEFAULT CREDENTIALS (SSO)
         $_SESSION['db_host'] = 'sql110.infinityfree.com';
-        $_SESSION['db_user'] = 'if0_40199145';
-        $_SESSION['db_pass'] = '12rizqi3';
-        $_SESSION['db_name'] = 'if0_40199145_masjid';
+        $_SESSION['db_user'] = 'if0_xxx';
+        $_SESSION['db_pass'] = 'xxx';
+        $_SESSION['db_name'] = 'if0_xxx';
     }
 }
 
