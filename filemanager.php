@@ -4854,7 +4854,7 @@
                   /* Dropzone */
                   .dropzone {
                       border: 2px dashed var(--border-color);
-                      background:none;
+                      background:none !important;
                   }
 
                   /* Footer */
