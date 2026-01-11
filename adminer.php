@@ -1,16 +1,18 @@
 <?php
 session_start();
 
+
 // ===== SSO LOGIC =====
 if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === true) {
     if (!isset($_SESSION['db_host'])) {
         // DEFAULT CREDENTIALS (SSO)
         $_SESSION['db_host'] = 'sql110.infinityfree.com';
-        $_SESSION['db_user'] = 'if0_xxx';
-        $_SESSION['db_pass'] = 'xxx';
-        $_SESSION['db_name'] = 'if0_xxx';
+        $_SESSION['db_user'] = 'if0_40199145';
+        $_SESSION['db_pass'] = '12rizqi3';
+        $_SESSION['db_name'] = 'if0_40199145_masjid';
     }
 }
+
 
 // ===== LOGOUT LOGIC =====
 if (isset($_GET['logout'])) {
@@ -454,6 +456,10 @@ $searchColumn = $_GET['search_col'] ?? '';
 $searchOp = $_GET['search_op'] ?? 'LIKE';
 $searchVal = $_GET['search_val'] ?? '';
 
+// Sort Params
+$orderBy = $_GET['order_by'] ?? null;
+$orderDir = $_GET['order_dir'] ?? 'ASC';
+
 if ($is_logged_in && $currentTable) {
     $stmt = $pdo->query("DESCRIBE `$currentTable`");
     $tableStructure = $stmt->fetchAll();
@@ -488,6 +494,12 @@ if ($is_logged_in && $currentTable) {
             }
         }
         
+        // Add sorting
+        if ($orderBy && in_array($orderBy, $tableColumns)) {
+            $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
+            $sql .= " ORDER BY `$orderBy` $orderDir";
+        }
+        
         $sql .= " LIMIT $limit OFFSET $offset";
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
@@ -502,6 +514,7 @@ if ($is_logged_in && $currentTable) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB Manager <?= $is_logged_in ? '- ' . htmlspecialchars($_SESSION['db_name']) : '' ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css"> <!-- SweetAlert2 Dark Theme -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         :root {
@@ -517,9 +530,18 @@ if ($is_logged_in && $currentTable) {
             --danger: #ef4444;
             --success: #10b981;
             --sidebar-width: 260px;
+            --sidebar-collapsed-width: 50px; /* New variable for collapsed width */
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-body); color: var(--text-primary); height: 100vh; display: flex; font-size: 14px; }
+        body { 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
+            background: var(--bg-body); 
+            color: var(--text-primary); 
+            height: 100vh; 
+            display: flex; 
+            font-size: 14px; 
+            overflow: hidden; /* Prevent body scroll when sidebar is open */
+        }
         a { text-decoration: none; color: inherit; transition: 0.2s; }
         
         /* SCROLLBAR */
@@ -536,12 +558,46 @@ if ($is_logged_in && $currentTable) {
         .login-btn:hover { opacity: 0.9; }
 
         /* LAYOUT */
-        .sidebar { width: var(--sidebar-width); background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; height: 100%; flex-shrink: 0; transition: width 0.3s ease; position: relative; }
-        .sidebar.collapsed { width: 50px; }
-        .sidebar.collapsed .brand, .sidebar.collapsed .db-info, .sidebar.collapsed .nav-header, .sidebar.collapsed .nav-item span { display: none; }
-        .sidebar.collapsed .nav-item { justify-content: center; padding: 8px 0; }
-        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; width: 0; transition: margin-left 0.3s ease; } /* width 0 fixes flex overflow */
-        
+        .sidebar { 
+            width: var(--sidebar-width); 
+            background: var(--bg-sidebar); 
+            border-right: 1px solid var(--border-color); 
+            display: flex; 
+            flex-direction: column; 
+            height: 100%; 
+            flex-shrink: 0; 
+            transition: width 0.3s ease; 
+            position: relative; 
+            z-index: 10; 
+        }
+        .sidebar.collapsed { 
+            width: var(--sidebar-collapsed-width); 
+        }
+        .sidebar.collapsed .brand span, 
+        .sidebar.collapsed .db-info small span, 
+        .sidebar.collapsed .nav-header span, 
+        .sidebar.collapsed .nav-item span,
+        .sidebar.collapsed #tableSearch { /* Hide search input as well */
+            display: none; 
+        }
+        .sidebar.collapsed .nav-item { 
+            justify-content: center; 
+            padding: 8px 0; 
+        }
+        .sidebar.collapsed .sidebar-toggle {
+            right: -33px;
+            margin-top: 260px;
+        }
+
+        .main-content { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            overflow-y: auto; /* Allow main content to scroll */
+            position: relative; 
+            width: 100%; /* Take full available width */
+            transition: margin-left 0.3s ease; 
+        }        
         /* SIDEBAR COMPONENTS */
         .brand { padding: 20px; font-size: 1.1rem; font-weight: 700; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px; color: var(--accent); }
         .db-info { padding: 15px 20px; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border-color); background: #0a0a0a; }
@@ -549,7 +605,24 @@ if ($is_logged_in && $currentTable) {
         .nav-item { padding: 8px 20px; display: flex; align-items: center; gap: 10px; color: var(--text-secondary); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .nav-item:hover, .nav-item.active { background: var(--bg-hover); color: var(--text-primary); border-left: 3px solid var(--accent); }
         .nav-header { padding: 15px 20px 5px; font-size: 0.75rem; text-transform: uppercase; color: #555; font-weight: bold; margin-top: 10px; }
-        .sidebar-toggle { cursor: pointer; font-size: 1.2rem; color: var(--text-secondary); padding: 10px; position: absolute; top: 10px; right: -33px; background: var(--bg-sidebar); border: 1px solid var(--border-color); border-left: none; border-radius: 0 4px 4px 0; z-index: 10; }
+        .sidebar-toggle { 
+            cursor: pointer; 
+            font-size: 1.2rem; 
+            color: var(--text-secondary); 
+            padding: 10px; 
+            position: absolute; 
+            top: 10px; 
+            right: -33px; 
+            background: var(--bg-sidebar); 
+            border: 1px solid var(--border-color); 
+            border-left: none; 
+            border-radius: 0 4px 4px 0; 
+            z-index: 10; 
+            display: flex; /* Ensure it's always displayed */
+            align-items: center;
+            justify-content: center;
+            margin-top:260px;
+        }
         .sidebar-toggle:hover { color: var(--text-primary); }
 
         /* TOP BAR */
@@ -604,14 +677,21 @@ if ($is_logged_in && $currentTable) {
         .stat-val { font-size: 1.8rem; font-weight: bold; margin: 10px 0 0; }
         .stat-label { color: var(--text-secondary); font-size: 0.85rem; text-transform: uppercase; }
 
+        /* Responsive adjustments */
         @media (max-width: 768px) {
-            .sidebar { position: absolute; left: 0; z-index: 50; width: 100%; height: 100%; transition: transform 0.3s ease; transform: translateX(-100%); }
-            .sidebar.open { transform: translateX(0); box-shadow: 10px 0 50px rgba(0,0,0,0.5); }
-            .sidebar.collapsed { width: 50px; transform: translateX(0); }
-            .sidebar.collapsed.open { transform: translateX(0); }
-            .top-bar .breadcrumb .sidebar-mobile-toggle { display: block !important; }
+            .sidebar.collapsed {
+                width: var(--sidebar-collapsed-width); /* Ensure it stays collapsed */
+            }
+            /* Adjust sidebar toggle position for mobile if needed, or rely on existing */
+            .sidebar-toggle {
+                right: -33px;
+                margin-top: 260px;
+            }
             .search-bar { flex-direction: column; align-items: stretch; }
             .search-group { width: 100%; }
+            body {
+                flex-direction: row; /* Ensure sidebar and main content stay side-by-side */
+            }
         }
     </style>
 </head>
@@ -658,7 +738,6 @@ if ($is_logged_in && $currentTable) {
     <div class="main-content">
         <div class="top-bar">
             <div class="breadcrumb">
-                <i class="fas fa-bars sidebar-mobile-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')" style="cursor:pointer; margin-right:10px; display:none;"></i>
                 <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> <span>Dashboard</span></a>
                 <?php if ($currentTable): ?>
                     <span style="color:var(--text-secondary);">/</span>
@@ -739,7 +818,19 @@ if ($is_logged_in && $currentTable) {
                                 <tr>
                                     <th style="width: 80px;">Action</th>
                                     <?php foreach ($tableColumns as $col):
-                                        ?><th><?=htmlspecialchars($col)?></th><?php 
+                                        $newOrderDir = 'ASC';
+                                        $sortIcon = '';
+                                        if ($orderBy === $col) {
+                                            $newOrderDir = ($orderDir === 'ASC') ? 'DESC' : 'ASC';
+                                            $sortIcon = ($orderDir === 'ASC') ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
+                                        }
+                                        $sortLink = "?table=" . htmlspecialchars($currentTable) . "&view=data"
+                                                    . "&search_col=" . urlencode($searchColumn)
+                                                    . "&search_op=" . urlencode($searchOp)
+                                                    . "&search_val=" . urlencode($searchVal)
+                                                    . "&order_by=" . urlencode($col)
+                                                    . "&order_dir=" . urlencode($newOrderDir);
+                                        ?><th><a href="<?=$sortLink?>" style="color:inherit; text-decoration:none; display:flex; align-items:center; justify-content:space-between;"><?=$sortIcon?><?=htmlspecialchars($col)?></a></th><?php 
                                     endforeach; ?>
                                 </tr>
                             </thead>
@@ -775,11 +866,17 @@ if ($is_logged_in && $currentTable) {
                     </div>
                     <!-- Pagination Simple -->
                     <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
-                        <?php if($offset > 0):
-                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=max(0, $offset-$limit)?>&search_col=<?=urlencode($searchColumn)?>&search_op=<?=urlencode($searchOp)?>&search_val=<?=urlencode($searchVal)?>" class="btn">Previous</a><?php 
+                        <?php 
+                        $pagination_params = "&search_col=" . urlencode($searchColumn)
+                                            . "&search_op=" . urlencode($searchOp)
+                                            . "&search_val=" . urlencode($searchVal)
+                                            . "&order_by=" . urlencode($orderBy)
+                                            . "&order_dir=" . urlencode($orderDir);
+                        if($offset > 0):
+                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=max(0, $offset-$limit)?><?=$pagination_params?>" class="btn">Previous</a><?php 
                         endif; ?>
                         <?php if(count($tableData) >= $limit):
-                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=$offset+$limit?>&search_col=<?=urlencode($searchColumn)?>&search_op=<?=urlencode($searchOp)?>&search_val=<?=urlencode($searchVal)?>" class="btn">Next</a><?php 
+                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=$offset+$limit?><?=$pagination_params?>" class="btn">Next</a><?php 
                         endif; ?>
                     </div>
 
@@ -1417,11 +1514,21 @@ if ($is_logged_in && $currentTable) {
 
     // Sidebar Toggle Functionality
     const sidebar = document.getElementById('sidebar');
+    const mainContent = document.querySelector('.main-content'); // Get main content
     const sidebarToggle = document.getElementById('sidebarToggle');
     const toggleIcon = sidebarToggle.querySelector('i');
     
+    // Set initial state based on window width
+    if (window.innerWidth <= 768) {
+        sidebar.classList.add('collapsed');
+        mainContent.classList.add('sidebar-collapsed');
+        toggleIcon.classList.remove('fa-angle-left');
+        toggleIcon.classList.add('fa-angle-right');
+    }
+
     sidebarToggle.addEventListener('click', () => {
         sidebar.classList.toggle('collapsed');
+        mainContent.classList.toggle('sidebar-collapsed'); // Toggle class on main content
         if (sidebar.classList.contains('collapsed')) {
             toggleIcon.classList.remove('fa-angle-left');
             toggleIcon.classList.add('fa-angle-right');
