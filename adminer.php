@@ -645,7 +645,7 @@ if ($is_logged_in && $currentTable) {
             <?php foreach ($tables as $t): ?>
                 <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>">
                     <i class="fas fa-table" style="width:20px; text-align:center;"></i> 
-                    <span><?=htmlspecialchars($t['Name'])?></span>
+                    <span><?=htmlspecialchars($t['Name'])?> <small>(<?=formatSize($t['Data_length'] + $t['Index_length'])?>)</small></span>
                 </a>
             <?php endforeach; ?>
         </div>
