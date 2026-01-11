@@ -19,6 +19,13 @@ if (isset($_GET['logout'])) {
     exit;
 }
 
+// ===== DATABASE SWITCHING =====
+if (isset($_GET['select_db'])) {
+    $_SESSION['db_name'] = $_GET['select_db'];
+    header("Location: ?");
+    exit;
+}
+
 // ===== AUTHENTICATION CHECK =====
 $is_logged_in = isset($_SESSION['db_host']) && isset($_SESSION['db_user']);
 $error = '';
@@ -32,10 +39,29 @@ if (!$is_logged_in) {
 
 // ===== DB CONNECTION (IF LOGGED IN) =====
 $pdo = null;
+$databases = []; // List of databases
+
+// --- Configurable List of User Databases ---
+// IMPORTANT: If 'SHOW DATABASES' is restricted by your hosting,
+// populate this array with the names of databases you have access to.
+// These will be used to populate the dropdown for selection.
+$user_defined_databases = [
+    'if0_40199145_url_shortner',
+    'if0_40199145_masjid',
+    'if0_40199145_minhaqua'
+];
+// ------------------------------------------
+
 if ($is_logged_in) {
     try {
+        // Try connecting with selected DB
+        $dsn = "mysql:host={$_SESSION['db_host']};charset=utf8mb4";
+        if (!empty($_SESSION['db_name'])) {
+            $dsn .= ";dbname={$_SESSION['db_name']}";
+        }
+        
         $pdo = new PDO(
-            "mysql:host={$_SESSION['db_host']};dbname={$_SESSION['db_name']};charset=utf8mb4",
+            $dsn,
             $_SESSION['db_user'],
             $_SESSION['db_pass'],
             [
@@ -43,9 +69,69 @@ if ($is_logged_in) {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
             ]
         );
+        
+        // Fetch Databases
+        try {
+            $stmt = $pdo->query("SHOW DATABASES");
+            $databases_from_server = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            // If server only returns one database (likely due to restriction), 
+            // and we have user-defined ones, use them. Otherwise, use server's list.
+            if (count($databases_from_server) <= 1 && !empty($user_defined_databases)) {
+                $databases = $user_defined_databases;
+            } else {
+                $databases = $databases_from_server;
+            }
+        } catch (Exception $e) {
+            // If SHOW DATABASES fails, use user-defined list or just the current one if no user-defined
+            if (!empty($user_defined_databases)) {
+                $databases = $user_defined_databases;
+            } else {
+                $databases = [$_SESSION['db_name']];
+            }
+        }
+
     } catch (Exception $e) {
-        session_destroy();
-        die("Session Expired or DB Connection Failed. <a href='?'>Login again</a>");
+        // If initial connection failed (e.g. DB doesn't exist anymore or invalid credentials), 
+        // try connecting without DB name to list valid ones.
+        // Or, if user-defined databases are present, use those.
+        if (!empty($user_defined_databases)) {
+            $databases = $user_defined_databases;
+            // If current selected DB is no longer valid, switch to first available user-defined DB
+            if (!in_array($_SESSION['db_name'], $databases) && !empty($databases)) {
+                $_SESSION['db_name'] = $databases[0];
+                header("Location: ?");
+                exit;
+            }
+        } else {
+            // Fallback to the original logic (try connecting without dbname)
+            try {
+                 $pdo = new PDO(
+                    "mysql:host={$_SESSION['db_host']};charset=utf8mb4",
+                    $_SESSION['db_user'],
+                    $_SESSION['db_pass'],
+                    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+                );
+                $stmt = $pdo->query("SHOW DATABASES");
+                $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                
+                // If this also returns limited, and we have user-defined (should be empty here if this path is taken without explicit list)
+                // This condition might be redundant here if user_defined_databases is empty.
+                // It ensures that if 'SHOW DATABASES' itself fails to return a comprehensive list even after falling back to a connection without dbname,
+                // and if there were user-defined databases (which in this else branch implies they were empty), it wouldn't use them.
+                // The intent here is to use whatever SHOW DATABASES returns in this fallback scenario.
+                
+                // Reset DB name if invalid
+                if (!in_array($_SESSION['db_name'], $databases) && !empty($databases)) {
+                     $_SESSION['db_name'] = $databases[0];
+                     header("Location: ?");
+                     exit;
+                }
+            } catch(Exception $ex) {
+                session_destroy();
+                die("Session Expired or DB Connection Failed. <a href='?'>Login again</a>");
+            }
+        }
     }
 }
 
@@ -537,7 +623,15 @@ if ($is_logged_in && $currentTable) {
             <i class="fas fa-database"></i> <span>Adminer Lite</span>
         </div>
         <div class="db-info">
-            <div style="color:white; margin-bottom:4px;"><span><?=htmlspecialchars($_SESSION['db_name'])?></span></div>
+            <form method="GET" style="margin-bottom: 5px;">
+                <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: #222; color: white; border: 1px solid #444; width: 100%;">
+                    <?php foreach ($databases as $db): ?>
+                        <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
+                            <?=htmlspecialchars($db)?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </form>
             <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
         </div>
         <div class="nav-list">
