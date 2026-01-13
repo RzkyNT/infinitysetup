@@ -1,3 +1,0 @@
-https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/filemanager.php
-https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/adminer.php
-https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/index.php
