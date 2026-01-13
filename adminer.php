@@ -398,6 +398,26 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = $e->getMessage();
         }
     }
+    // --- BULK DELETE ---
+    elseif ($action === 'bulk_delete') {
+        $ids = $_POST['ids'] ?? [];
+        $pk = $_POST['pk'] ?? null;
+        
+        if ($table && $pk && !empty($ids)) {
+            try {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $sql = "DELETE FROM `$table` WHERE `$pk` IN ($placeholders)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($ids);
+                $count = $stmt->rowCount();
+                redirect("?table=$table&view=data&msg=" . urlencode("$count rows deleted."));
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        } else {
+             $error = "No rows selected or primary key missing.";
+        }
+    }
 }
 
 // ===== GET HANDLERS =====
@@ -807,16 +827,23 @@ if ($is_logged_in && $currentTable) {
                             ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i></a><?php 
                         endif; ?>
                         
-                        <div style="margin-left:auto;">
+                        <div style="margin-left:auto; display:flex; gap:10px;">
+                            <button type="button" onclick="submitBulkDelete()" class="btn btn-danger" id="bulkDeleteBtn" style="display:none;"><i class="fas fa-trash"></i> Delete Selected</button>
                             <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
                         </div>
                     </form>
 
-                    <div class="table-wrapper">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th style="width: 80px;">Action</th>
+                    <form method="POST" id="bulkForm">
+                        <input type="hidden" name="action" value="bulk_delete">
+                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                        <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
+                        
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40px; text-align:center;"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
+                                        <th style="width: 80px;">Action</th>
                                     <?php foreach ($tableColumns as $col):
                                         $newOrderDir = 'ASC';
                                         $sortIcon = '';
@@ -838,6 +865,11 @@ if ($is_logged_in && $currentTable) {
                                 <?php foreach ($tableData as $row):
                                     ?>
                                     <tr>
+                                        <td style="text-align:center;">
+                                            <?php if($primaryKey): ?>
+                                                <input type="checkbox" name="ids[]" value="<?=htmlspecialchars($row[$primaryKey])?>" class="row-checkbox" onclick="updateBulkBtn()">
+                                            <?php endif; ?>
+                                        </td>
                                         <td>
                                             <?php if($primaryKey):
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);"><i class="fas fa-edit"></i></a><?php 
@@ -879,6 +911,40 @@ if ($is_logged_in && $currentTable) {
                             ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=$offset+$limit?><?=$pagination_params?>" class="btn">Next</a><?php 
                         endif; ?>
                     </div>
+                    </form>
+
+                    <script>
+                        function toggleSelectAll(source) {
+                            const checkboxes = document.querySelectorAll('.row-checkbox');
+                            for(let i=0; i<checkboxes.length; i++) {
+                                checkboxes[i].checked = source.checked;
+                            }
+                            updateBulkBtn();
+                        }
+                        
+                        function updateBulkBtn() {
+                            const checkboxes = document.querySelectorAll('.row-checkbox:checked');
+                            const btn = document.getElementById('bulkDeleteBtn');
+                            if(btn) btn.style.display = checkboxes.length > 0 ? 'inline-flex' : 'none';
+                        }
+                        
+                        function submitBulkDelete() {
+                            const count = document.querySelectorAll('.row-checkbox:checked').length;
+                            Swal.fire({
+                                title: 'Are you sure?',
+                                text: "You are about to delete " + count + " rows. This cannot be undone!",
+                                icon: 'warning',
+                                showCancelButton: true,
+                                confirmButtonColor: '#d33',
+                                cancelButtonColor: '#3085d6',
+                                confirmButtonText: 'Yes, delete them!'
+                            }).then((result) => {
+                                if (result.isConfirmed) {
+                                    document.getElementById('bulkForm').submit();
+                                }
+                            });
+                        }
+                    </script>
 
                 <?php elseif ($view === 'structure'): 
                     ?>
