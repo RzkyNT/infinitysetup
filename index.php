@@ -11,6 +11,8 @@ $tools = [
     'adminer.php' => ['icon' => 'fa-database', 'label' => 'Database', 'color' => '#28a745'],
 ];
 
+$updateAlert = null;
+
 // ===== LOGOUT =====
 if (isset($_GET['logout'])) {
     session_destroy();
@@ -61,6 +63,71 @@ if (!isset($_SESSION['portal_logged_in'])) {
 <?php
     exit;
 }
+
+if (
+    isset($_SESSION['portal_logged_in']) &&
+    $_SESSION['portal_logged_in'] === true &&
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['update_action'])
+) {
+    $contextFile = __DIR__ . DIRECTORY_SEPARATOR . 'context.md';
+    if (!file_exists($contextFile)) {
+        $updateAlert = [
+            'type' => 'error',
+            'message' => 'context.md tidak ditemukan. Pastikan file tersedia sebelum melakukan update.'
+        ];
+    } else {
+        $sources = array_filter(array_map('trim', file($contextFile)));
+        if (empty($sources)) {
+            $updateAlert = [
+                'type' => 'error',
+                'message' => 'context.md kosong. Tambahkan daftar URL file yang akan diupdate.'
+            ];
+        } else {
+            $updatedFiles = [];
+            $failedFiles = [];
+
+            foreach ($sources as $url) {
+                $filename = basename(parse_url($url, PHP_URL_PATH));
+                if (!$filename) {
+                    $failedFiles[] = "Tidak dapat menentukan nama file untuk URL: $url";
+                    continue;
+                }
+
+                $remoteContent = @file_get_contents($url);
+                if ($remoteContent === false) {
+                    $failedFiles[] = "Gagal mengunduh $filename dari $url";
+                    continue;
+                }
+
+                $targetPath = __DIR__ . DIRECTORY_SEPARATOR . $filename;
+                if (@file_put_contents($targetPath, $remoteContent) === false) {
+                    $failedFiles[] = "Gagal menyimpan file $filename";
+                    continue;
+                }
+
+                $updatedFiles[] = $filename;
+            }
+
+            if (!empty($updatedFiles) && empty($failedFiles)) {
+                $updateAlert = [
+                    'type' => 'success',
+                    'message' => 'Update selesai. File yang diperbarui: ' . implode(', ', $updatedFiles)
+                ];
+            } elseif (!empty($updatedFiles) && !empty($failedFiles)) {
+                $updateAlert = [
+                    'type' => 'warning',
+                    'message' => 'Sebagian file berhasil diupdate (' . implode(', ', $updatedFiles) . '), namun ada error: ' . implode(' | ', $failedFiles)
+                ];
+            } else {
+                $updateAlert = [
+                    'type' => 'error',
+                    'message' => 'Update gagal. Detail: ' . implode(' | ', $failedFiles)
+                ];
+            }
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -75,8 +142,12 @@ if (!isset($_SESSION['portal_logged_in'])) {
         
         .navbar { background: var(--card); padding: 1rem 2rem; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
         .brand { font-size: 1.25rem; font-weight: bold; display: flex; align-items: center; gap: 10px; }
+        .actions { display: flex; gap: 0.75rem; align-items: center; }
         .logout { color: #ff6b6b; text-decoration: none; font-size: 0.9rem; display: flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 4px; transition: 0.2s; }
         .logout:hover { background: rgba(255, 107, 107, 0.1); }
+        .update-form button { background: #0d6efd; color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: 0.2s; }
+        .update-form button:hover { background: #0b5ed7; }
+        .update-form button:disabled { opacity: 0.6; cursor: not-allowed; }
 
         .container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 2rem; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; width: 100%; max-width: 900px; }
@@ -92,18 +163,33 @@ if (!isset($_SESSION['portal_logged_in'])) {
         @media (max-width: 600px) {
             .grid { grid-template-columns: 1fr; }
         }
+        .alert { margin-bottom: 1.5rem; padding: 1rem 1.25rem; border-radius: 8px; border: 1px solid transparent; font-size: 0.95rem; line-height: 1.4; }
+        .alert-success { background: rgba(40, 167, 69, 0.15); border-color: #28a745; color: #9de7b6; }
+        .alert-error { background: rgba(255, 107, 107, 0.15); border-color: #ff6b6b; color: #ffb3b3; }
+        .alert-warning { background: rgba(255, 193, 7, 0.15); border-color: #ffc107; color: #ffe08a; }
     </style>
 </head>
 <body>
 
     <nav class="navbar">
         <div class="brand"><i class="fas fa-infinity"></i> Infinity Portal</div>
-        <a href="?logout=1" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+        <div class="actions">
+            <form method="POST" class="update-form" onsubmit="return confirm('Lanjutkan update file dari repository?');">
+                <input type="hidden" name="update_action" value="1">
+                <button type="submit"><i class="fas fa-rotate"></i> Update</button>
+            </form>
+            <a href="?logout=1" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
+        </div>
     </nav>
 
     <div class="container">
         <div class="grid">
-            <?php foreach($tools as $file => $data): 
+            <?php if($updateAlert): ?>
+                <div class="alert alert-<?= htmlspecialchars($updateAlert['type']) ?>" style="grid-column: 1 / -1;">
+                    <?= htmlspecialchars($updateAlert['message']) ?>
+                </div>
+            <?php endif; ?>
+            <?php foreach($tools as $file => $data):
                 $exists = file_exists($file);
             ?>
                 <a href="<?= $exists ? $file : '#' ?>" class="card" style="<?= !$exists ? 'opacity:0.5; cursor:not-allowed;' : '' ?>">
