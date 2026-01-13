@@ -163,18 +163,15 @@ if (
         @media (max-width: 600px) {
             .grid { grid-template-columns: 1fr; }
         }
-        .alert { margin-bottom: 1.5rem; padding: 1rem 1.25rem; border-radius: 8px; border: 1px solid transparent; font-size: 0.95rem; line-height: 1.4; }
-        .alert-success { background: rgba(40, 167, 69, 0.15); border-color: #28a745; color: #9de7b6; }
-        .alert-error { background: rgba(255, 107, 107, 0.15); border-color: #ff6b6b; color: #ffb3b3; }
-        .alert-warning { background: rgba(255, 193, 7, 0.15); border-color: #ffc107; color: #ffe08a; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body>
 
     <nav class="navbar">
         <div class="brand"><i class="fas fa-infinity"></i> Infinity Portal</div>
         <div class="actions">
-            <form method="POST" class="update-form" onsubmit="return confirm('Lanjutkan update file dari repository?');">
+            <form method="POST" class="update-form" id="update-form">
                 <input type="hidden" name="update_action" value="1">
                 <button type="submit"><i class="fas fa-rotate"></i> Update</button>
             </form>
@@ -184,11 +181,6 @@ if (
 
     <div class="container">
         <div class="grid">
-            <?php if($updateAlert): ?>
-                <div class="alert alert-<?= htmlspecialchars($updateAlert['type']) ?>" style="grid-column: 1 / -1;">
-                    <?= htmlspecialchars($updateAlert['message']) ?>
-                </div>
-            <?php endif; ?>
             <?php foreach($tools as $file => $data):
                 $exists = file_exists($file);
             ?>
@@ -206,6 +198,36 @@ if (
             <?php endforeach; ?>
         </div>
     </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const updateForm = document.getElementById('update-form');
+            if (updateForm) {
+                updateForm.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Swal.fire({
+                        title: 'Update File?',
+                        text: 'Portal akan mengambil file terbaru dari daftar URL.',
+                        icon: 'question',
+                        showCancelButton: true,
+                        confirmButtonText: 'Lanjutkan',
+                        cancelButtonText: 'Batal',
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            updateForm.submit();
+                        }
+                    });
+                });
+            }
+            <?php if($updateAlert): ?>
+            Swal.fire({
+                icon: '<?= $updateAlert['type'] === 'success' ? 'success' : ($updateAlert['type'] === 'warning' ? 'warning' : 'error') ?>',
+                title: '<?= $updateAlert['type'] === 'success' ? 'Berhasil' : ($updateAlert['type'] === 'warning' ? 'Sebagian Berhasil' : 'Gagal') ?>',
+                text: <?= json_encode($updateAlert['message']) ?>
+            });
+            <?php endif; ?>
+        });
+    </script>
 
 </body>
 </html>
