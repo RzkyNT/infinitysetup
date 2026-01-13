@@ -70,18 +70,18 @@ if (
     $_SERVER['REQUEST_METHOD'] === 'POST' &&
     isset($_POST['update_action'])
 ) {
-    $contextFile = __DIR__ . DIRECTORY_SEPARATOR . 'context.md';
+    $contextFile = __DIR__ . DIRECTORY_SEPARATOR . 'link.txt';
     if (!file_exists($contextFile)) {
         $updateAlert = [
             'type' => 'error',
-            'message' => 'context.md tidak ditemukan. Pastikan file tersedia sebelum melakukan update.'
+            'message' => 'link.txt tidak ditemukan. Pastikan file tersedia sebelum melakukan update.'
         ];
     } else {
         $sources = array_filter(array_map('trim', file($contextFile)));
         if (empty($sources)) {
             $updateAlert = [
                 'type' => 'error',
-                'message' => 'context.md kosong. Tambahkan daftar URL file yang akan diupdate.'
+                'message' => 'link.txt kosong. Tambahkan daftar URL file yang akan diupdate.'
             ];
         } else {
             $updatedFiles = [];
