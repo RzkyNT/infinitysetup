@@ -4889,11 +4889,11 @@
                           <div class="modal-body">
                               <p><label for="newfile"><?php echo lng('ItemType') ?> </label></p>
                               <div class="form-check form-check-inline">
-                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline1" name="newfile" value="file">
+                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline1" name="newfile" value="file" checked>
                                   <label class="form-check-label" for="customRadioInline1"><?php echo lng('File') ?></label>
                               </div>
                               <div class="form-check form-check-inline">
-                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline2" value="folder" checked>
+                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline2" value="folder">
                                   <label class="form-check-label" for="customRadioInline2"><?php echo lng('Folder') ?></label>
                               </div>
 
