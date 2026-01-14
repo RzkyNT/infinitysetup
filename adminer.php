@@ -872,8 +872,9 @@ if ($is_logged_in && $currentTable) {
                                         </td>
                                         <td>
                                             <?php if($primaryKey):
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);"><i class="fas fa-edit"></i></a><?php 
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);"><i class="fas fa-trash"></i></a><?php 
+                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
+                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy Row"><i class="fas fa-copy"></i></a><?php 
+                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
                                             else:
                                                 ?><span style="opacity:0.3">-</span><?php 
                                             endif; ?>
@@ -974,7 +975,12 @@ if ($is_logged_in && $currentTable) {
                                                 <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger); padding:0;"><i class="fas fa-trash-alt"></i></button>
                                             </form>
                                         </td>
-                                        <td style="font-weight:bold; color:var(--accent);"><?=htmlspecialchars($col['Field'])?></td>
+                                        <td style="font-weight:bold; color:var(--accent); display:flex; align-items:center; gap:8px;">
+                                            <?=htmlspecialchars($col['Field'])?>
+                                            <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure_edit&col=<?=urlencode($col['Field'])?>&mode=copy" title="Copy Column" style="color:#fbbf24;">
+                                                <i class="fas fa-copy"></i>
+                                            </a>
+                                        </td>
                                         <td><?=htmlspecialchars($col['Type'])?></td>
                                         <td><?=htmlspecialchars($col['Null'])?></td>
                                         <td><?=htmlspecialchars($col['Key'])?></td>
@@ -1160,9 +1166,10 @@ if ($is_logged_in && $currentTable) {
                         </form>
                     </div>
 
-                <?php elseif ($view === 'structure_edit'):
+<?php elseif ($view === 'structure_edit'):
                     $editCol = $_GET['col'] ?? null;
                     $colData = [];
+                    $copyMode = (isset($_GET['mode']) && $_GET['mode'] === 'copy');
                     if ($editCol) {
                         foreach ($tableStructure as $col) {
                             if ($col['Field'] === $editCol) {
@@ -1170,6 +1177,10 @@ if ($is_logged_in && $currentTable) {
                                 break;
                             }
                         }
+                    }
+                    if ($copyMode && isset($colData['Field'])) {
+                        $colData['Field'] = $colData['Field'] . '_copy';
+                        $colData['Extra'] = str_replace('auto_increment', '', $colData['Extra']);
                     }
                     
                     // Parse Type and Length
@@ -1190,11 +1201,21 @@ if ($is_logged_in && $currentTable) {
                     $types = ['INT', 'VARCHAR', 'TEXT', 'DATE', 'DATETIME', 'TIMESTAMP', 'DECIMAL', 'FLOAT', 'DOUBLE', 'BOOLEAN', 'JSON', 'BLOB', 'ENUM', 'SET', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT', 'CHAR', 'MEDIUMTEXT', 'LONGTEXT'];
                     ?>
                     <div class="card">
-                        <h3><?= $editCol ? 'Change Column' : 'Add Column' ?></h3>
+                        <h3>
+                            <?php
+                                if ($copyMode) {
+                                    echo 'Copy Column';
+                                } elseif ($editCol) {
+                                    echo 'Change Column';
+                                } else {
+                                    echo 'Add Column';
+                                }
+                            ?>
+                        </h3>
                         <form method="POST">
                             <input type="hidden" name="action" value="save_column">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                            <?php if($editCol): ?>
+                            <?php if($editCol && !$copyMode): ?>
                                 <input type="hidden" name="orig_field" value="<?=htmlspecialchars($editCol)?>">
                             <?php else: ?>
                                 <div class="form-group" style="margin-bottom:15px;">
@@ -1421,18 +1442,25 @@ if ($is_logged_in && $currentTable) {
                     <!-- EDIT/INSERT FORM -->
                     <?php
                         $formData = [];
+                        $mode = $_GET['mode'] ?? '';
+                        $isCopyMode = ($mode === 'copy');
                         if (isset($_GET['pk']) && isset($_GET['val'])) {
                             $stmt = $pdo->prepare("SELECT * FROM `$currentTable` WHERE `".$_GET['pk']."` = ?");
                             $stmt->execute([$_GET['val']]);
                             $formData = $stmt->fetch();
                         }
+                        if ($isCopyMode && isset($primaryKey) && $primaryKey && isset($formData[$primaryKey])) {
+                            unset($formData[$primaryKey]);
+                        }
                     ?>
                     <div class="card">
-                        <h3 style="margin-bottom: 20px; color:var(--accent);"><?= $formData ? 'Edit Row' : 'New Row' ?></h3>
+                        <h3 style="margin-bottom: 20px; color:var(--accent);">
+                            <?= $isCopyMode ? 'Copy Row' : ($formData && !$isCopyMode ? 'Edit Row' : 'New Row') ?>
+                        </h3>
                         <form method="POST">
                             <input type="hidden" name="action" value="save_row">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                            <?php if ($primaryKey && isset($formData[$primaryKey])):
+                            <?php if ($primaryKey && isset($_GET['pk']) && isset($_GET['val']) && !$isCopyMode):
                                 ?><input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
                                 <input type="hidden" name="pk_val" value="<?=htmlspecialchars($formData[$primaryKey])?>"><?php 
                             endif; ?>
