@@ -63,34 +63,43 @@ if (!isset($_SESSION['portal_logged_in'])) {
 <?php
     exit;
 }
-
 if (
     isset($_SESSION['portal_logged_in']) &&
     $_SESSION['portal_logged_in'] === true &&
     $_SERVER['REQUEST_METHOD'] === 'POST' &&
     isset($_POST['update_action'])
 ) {
-    $contextFile = __DIR__ . DIRECTORY_SEPARATOR . 'link.txt';
-    if (!file_exists($contextFile)) {
+
+    // === LINK.TXT LANGSUNG DARI GITHUB ===
+    $contextUrl = 'https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/link.txt';
+
+    $linkContent = @file_get_contents($contextUrl);
+
+    if ($linkContent === false) {
         $updateAlert = [
             'type' => 'error',
-            'message' => 'link.txt tidak ditemukan. Pastikan file tersedia sebelum melakukan update.'
+            'message' => 'Gagal mengambil link.txt dari GitHub.'
         ];
     } else {
-        $sources = array_filter(array_map('trim', file($contextFile)));
+
+        // Pecah per baris
+        $sources = array_filter(array_map('trim', explode("\n", $linkContent)));
+
         if (empty($sources)) {
             $updateAlert = [
                 'type' => 'error',
-                'message' => 'link.txt kosong. Tambahkan daftar URL file yang akan diupdate.'
+                'message' => 'link.txt dari GitHub kosong.'
             ];
         } else {
+
             $updatedFiles = [];
-            $failedFiles = [];
+            $failedFiles  = [];
 
             foreach ($sources as $url) {
+
                 $filename = basename(parse_url($url, PHP_URL_PATH));
                 if (!$filename) {
-                    $failedFiles[] = "Tidak dapat menentukan nama file untuk URL: $url";
+                    $failedFiles[] = "Tidak dapat menentukan nama file dari URL: $url";
                     continue;
                 }
 
@@ -117,7 +126,10 @@ if (
             } elseif (!empty($updatedFiles) && !empty($failedFiles)) {
                 $updateAlert = [
                     'type' => 'warning',
-                    'message' => 'Sebagian file berhasil diupdate (' . implode(', ', $updatedFiles) . '), namun ada error: ' . implode(' | ', $failedFiles)
+                    'message' => 'Sebagian file berhasil diupdate (' .
+                        implode(', ', $updatedFiles) .
+                        '), namun ada error: ' .
+                        implode(' | ', $failedFiles)
                 ];
             } else {
                 $updateAlert = [
@@ -128,6 +140,7 @@ if (
         }
     }
 }
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
