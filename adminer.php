@@ -48,9 +48,6 @@ $databases = []; // List of databases
 // populate this array with the names of databases you have access to.
 // These will be used to populate the dropdown for selection.
 $user_defined_databases = [
-    'if0_40199145_url_shortner',
-    'if0_40199145_masjid',
-    'if0_40199145_minhaqua'
 ];
 // ------------------------------------------
 
