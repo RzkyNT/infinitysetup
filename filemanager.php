@@ -4340,7 +4340,8 @@
                   right: 15px;
                   top: 100px;
                   bottom: 15px;
-                  left: 15px
+                  left: 15px;
+                  margin-top: 1vh;
               }
 
               @media (max-width:481px) {
