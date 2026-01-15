@@ -1,17 +1,120 @@
 <?php
 session_start();
 
+$dbConfigPath = __DIR__ . '/adminer.db.json';
+
+function load_db_config($path)
+{
+    if (!file_exists($path)) {
+        return null;
+    }
+    $raw = file_get_contents($path);
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        return null;
+    }
+    return array_merge(
+        ['host' => '', 'user' => '', 'pass' => '', 'name' => ''],
+        $data
+    );
+}
+
+function save_db_config($path, $data)
+{
+    $payload = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    return file_put_contents($path, $payload) !== false;
+}
+
+function render_db_setup($defaults = [], $error = '', $success = '')
+{
+    $host = htmlspecialchars($defaults['host'] ?? '');
+    $user = htmlspecialchars($defaults['user'] ?? '');
+    $name = htmlspecialchars($defaults['name'] ?? '');
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Database Setup</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+        <style>
+            body { background:#0b0b0b; color:#f0f0f0; font-family: 'Segoe UI', system-ui, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
+            .setup-card { background:#161616; padding:2rem; border:1px solid #333; border-radius:12px; width:100%; max-width:420px; box-shadow:0 10px 40px rgba(0,0,0,0.5); }
+            h1 { margin:0 0 1.5rem; font-size:1.5rem; text-align:center; }
+            label { display:block; margin-bottom:0.35rem; font-weight:600; color:#bbb; }
+            input { width:100%; padding:0.65rem 0.75rem; border-radius:6px; border:1px solid #333; background:#1f1f1f; color:#fff; margin-bottom:1rem; }
+            button { width:100%; padding:0.75rem; border:none; border-radius:6px; background:#0d6efd; color:#fff; font-weight:600; cursor:pointer; }
+            button:hover { background:#0b5ed7; }
+            .alert { padding:0.75rem; border-radius:6px; margin-bottom:1rem; font-size:0.9rem; }
+            .alert-error { background:rgba(255,107,107,0.15); border:1px solid #ff6b6b; color:#ffb3b3; }
+            .alert-success { background:rgba(40,167,69,0.15); border:1px solid #28a745; color:#b8f5cd; }
+        </style>
+    </head>
+    <body>
+        <div class="setup-card">
+            <h1><i class="fas fa-database"></i> Adminer Setup</h1>
+            <?php if ($error): ?><div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div><?php endif; ?>
+            <?php if ($success): ?><div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div><?php endif; ?>
+            <form method="POST">
+                <input type="hidden" name="db_setup_action" value="1">
+                <label for="host">DB Host</label>
+                <input type="text" id="host" name="db_host" value="<?php echo $host; ?>" required>
+                <label for="user">DB User</label>
+                <input type="text" id="user" name="db_user" value="<?php echo $user; ?>" required>
+                <label for="pass">DB Password</label>
+                <input type="password" id="pass" name="db_pass" value="" placeholder="Leave blank to keep existing">
+                <label for="name">Database Name</label>
+                <input type="text" id="name" name="db_name" value="<?php echo $name; ?>" required>
+                <button type="submit"><i class="fas fa-save"></i> Save Configuration</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+$dbConfig = load_db_config($dbConfigPath);
+
+if (isset($_POST['db_setup_action'])) {
+    $host = trim($_POST['db_host'] ?? '');
+    $user = trim($_POST['db_user'] ?? '');
+    $pass = $_POST['db_pass'] ?? '';
+    $name = trim($_POST['db_name'] ?? '');
+
+    $existing = $dbConfig ?? ['host' => '', 'user' => '', 'pass' => '', 'name' => ''];
+    if ($host === '' || $user === '' || $name === '') {
+        render_db_setup(
+            ['host' => $host, 'user' => $user, 'name' => $name],
+            'Host, user, and database name are required.'
+        );
+    }
+    if ($pass === '' && isset($existing['pass'])) {
+        $pass = $existing['pass'];
+    }
+    $payload = ['host' => $host, 'user' => $user, 'pass' => $pass, 'name' => $name];
+    if (!save_db_config($dbConfigPath, $payload)) {
+        render_db_setup($payload, 'Failed to save configuration. Check file permissions.');
+    }
+    $dbConfig = $payload;
+    render_db_setup($payload, '', 'Configuration saved. You can refresh to continue.');
+}
+
+if (!$dbConfig || isset($_GET['setup'])) {
+    render_db_setup($dbConfig ?? []);
+}
 
 // ===== SSO LOGIC =====
 if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === true) {
     if (!isset($_SESSION['db_host'])) {
-        // DEFAULT CREDENTIALS (SSO)
-        $_SESSION['db_host'] = 'sql110.infinityfree.com';
-        $_SESSION['db_user'] = 'if0_40199145';
-        $_SESSION['db_pass'] = '12rizqi3';
-        $_SESSION['db_name'] = 'if0_40199145_masjid';
+        $_SESSION['db_host'] = $dbConfig['host'];
+        $_SESSION['db_user'] = $dbConfig['user'];
+        $_SESSION['db_pass'] = $dbConfig['pass'];
+        $_SESSION['db_name'] = $dbConfig['name'];
     }
 }
+$DB_NAME = $_SESSION['db_name'] ?? '';
 
 
 // ===== LOGOUT LOGIC =====
@@ -156,6 +259,14 @@ function getPrimaryKey($pdo, $table) {
 function redirect($url) {
     header("Location: $url");
     exit;
+}
+
+function sanitizeDiagramId($name) {
+    $sanitized = preg_replace('/[^A-Za-z0-9_]/', '_', $name);
+    if ($sanitized === '' || is_numeric($sanitized[0])) {
+        $sanitized = 'tbl_' . substr(md5($name), 0, 6);
+    }
+    return $sanitized;
 }
 
 // ===== ACTION HANDLER (POST) =====
@@ -439,6 +550,8 @@ if ($is_logged_in) {
 $tables = [];
 $totalRows = 0;
 $totalSize = 0;
+$relationshipDiagram = '';
+$erdDiagram = '';
 
 if ($is_logged_in) {
     // Tables list
@@ -455,6 +568,74 @@ if ($is_logged_in) {
     foreach ($tables as $t) {
         $totalRows += $t['Rows'];
         $totalSize += $t['Data_length'] + $t['Index_length'];
+    }
+}
+
+if ($is_logged_in && !$currentTable) {
+    try {
+        $schemaFkStmt = $pdo->prepare("
+            SELECT 
+                TABLE_NAME,
+                COLUMN_NAME,
+                REFERENCED_TABLE_NAME,
+                REFERENCED_COLUMN_NAME,
+                CONSTRAINT_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE 
+                TABLE_SCHEMA = :schema AND
+                REFERENCED_TABLE_NAME IS NOT NULL
+        ");
+        $schemaFkStmt->execute(['schema' => $DB_NAME]);
+        $fkRows = $schemaFkStmt->fetchAll();
+        if ($fkRows) {
+            $edgeMap = [];
+            foreach ($fkRows as $fk) {
+                $fromTable = $fk['TABLE_NAME'];
+                $toTable = $fk['REFERENCED_TABLE_NAME'];
+                $fromId = preg_replace('/[^a-zA-Z0-9_]/', '_', $fromTable);
+                $toId = preg_replace('/[^a-zA-Z0-9_]/', '_', $toTable);
+                $label = str_replace('"', "'", $fk['COLUMN_NAME'] . ' ⇒ ' . $fk['REFERENCED_COLUMN_NAME']);
+                $fromLabel = str_replace('"', "'", $fromTable);
+                $toLabel = str_replace('"', "'", $toTable);
+                $edge = sprintf('%s["%s"] -->|%s| %s["%s"];', $fromId, $fromLabel, $label, $toId, $toLabel);
+                $edgeMap[$edge] = true;
+            }
+            if (!empty($edgeMap)) {
+                $relationshipDiagram = "graph LR;\n" . implode("\n", array_keys($edgeMap));
+            }
+        }
+    } catch (Exception $e) {
+        $relationshipDiagram = '';
+    }
+
+    try {
+        $tablesStmt = $pdo->query("SHOW TABLES");
+        $diagramParts = ["erDiagram"];
+        while ($tblRow = $tablesStmt->fetch(PDO::FETCH_NUM)) {
+            $tableName = $tblRow[0];
+            $describeStmt = $pdo->query("DESCRIBE `$tableName`");
+            $columns = $describeStmt->fetchAll(PDO::FETCH_ASSOC);
+            $columnLines = [];
+            foreach ($columns as $col) {
+                $type = strtoupper($col['Type']);
+                $nullable = ($col['Null'] === 'YES') ? 'NULL' : 'NOT NULL';
+                $key = $col['Key'];
+                $extra = trim($col['Extra']);
+                $commentParts = array_filter([$nullable, $key ? "KEY:$key" : '', $extra ? strtoupper($extra) : '']);
+                $comment = $commentParts ? ' "' . implode(' ', $commentParts) . '"' : '';
+                $columnLines[] = "    {$type} {$col['Field']}" . $comment;
+            }
+            if (!empty($columnLines)) {
+                $diagramParts[] = "{$tableName} {";
+                $diagramParts = array_merge($diagramParts, $columnLines);
+                $diagramParts[] = "}";
+            }
+        }
+        if (!empty($diagramParts)) {
+            $erdDiagram = implode("\n", $diagramParts);
+        }
+    } catch (Exception $e) {
+        $erdDiagram = '';
     }
 }
 
@@ -533,6 +714,7 @@ if ($is_logged_in && $currentTable) {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css"> <!-- SweetAlert2 Dark Theme -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <style>
         :root {
             --bg-body: #050505;
@@ -1521,6 +1703,26 @@ if ($is_logged_in && $currentTable) {
                     </div>
                 </div>
 
+                <?php if ($relationshipDiagram): ?>
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <h3 style="margin:0;">Relationship Map</h3>
+                        <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid diagram of foreign keys</span>
+                    </div>
+                    <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($erdDiagram): ?>
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <h3 style="margin:0;">Schema ERD</h3>
+                        <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid ER diagram (columns + relations)</span>
+                    </div>
+                    <pre class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                </div>
+                <?php endif; ?>
+
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                         <h3>Database Tables</h3>
@@ -1645,6 +1847,10 @@ if ($is_logged_in && $currentTable) {
             }
         });
     });
+
+    if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+    }
 </script>
 </body>
 </html>
