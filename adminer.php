@@ -1991,7 +1991,7 @@ if ($is_logged_in && $currentTable) {
                     </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="sql_query">
-                        <textarea name="query" rows="6" class="form-control" style="font-family:monospace; background:#000; color:#0f0; margin-bottom:10px;" placeholder="Enter SQL here..."></textarea>
+                        <textarea name="query" rows="6" class="form-control" style="font-family:monospace; background:#000; color:#0f0; margin-bottom:10px; max-width: 935px;" placeholder="Enter SQL here..."></textarea>
                         <div style="display:flex; gap:10px; align-items:center;">
                             <button type="submit" class="btn btn-primary"><i class="fas fa-play"></i> Run SQL</button>
                             <span style="font-size:0.8rem; color:var(--text-secondary);">Multiple statements separated by ';'</span>
