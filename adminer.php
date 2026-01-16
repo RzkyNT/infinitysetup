@@ -145,6 +145,8 @@ if (!$is_logged_in) {
 // ===== DB CONNECTION (IF LOGGED IN) =====
 $pdo = null;
 $databases = []; // List of databases
+$sqlResults = [];
+$lastResultSet = null;
 
 // --- Configurable List of User Databases ---
 // IMPORTANT: If 'SHOW DATABASES' is restricted by your hosting,
@@ -346,6 +348,94 @@ function plantuml_encode64($data) {
     return $out;
 }
 
+function split_sql_statements($sql) {
+    $statements = [];
+    $current = '';
+    $inString = false;
+    $stringChar = '';
+    $inLineComment = false;
+    $inBlockComment = false;
+    $length = strlen($sql);
+
+    for ($i = 0; $i < $length; $i++) {
+        $char = $sql[$i];
+        $next = $i + 1 < $length ? $sql[$i + 1] : '';
+
+        if ($inLineComment) {
+            if ($char === "\n") {
+                $inLineComment = false;
+            }
+            continue;
+        }
+
+        if ($inBlockComment) {
+            if ($char === '*' && $next === '/') {
+                $inBlockComment = false;
+                $i++;
+            }
+            continue;
+        }
+
+        if (!$inString) {
+            if ($char === '-' && $next === '-') {
+                $inLineComment = true;
+                $i++;
+                continue;
+            }
+            if ($char === '#') {
+                $inLineComment = true;
+                continue;
+            }
+            if ($char === '/' && $next === '*') {
+                $inBlockComment = true;
+                $i++;
+                continue;
+            }
+        }
+
+        if ($char === '\\' && $inString) {
+            $current .= $char;
+            if ($next !== '') {
+                $current .= $next;
+                $i++;
+            }
+            continue;
+        }
+
+        if ($char === '\'' || $char === '"' || $char === '`') {
+            if ($inString && $char === $stringChar) {
+                $inString = false;
+                $stringChar = '';
+            } elseif (!$inString) {
+                $inString = true;
+                $stringChar = $char;
+            }
+            $current .= $char;
+            continue;
+        }
+
+        if ($char === ';' && !$inString) {
+            if (trim($current) !== '') {
+                $statements[] = trim($current);
+            }
+            $current = '';
+            continue;
+        }
+
+        $current .= $char;
+    }
+
+    if (trim($current) !== '') {
+        $statements[] = trim($current);
+    }
+
+    return $statements;
+}
+
+function is_resultset_statement($statement) {
+    return (bool) preg_match('/^(SELECT|SHOW|DESCRIBE|EXPLAIN)\\b/i', ltrim($statement));
+}
+
 // ===== ACTION HANDLER (POST) =====
 if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -354,11 +444,38 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- SQL QUERY ---
     if ($action === 'sql_query') {
         $sql = $_POST['query'] ?? '';
-        try {
-            $sqlStmt = $pdo->query($sql);
-            $msg = "Query executed successfully.";
-        } catch (Exception $e) {
-            $error = $e->getMessage();
+        $statements = split_sql_statements($sql);
+        $affectedTotal = 0;
+        $resultSets = [];
+
+        if (empty($statements)) {
+            $error = 'No SQL statements provided.';
+        } else {
+            try {
+                foreach ($statements as $statement) {
+                    if (stripos($statement, 'DROP DATABASE') === 0) {
+                        throw new Exception('DROP DATABASE statements are blocked.');
+                    }
+
+                    if (is_resultset_statement($statement)) {
+                        $stmt = $pdo->query($statement);
+                        $fetched = $stmt->fetchAll();
+                        $resultSets[] = [
+                            'query' => $statement,
+                            'rows' => $fetched,
+                            'columns' => !empty($fetched) ? array_keys($fetched[0]) : []
+                        ];
+                    } else {
+                        $affected = $pdo->exec($statement);
+                        $affectedTotal += $affected !== false ? $affected : 0;
+                    }
+                }
+                $sqlResults = $resultSets;
+                $lastResultSet = !empty($resultSets) ? end($resultSets) : null;
+                $msg = count($statements) . " statement(s) executed. Rows affected: $affectedTotal.";
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
         }
     }
     // --- SAVE ROW ---
@@ -1867,6 +1984,56 @@ if ($is_logged_in && $currentTable) {
             <?php else:
                 ?>
                 <!-- DASHBOARD -->
+                <div class="card" style="margin-bottom:20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                        <h3 style="margin:0;">Quick SQL</h3>
+                        <small style="color:var(--text-secondary);">Execute statements directly from dashboard</small>
+                    </div>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="sql_query">
+                        <textarea name="query" rows="6" class="form-control" style="font-family:monospace; background:#000; color:#0f0; margin-bottom:10px;" placeholder="Enter SQL here..."></textarea>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-play"></i> Run SQL</button>
+                            <span style="font-size:0.8rem; color:var(--text-secondary);">Multiple statements separated by ';'</span>
+                        </div>
+                    </form>
+                    <?php if(!empty($sqlResults)): ?>
+                        <div style="margin-top:20px;">
+                            <?php foreach($sqlResults as $blockIndex => $result): ?>
+                                <div style="margin-bottom:15px;">
+                                    <div style="font-size:0.85rem; color:var(--accent); margin-bottom:5px;">Result for: <code><?=htmlspecialchars($result['query'])?></code></div>
+                                    <div class="table-wrapper">
+                                        <table>
+                                            <?php if(!empty($result['columns'])): ?>
+                                                <thead>
+                                                    <tr>
+                                                        <?php foreach($result['columns'] as $col): ?>
+                                                            <th><?=htmlspecialchars($col)?></th>
+                                                        <?php endforeach; ?>
+                                                    </tr>
+                                                </thead>
+                                            <?php endif; ?>
+                                            <tbody>
+                                                <?php if(!empty($result['rows'])): ?>
+                                                    <?php foreach($result['rows'] as $row): ?>
+                                                        <tr>
+                                                            <?php foreach($row as $val): ?>
+                                                                <td><?=htmlspecialchars(is_null($val) ? 'NULL' : (string)$val)?></td>
+                                                            <?php endforeach; ?>
+                                                        </tr>
+                                                    <?php endforeach; ?>
+                                                <?php else: ?>
+                                                    <tr><td><?=isset($result['columns'][0]) ? 'No rows' : 'Empty result'?></td></tr>
+                                                <?php endif; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
                 <div class="dashboard-stats">
                     <div class="stat-card">
                         <div class="stat-label">Total Tables</div>
