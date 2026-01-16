@@ -269,6 +269,83 @@ function sanitizeDiagramId($name) {
     return $sanitized;
 }
 
+function mermaid_identifier($name) {
+    $id = preg_replace('/[^A-Za-z0-9_]/', '_', $name);
+    if ($id === '' || is_numeric($id[0])) {
+        $id = 'tbl_' . substr(md5($name), 0, 6);
+    }
+    return $id;
+}
+
+function mermaid_datatype($type) {
+    $upper = strtoupper($type);
+    $upper = preg_replace('/[^A-Z0-9]/', '_', $upper);
+    return $upper ?: 'TEXT';
+}
+
+function mermaid_column_name($name) {
+    $col = preg_replace('/[^A-Za-z0-9_]/', '_', $name);
+    if ($col === '' || is_numeric($col[0])) {
+        $col = 'col_' . substr(md5($name), 0, 6);
+    }
+    return $col;
+}
+
+function mermaid_column_suffix($col) {
+    $suffix = [];
+    if (!empty($col['Key'])) {
+        if ($col['Key'] === 'PRI') $suffix[] = 'PK';
+        elseif ($col['Key'] === 'UNI') $suffix[] = 'UQ';
+        elseif ($col['Key'] === 'MUL') $suffix[] = 'IDX';
+    }
+    if (!empty($col['Null']) && $col['Null'] === 'NO') {
+        $suffix[] = 'NOT_NULL';
+    }
+    if (!empty($col['Extra'])) {
+        $suffix[] = strtoupper(str_replace(' ', '_', $col['Extra']));
+    }
+    return $suffix ? ' ' . implode(' ', $suffix) : '';
+}
+
+function mermaid_relation_label($fromCol, $toCol) {
+    $label = $fromCol . '_to_' . $toCol;
+    return preg_replace('/[^A-Za-z0-9_]/', '_', $label);
+}
+
+function plantuml_encode($text) {
+    $data = utf8_encode($text);
+    $compressed = gzdeflate($data);
+    return plantuml_encode64($compressed);
+}
+
+function plantuml_encode64($data) {
+    $alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
+    $out = '';
+    $len = strlen($data);
+    for ($i = 0; $i < $len; $i += 3) {
+        if ($i + 2 < $len) {
+            $b1 = ord($data[$i]);
+            $b2 = ord($data[$i + 1]);
+            $b3 = ord($data[$i + 2]);
+            $out .= $alphabet[$b1 >> 2];
+            $out .= $alphabet[(($b1 & 0x3) << 4) | ($b2 >> 4)];
+            $out .= $alphabet[(($b2 & 0xF) << 2) | ($b3 >> 6)];
+            $out .= $alphabet[$b3 & 0x3F];
+        } elseif ($i + 1 < $len) {
+            $b1 = ord($data[$i]);
+            $b2 = ord($data[$i + 1]);
+            $out .= $alphabet[$b1 >> 2];
+            $out .= $alphabet[(($b1 & 0x3) << 4) | ($b2 >> 4)];
+            $out .= $alphabet[(($b2 & 0xF) << 2)];
+        } else {
+            $b1 = ord($data[$i]);
+            $out .= $alphabet[$b1 >> 2];
+            $out .= $alphabet[(($b1 & 0x3) << 4)];
+        }
+    }
+    return $out;
+}
+
 // ===== ACTION HANDLER (POST) =====
 if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -552,6 +629,8 @@ $totalRows = 0;
 $totalSize = 0;
 $relationshipDiagram = '';
 $erdDiagram = '';
+$relationshipPlantumlEncoded = null;
+$erdPlantumlEncoded = null;
 
 if ($is_logged_in) {
     // Tables list
@@ -603,39 +682,139 @@ if ($is_logged_in && !$currentTable) {
             if (!empty($edgeMap)) {
                 $relationshipDiagram = "graph LR;\n" . implode("\n", array_keys($edgeMap));
             }
+            $relPlantuml = [
+                "@startuml",
+                "!theme cyborg",
+                "hide circle",
+                "skinparam BackgroundColor #000000",
+                "skinparam defaultFontColor #f5f5f5",
+                "skinparam Shadowing false",
+                "skinparam entity {",
+                "  BackgroundColor #1a1a1a",
+                "  BorderColor #555555",
+                "  FontColor #f5f5f5",
+                "}",
+                "skinparam note {",
+                "  BackgroundColor #111111",
+                "  FontColor #f5f5f5",
+                "}"
+            ];
+            foreach ($fkRows as $fk) {
+                $from = mermaid_identifier($fk['TABLE_NAME']);
+                $to = mermaid_identifier($fk['REFERENCED_TABLE_NAME']);
+                $relLabel = mermaid_relation_label($fk['COLUMN_NAME'], $fk['REFERENCED_COLUMN_NAME']);
+                $relPlantuml[] = "entity \"{$fk['TABLE_NAME']}\" as {$from}";
+                $relPlantuml[] = "entity \"{$fk['REFERENCED_TABLE_NAME']}\" as {$to}";
+                $relPlantuml[] = "{$from}::{$fk['COLUMN_NAME']} --> {$to}::{$fk['REFERENCED_COLUMN_NAME']} : {$relLabel}";
+            }
+            $relPlantuml[] = "@enduml";
+            $relationshipPlantumlEncoded = plantuml_encode(implode("\n", $relPlantuml));
         }
     } catch (Exception $e) {
         $relationshipDiagram = '';
+        $relationshipPlantumlEncoded = null;
     }
 
     try {
         $tablesStmt = $pdo->query("SHOW TABLES");
         $diagramParts = ["erDiagram"];
+        $relations = [];
+        $fkStmt = $pdo->prepare("
+            SELECT 
+                TABLE_NAME,
+                COLUMN_NAME,
+                REFERENCED_TABLE_NAME,
+                REFERENCED_COLUMN_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE 
+                TABLE_SCHEMA = :schema AND
+                REFERENCED_TABLE_NAME IS NOT NULL
+        ");
+        $fkStmt->execute(['schema' => $DB_NAME]);
+        $schemaFks = $fkStmt->fetchAll();
+        $tableColumnsMap = [];
+
         while ($tblRow = $tablesStmt->fetch(PDO::FETCH_NUM)) {
             $tableName = $tblRow[0];
+            $tableId = mermaid_identifier($tableName);
             $describeStmt = $pdo->query("DESCRIBE `$tableName`");
             $columns = $describeStmt->fetchAll(PDO::FETCH_ASSOC);
+            $tableColumnsMap[$tableName] = $columns;
             $columnLines = [];
             foreach ($columns as $col) {
-                $type = strtoupper($col['Type']);
-                $nullable = ($col['Null'] === 'YES') ? 'NULL' : 'NOT NULL';
-                $key = $col['Key'];
-                $extra = trim($col['Extra']);
-                $commentParts = array_filter([$nullable, $key ? "KEY:$key" : '', $extra ? strtoupper($extra) : '']);
-                $comment = $commentParts ? ' "' . implode(' ', $commentParts) . '"' : '';
-                $columnLines[] = "    {$type} {$col['Field']}" . $comment;
+                $type = mermaid_datatype($col['Type']);
+                $colName = mermaid_column_name($col['Field']);
+                $suffix = mermaid_column_suffix($col);
+                $columnLines[] = "    {$type} {$colName}{$suffix}";
             }
             if (!empty($columnLines)) {
-                $diagramParts[] = "{$tableName} {";
+                $diagramParts[] = "{$tableId} {";
                 $diagramParts = array_merge($diagramParts, $columnLines);
                 $diagramParts[] = "}";
             }
         }
+        if (!empty($schemaFks)) {
+            foreach ($schemaFks as $fk) {
+                $from = mermaid_identifier($fk['TABLE_NAME']);
+                $to = mermaid_identifier($fk['REFERENCED_TABLE_NAME']);
+                $fromCol = mermaid_column_name($fk['COLUMN_NAME']);
+                $relationLabel = mermaid_relation_label($fk['COLUMN_NAME'], $fk['REFERENCED_COLUMN_NAME']);
+                $diagramParts[] = "{$from} }o--|| {$to} : {$relationLabel}";
+            }
+        }
         if (!empty($diagramParts)) {
             $erdDiagram = implode("\n", $diagramParts);
+            $plantumlLines = [
+                "@startuml",
+                "!theme cyborg",
+                "hide circle",
+                "skinparam BackgroundColor #000000",
+                "skinparam defaultFontColor #f5f5f5",
+                "skinparam Shadowing false",
+                "skinparam entity {",
+                "  BackgroundColor #1a1a1a",
+                "  BorderColor #555555",
+                "  FontColor #f5f5f5",
+                "}",
+                "skinparam note {",
+                "  BackgroundColor #111111",
+                "  FontColor #f5f5f5",
+                "}"
+            ];
+            foreach ($tableColumnsMap as $tName => $columns) {
+                $tAlias = mermaid_identifier($tName);
+                $plantumlLines[] = "entity \"{$tName}\" as {$tAlias} {";
+                foreach ($columns as $col) {
+                    $colLabel = $col['Field'];
+                    $colType = strtoupper($col['Type']);
+                    $flags = [];
+                    if ($col['Key'] === 'PRI') $flags[] = 'PK';
+                    if ($col['Key'] === 'UNI') $flags[] = 'UQ';
+                    if ($col['Key'] === 'MUL') $flags[] = 'IDX';
+                    if ($col['Null'] === 'NO') $flags[] = 'NOT_NULL';
+                    if (!empty($col['Extra'])) $flags[] = strtoupper(str_replace(' ', '_', $col['Extra']));
+                    $flagStr = $flags ? ' <<' . implode(',', $flags) . '>>' : '';
+                    $plantumlLines[] = "  {$colLabel} : {$colType}{$flagStr}";
+                }
+                $plantumlLines[] = "}";
+            }
+            if (!empty($schemaFks)) {
+                foreach ($schemaFks as $fk) {
+                    $from = mermaid_identifier($fk['TABLE_NAME']);
+                    $to = mermaid_identifier($fk['REFERENCED_TABLE_NAME']);
+                    $fromCol = $fk['COLUMN_NAME'];
+                    $toCol = $fk['REFERENCED_COLUMN_NAME'];
+                    $plantumlLines[] = "{$from}::{$fromCol} --> {$to}::{$toCol}";
+                }
+            }
+            $plantumlLines[] = "@enduml";
+            $plantumlDiagramEncoded = plantuml_encode(implode("\n", $plantumlLines));
+        } else {
+            $plantumlDiagramEncoded = null;
         }
     } catch (Exception $e) {
         $erdDiagram = '';
+        $plantumlDiagramEncoded = null;
     }
 }
 
@@ -1713,13 +1892,25 @@ if ($is_logged_in && $currentTable) {
                 </div>
                 <?php endif; ?>
 
-                <?php if ($erdDiagram): ?>
+                <?php if ($plantumlDiagramEncoded || $erdDiagram): ?>
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                         <h3 style="margin:0;">Schema ERD</h3>
-                        <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid ER diagram (columns + relations)</span>
+                        <span style="font-size:0.85rem; color:var(--text-secondary);">PlantUML (primary) with Mermaid fallback</span>
                     </div>
-                    <pre class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                    <?php if ($plantumlDiagramEncoded): ?>
+                        <div style="background:#080808; border:1px solid #222; border-radius:6px; padding:10px; text-align:center;">
+                            <img src="https://www.plantuml.com/plantuml/svg/<?= htmlspecialchars($plantumlDiagramEncoded) ?>" alt="PlantUML ERD" style="width:100%; max-height:600px; object-fit:contain; background:#fff;">
+                        </div>
+                        <?php if ($erdDiagram): ?>
+                            <details style="margin-top:10px;">
+                                <summary style="cursor:pointer; color:#0d6efd;">Show Mermaid fallback</summary>
+                                <pre class="mermaid" style="margin-top:10px; background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                            </details>
+                        <?php endif; ?>
+                    <?php elseif ($erdDiagram): ?>
+                        <pre class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                    <?php endif; ?>
                 </div>
                 <?php endif; ?>
 
