@@ -588,7 +588,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'export') {
         $exportTable = $_POST['table'] ?? null; // If null, export all
         $filename = ($exportTable ? $exportTable : $_SESSION['db_name']) . "_" . date("Y-m-d_H-i-s") . ".sql";
-        
+
         header('Content-Type: application/octet-stream');
         header("Content-Transfer-Encoding: Binary"); 
         header("Content-disposition: attachment; filename=\"$filename\""); 
@@ -631,6 +631,73 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo "\n";
         }
         exit;
+    }
+    // --- BULK TABLE OPERATIONS ---
+    elseif ($action === 'bulk_tables') {
+        $operation = $_POST['bulk_operation'] ?? '';
+        $selected = $_POST['tables'] ?? [];
+        if (!$selected || !$operation) {
+            $error = 'Select at least one table and an operation.';
+        } else {
+            $cleanTables = [];
+            foreach ($selected as $tbl) {
+                $clean = preg_replace('/[^A-Za-z0-9_]/', '', $tbl);
+                if ($clean !== '') {
+                    $cleanTables[] = $clean;
+                }
+            }
+            if (empty($cleanTables)) {
+                $error = 'No valid tables selected.';
+            } else {
+                try {
+                    if ($operation === 'drop') {
+                        foreach ($cleanTables as $tbl) {
+                            $pdo->exec("DROP TABLE `$tbl`");
+                        }
+                        redirect("?msg=" . urlencode(count($cleanTables) . " table(s) dropped."));
+                    } elseif ($operation === 'truncate') {
+                        foreach ($cleanTables as $tbl) {
+                            $pdo->exec("TRUNCATE TABLE `$tbl`");
+                        }
+                        redirect("?msg=" . urlencode(count($cleanTables) . " table(s) truncated."));
+                    } elseif ($operation === 'optimize') {
+                        foreach ($cleanTables as $tbl) {
+                            $pdo->exec("OPTIMIZE TABLE `$tbl`");
+                        }
+                        redirect("?msg=" . urlencode(count($cleanTables) . " table(s) optimized."));
+                    } elseif ($operation === 'export') {
+                        $filename = "tables_" . date("Y-m-d_H-i-s") . ".sql";
+                        header('Content-Type: application/octet-stream');
+                        header("Content-Transfer-Encoding: Binary"); 
+                        header("Content-disposition: attachment; filename=\"$filename\"");
+                        echo "-- Adminer Bulk Export: " . date("Y-m-d H:i:s") . "\n";
+                        echo "-- Database: " . $_SESSION['db_name'] . "\n";
+                        echo "-- Tables: " . implode(', ', $cleanTables) . "\n\n";
+                        foreach ($cleanTables as $t) {
+                            $stmt = $pdo->query("SHOW CREATE TABLE `$t`");
+                            $row = $stmt->fetch(PDO::FETCH_NUM);
+                            echo "DROP TABLE IF EXISTS `$t`;\n";
+                            echo $row[1] . ";\n\n";
+                            $stmt = $pdo->query("SELECT * FROM `$t`");
+                            while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                                $keys = array_keys($r);
+                                $vals = array_values($r);
+                                $vals = array_map(function($v) use ($pdo) {
+                                    return $v === null ? "NULL" : $pdo->quote($v);
+                                }, $vals);
+                                echo "INSERT INTO `$t` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+                            }
+                            echo "\n";
+                        }
+                        exit;
+                    } else {
+                        $error = 'Unsupported bulk operation.';
+                    }
+                } catch (Exception $e) {
+                    $error = $e->getMessage();
+                }
+            }
+        }
     }
     // --- ADD INDEX ---
     elseif ($action === 'add_index') {
@@ -2084,7 +2151,7 @@ if ($is_logged_in && $currentTable) {
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                         <h3>Database Tables</h3>
-                        <div style="display:flex; gap:10px;">
+                        <div style="display:flex; gap:10px; flex-wrap:wrap;">
                             <a href="?view=import" class="btn"><i class="fas fa-upload"></i> Import Database</a>
                             <form method="POST" style="margin:0;">
                                 <input type="hidden" name="action" value="export">
@@ -2092,34 +2159,52 @@ if ($is_logged_in && $currentTable) {
                             </form>
                         </div>
                     </div>
-                    <div class="table-wrapper">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Rows</th>
-                                    <th>Size</th>
-                                    <th>Collation</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($tables as $t):
-                                    ?>
+                    <form method="POST" id="bulkTablesForm">
+                        <input type="hidden" name="action" value="bulk_tables">
+                        <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+                            <select name="bulk_operation" class="form-select" style="width:200px;">
+                                <option value="">Bulk Action</option>
+                                <option value="drop">Drop Tables</option>
+                                <option value="truncate">Truncate Tables</option>
+                                <option value="optimize">Optimize Tables</option>
+                                <option value="export">Export Tables</option>
+                            </select>
+                            <button type="button" class="btn btn-danger" onclick="confirmBulkTables()" style="display:flex; align-items:center; gap:6px;"><i class="fas fa-check"></i> Apply</button>
+                            <span style="font-size:0.8rem; color:var(--text-secondary);">Select tables below to run bulk action.</span>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
                                     <tr>
-                                        <td><a href="?table=<?=htmlspecialchars($t['Name'])?>" style="font-weight: bold; color: var(--accent);"><?=htmlspecialchars($t['Name'])?></a></td>
-                                        <td><?=number_format($t['Rows'])?></td>
-                                        <td><?=formatSize($t['Data_length'] + $t['Index_length'])?></td>
-                                        <td><?=$t['Collation']?></td>
-                                        <td>
-                                            <a href="?table=<?=htmlspecialchars($t['Name'])?>&view=structure" class="btn" style="padding:2px 6px; font-size:0.75rem;">Struct</a>
-                                            <a href="?table=<?=htmlspecialchars($t['Name'])?>&view=data" class="btn" style="padding:2px 6px; font-size:0.75rem;">Data</a>
-                                        </td>
+                                        <th style="width:40px;"><input type="checkbox" id="selectAllTables"></th>
+                                        <th>Name</th>
+                                        <th>Rows</th>
+                                        <th>Size</th>
+                                        <th>Collation</th>
+                                        <th>Action</th>
                                     </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($tables as $t):
+                                        ?>
+                                        <tr>
+                                            <td style="text-align:center;">
+                                                <input type="checkbox" name="tables[]" value="<?=htmlspecialchars($t['Name'])?>" class="table-checkbox">
+                                            </td>
+                                            <td><a href="?table=<?=htmlspecialchars($t['Name'])?>" style="font-weight: bold; color: var(--accent);"><?=htmlspecialchars($t['Name'])?></a></td>
+                                            <td><?=number_format($t['Rows'])?></td>
+                                            <td><?=formatSize($t['Data_length'] + $t['Index_length'])?></td>
+                                            <td><?=$t['Collation']?></td>
+                                            <td>
+                                                <a href="?table=<?=htmlspecialchars($t['Name'])?>&view=structure" class="btn" style="padding:2px 6px; font-size:0.75rem;">Struct</a>
+                                                <a href="?table=<?=htmlspecialchars($t['Name'])?>&view=data" class="btn" style="padding:2px 6px; font-size:0.75rem;">Data</a>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </form>
                 </div>
             <?php endif; ?>
         </div>
@@ -2208,6 +2293,52 @@ if ($is_logged_in && $currentTable) {
 
     if (typeof mermaid !== 'undefined') {
         mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+    }
+
+    // Bulk table selection
+    const selectAllTables = document.getElementById('selectAllTables');
+    if (selectAllTables) {
+        selectAllTables.addEventListener('change', function() {
+            document.querySelectorAll('.table-checkbox').forEach(cb => cb.checked = selectAllTables.checked);
+        });
+    }
+
+    function getSelectedTablesCount() {
+        return Array.from(document.querySelectorAll('.table-checkbox')).filter(cb => cb.checked).length;
+    }
+
+    window.confirmBulkTables = function() {
+        const form = document.getElementById('bulkTablesForm');
+        if (!form) return;
+        const action = form.querySelector('select[name=\"bulk_operation\"]').value;
+        const selectedCount = getSelectedTablesCount();
+        if (!action) {
+            Swal.fire('Missing', 'Pilih aksi bulk terlebih dahulu.', 'info');
+            return;
+        }
+        if (selectedCount === 0) {
+            Swal.fire('No tables', 'Pilih minimal satu tabel.', 'info');
+            return;
+        }
+        const actionLabel = {
+            drop: 'Drop',
+            truncate: 'Truncate',
+            optimize: 'Optimize',
+            export: 'Export'
+        }[action] || action;
+        Swal.fire({
+            title: `Confirm ${actionLabel}?`,
+            text: `Action will run on ${selectedCount} table(s).`,
+            icon: action === 'drop' || action === 'truncate' ? 'warning' : 'question',
+            showCancelButton: true,
+            confirmButtonColor: action === 'drop' ? '#d33' : '#3085d6',
+            cancelButtonColor: '#666',
+            confirmButtonText: 'Yes, run it'
+        }).then(result => {
+            if (result.isConfirmed) {
+                form.submit();
+            }
+        });
     }
 </script>
 </body>
