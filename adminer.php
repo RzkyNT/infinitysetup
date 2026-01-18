@@ -817,8 +817,16 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- MANAGE DATABASE LIST (JSON) ---
     elseif ($action === 'add_database_list') {
         $dbName = trim($_POST['name'] ?? '');
+        
+        $config = load_config($configFile);
+        $dbUser = $config['user'] ?? '';
+        // Auto-prefix with username if not present (InfinityFree style)
+        if ($dbUser && strpos($dbName, $dbUser . '_') !== 0) {
+             $dbName = $dbUser . '_' . $dbName;
+        }
+
         if ($dbName && is_valid_db_name($dbName)) {
-            $currentList = load_config($configFile)['databases'] ?? [];
+            $currentList = $config['databases'] ?? [];
             if (!in_array($dbName, $currentList)) {
                 $currentList[] = $dbName;
                 save_config($configFile, ['databases' => $currentList]);
@@ -844,12 +852,20 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- MANAGE DATABASE SERVER (SQL) ---
     elseif ($action === 'create_database_server') {
         $dbName = trim($_POST['name'] ?? '');
+        
+        $config = load_config($configFile);
+        $dbUser = $config['user'] ?? '';
+        // Auto-prefix with username if not present
+        if ($dbUser && strpos($dbName, $dbUser . '_') !== 0) {
+             $dbName = $dbUser . '_' . $dbName;
+        }
+
         if ($dbName && is_valid_db_name($dbName)) {
             try {
                 $pdo->exec("CREATE DATABASE `$dbName`");
                 $msg = "Database '$dbName' created on server.";
                 // Auto add to list
-                $currentList = load_config($configFile)['databases'] ?? [];
+                $currentList = $config['databases'] ?? [];
                 if (!in_array($dbName, $currentList)) {
                     $currentList[] = $dbName;
                     save_config($configFile, ['databases' => $currentList]);
@@ -1388,14 +1404,16 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                 </select>
             </form>
             <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
-        </div>
-        <div class="nav-list">
+                <div class="nav-list">
             <div style="padding: 0 20px 10px;">
                 <input type="text" id="tableSearch" class="form-control" placeholder="Search tables..." style="width: 100%;">
             </div>
             <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
+            </div>
+        </div>
+        <div class="nav-list">
             <div class="nav-header"><span>Tables (<?=count($tables)?>)</span></div>
             <?php foreach ($tables as $t): ?>
                 <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>">
