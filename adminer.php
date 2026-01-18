@@ -1481,11 +1481,20 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 <?php 
                                 $configList = load_config($configFile)['databases'] ?? [];
                                 foreach ($configList as $dbItem): 
+                                    $isActive = ($dbItem === ($_SESSION['db_name'] ?? ''));
                                 ?>
-                                <tr>
-                                    <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
+                                <tr style="<?= $isActive ? 'background:rgba(16, 185, 129, 0.1); color: var(--success)' : '' ?>">
+                                    <td>
+                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--success)'?>; margin-right:8px;"></i> 
+                                        <?=htmlspecialchars($dbItem)?>
+                                        <?php if($isActive): ?>
+                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:2px 6px; border-radius:4px; margin-left:8px;">Active</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td style="text-align:right;">
-                                        <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php if(!$isActive): ?>
+                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php endif; ?>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
                                             <input type="hidden" name="action" value="remove_database_list">
                                             <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
@@ -2308,11 +2317,20 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 <?php 
                                 $configList = load_config($configFile)['databases'] ?? [];
                                 foreach ($configList as $dbItem): 
+                                     $isActive = ($dbItem === ($_SESSION['db_name'] ?? ''));
                                 ?>
-                                <tr>
-                                    <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
+                                <tr style="<?= $isActive ? 'background:rgba(16, 185, 129, 0.1); color: var(--success)' : '' ?>">
+                                    <td>
+                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--success)'?>; margin-right:8px;"></i> 
+                                        <?=htmlspecialchars($dbItem)?>
+                                        <?php if($isActive): ?>
+                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:2px 6px; border-radius:4px; margin-left:8px;">Active</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td style="text-align:right;">
-                                        <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php if(!$isActive): ?>
+                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php endif; ?>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
                                             <input type="hidden" name="action" value="remove_database_list">
                                             <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">

@@ -2274,6 +2274,7 @@
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
+                              <a title="<?php echo lng('Advance Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>&env=ace"><i class="fa fa-pencil fa-fw"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
                               <a title="<?php echo lng('CopyTo') ?>..."
                                   href="?p=<?php echo urlencode(FM_PATH) ?>&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o"></i></a>
