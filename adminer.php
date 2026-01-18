@@ -1,33 +1,38 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 session_start();
 
-$dbConfigPath = __DIR__ . '/adminer.db.json';
-$dbListPath   = __DIR__ . '/adminer.databases.json';
+$configFile = __DIR__ . '/adminer.config.json';
 
-function load_db_config($path)
+function load_config($path)
 {
     if (!file_exists($path)) {
-        return null;
+        return ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
     }
     $raw = file_get_contents($path);
     $data = json_decode($raw, true);
     if (!is_array($data)) {
-        return null;
+        return ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
     }
     return array_merge(
-        ['host' => '', 'user' => '', 'pass' => '', 'name' => ''],
+        ['host' => '', 'user' => '', 'pass' => '', 'databases' => []],
         $data
     );
 }
 
-function save_db_config($path, $data)
+function save_config($path, $data)
 {
-    $filtered = [
-        'host' => $data['host'] ?? '',
-        'user' => $data['user'] ?? '',
-        'pass' => $data['pass'] ?? '',
-    ];
-    $payload = json_encode($filtered, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $existing = load_config($path);
+    $new = array_merge($existing, $data);
+    // Ensure databases is always an array unique
+    if (isset($new['databases']) && is_array($new['databases'])) {
+        $new['databases'] = array_values(array_unique($new['databases']));
+    } else {
+        $new['databases'] = [];
+    }
+    
+    $payload = json_encode($new, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     return file_put_contents($path, $payload) !== false;
 }
 
@@ -36,43 +41,15 @@ function is_valid_db_name($name)
     return (bool) preg_match('/^[A-Za-z0-9_\\$\\-\\.]+$/', $name);
 }
 
-function load_db_list($path)
-{
-    if (!file_exists($path)) {
-        return [];
-    }
-    $raw = file_get_contents($path);
-    $data = json_decode($raw, true);
-    if (!is_array($data)) {
-        return [];
-    }
-    $clean = [];
-    foreach ($data as $item) {
-        $item = trim((string) $item);
-        if ($item === '' || !is_valid_db_name($item)) {
-            continue;
-        }
-        if (!in_array($item, $clean, true)) {
-            $clean[] = $item;
-        }
-    }
-    return $clean;
+// Deprecated wrapper functions for compatibility if needed, but we use load_config directly now
+function load_db_config($path) { return load_config($path); }
+function save_db_config($path, $data) { return save_config($path, $data); }
+function load_db_list($path) { 
+    $cfg = load_config($path); 
+    return $cfg['databases'];
 }
-
-function save_db_list($path, $names)
-{
-    $clean = [];
-    foreach ($names as $item) {
-        $item = trim((string) $item);
-        if ($item === '' || !is_valid_db_name($item)) {
-            continue;
-        }
-        if (!in_array($item, $clean, true)) {
-            $clean[] = $item;
-        }
-    }
-    $payload = json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-    return file_put_contents($path, $payload) !== false;
+function save_db_list($path, $names) {
+    return save_config($path, ['databases' => $names]);
 }
 
 function render_db_setup($defaults = [], $error = '', $success = '')
@@ -98,7 +75,7 @@ function render_db_setup($defaults = [], $error = '', $success = '')
             .alert { padding:0.75rem; border-radius:6px; margin-bottom:1rem; font-size:0.9rem; }
             .alert-error { background:rgba(255,107,107,0.15); border:1px solid #ff6b6b; color:#ffb3b3; }
             .alert-success { background:rgba(40,167,69,0.15); border:1px solid #28a745; color:#b8f5cd; }
-        </style>
+        </style>    
     </head>
     <body>
         <div class="setup-card">
@@ -122,15 +99,32 @@ function render_db_setup($defaults = [], $error = '', $success = '')
     exit;
 }
 
-$dbConfig = load_db_config($dbConfigPath);
-$user_defined_databases = load_db_list($dbListPath);
+// Migration from old files
+if (!file_exists($configFile)) {
+    $oldDbConfig = __DIR__ . '/adminer.db.json';
+    $oldDbList = __DIR__ . '/adminer.databases.json';
+    if (file_exists($oldDbConfig)) {
+        $oldData = json_decode(file_get_contents($oldDbConfig), true) ?? [];
+        $oldList = file_exists($oldDbList) ? (json_decode(file_get_contents($oldDbList), true) ?? []) : [];
+        $migrated = [
+            'host' => $oldData['host'] ?? '',
+            'user' => $oldData['user'] ?? '',
+            'pass' => $oldData['pass'] ?? '',
+            'databases' => $oldList
+        ];
+        file_put_contents($configFile, json_encode($migrated, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+}
+
+$dbConfig = load_config($configFile);
+$user_defined_databases = $dbConfig['databases'] ?? [];
 
 if (isset($_POST['db_setup_action'])) {
     $host = trim($_POST['db_host'] ?? '');
     $user = trim($_POST['db_user'] ?? '');
     $pass = $_POST['db_pass'] ?? '';
 
-    $existing = $dbConfig ?? ['host' => '', 'user' => '', 'pass' => ''];
+    $existing = $dbConfig ?? ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
     if ($host === '' || $user === '') {
         render_db_setup(
             ['host' => $host, 'user' => $user],
@@ -140,15 +134,15 @@ if (isset($_POST['db_setup_action'])) {
     if ($pass === '' && isset($existing['pass'])) {
         $pass = $existing['pass'];
     }
-    $payload = ['host' => $host, 'user' => $user, 'pass' => $pass];
-    if (!save_db_config($dbConfigPath, $payload)) {
+    $payload = ['host' => $host, 'user' => $user, 'pass' => $pass]; // databases maintained by merge in save_config
+    if (!save_config($configFile, $payload)) {
         render_db_setup($payload, 'Failed to save configuration. Check file permissions.');
     }
-    $dbConfig = $payload;
-    render_db_setup($payload, '', 'Configuration saved. You can refresh to continue.');
+    $dbConfig = load_config($configFile); // Reload to get full config
+    render_db_setup($dbConfig, '', 'Configuration saved. You can refresh to continue.');
 }
 
-if (!$dbConfig || isset($_GET['setup'])) {
+if (empty($dbConfig['host']) || isset($_GET['setup'])) {
     render_db_setup($dbConfig ?? []);
 }
 
@@ -163,6 +157,8 @@ if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === tr
 }
 $DB_NAME = $_SESSION['db_name'] ?? '';
 $hasSelectedDatabase = $DB_NAME !== '';
+$currentTable = isset($_GET['table']) ? preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['table']) : null;
+$view = isset($_GET['view']) ? $_GET['view'] : 'structure';
 
 
 // ===== LOGOUT LOGIC =====
@@ -190,19 +186,20 @@ if (!$is_logged_in) {
     exit;
 }
 
+// ===== DB CONNECTION (IF LOGGED IN) =====// ===== DB CONNECTION (IF LOGGED IN) =====
 // ===== DB CONNECTION (IF LOGGED IN) =====
 $pdo = null;
 $databases = []; // List of databases
 $sqlResults = [];
 $lastResultSet = null;
 
+// Debug log
+error_log("Adminer: is_logged_in=$is_logged_in, hasSelectedDatabase=$hasSelectedDatabase, DB_NAME=" . ($_SESSION['db_name'] ?? 'empty'));
+
 if ($is_logged_in) {
     try {
-        // Try connecting with selected DB
+        // Selalu buat koneksi dasar (tanpa database) dulu
         $dsn = "mysql:host={$_SESSION['db_host']};charset=utf8mb4";
-        if (!empty($_SESSION['db_name'])) {
-            $dsn .= ";dbname={$_SESSION['db_name']}";
-        }
         
         $pdo = new PDO(
             $dsn,
@@ -210,69 +207,62 @@ if ($is_logged_in) {
             $_SESSION['db_pass'],
             [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_TIMEOUT => 5
             ]
         );
         
-        // Fetch Databases
+        // Fetch semua database yang tersedia
         try {
             $stmt = $pdo->query("SHOW DATABASES");
             $databases_from_server = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
-            // If server only returns one database (likely due to restriction), 
-            // and we have user-defined ones, use them. Otherwise, use server's list.
-            if (count($databases_from_server) <= 1 && !empty($user_defined_databases)) {
-                $databases = $user_defined_databases;
-            } else {
+            
+            // Prioritaskan database dari server
+            if (!empty($databases_from_server)) {
                 $databases = $databases_from_server;
+            } elseif (!empty($user_defined_databases)) {
+                // Fallback ke user defined databases
+                $databases = $user_defined_databases;
             }
+            
+            // Jika ada database yang dipilih di session, validasi
+            if (!empty($_SESSION['db_name']) && !in_array($_SESSION['db_name'], $databases)) {
+                // Database tidak valid, reset
+                $_SESSION['db_name'] = '';
+                $hasSelectedDatabase = false;
+                $DB_NAME = '';
+            }
+            
         } catch (Exception $e) {
-            // If SHOW DATABASES fails, use user-defined list or just the current one if no user-defined
-            $databases = !empty($user_defined_databases)
-                ? $user_defined_databases
-                : array_values(array_filter([$_SESSION['db_name']]));
-        }
-
-    } catch (Exception $e) {
-        // If initial connection failed (e.g. DB doesn't exist anymore or invalid credentials), 
-        // try connecting without DB name to list valid ones.
-        // Or, if user-defined databases are present, use those.
-        if (!empty($user_defined_databases)) {
+            // Silently fail if SHOW DATABASES is denied (common on shared hosting)
+            // error_log("Adminer SHOW DATABASES error: " . $e->getMessage());
             $databases = $user_defined_databases;
-            if (!in_array($_SESSION['db_name'], $databases, true) && !empty($databases)) {
-                $_SESSION['db_name'] = $databases[0];
-                header("Location: ?");
-                exit;
-            }
-        } else {
-            // Fallback to the original logic (try connecting without dbname)
+        }
+        
+        // Jika sudah ada database yang dipilih, reconnect dengan database tersebut
+        if ($hasSelectedDatabase && !empty($_SESSION['db_name'])) {
             try {
-                 $pdo = new PDO(
-                    "mysql:host={$_SESSION['db_host']};charset=utf8mb4",
+                $dsn_with_db = "mysql:host={$_SESSION['db_host']};dbname={$_SESSION['db_name']};charset=utf8mb4";
+                $pdo = new PDO(
+                    $dsn_with_db,
                     $_SESSION['db_user'],
                     $_SESSION['db_pass'],
-                    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+                    [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                        PDO::ATTR_TIMEOUT => 5
+                    ]
                 );
-                $stmt = $pdo->query("SHOW DATABASES");
-                $databases = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                
-                // If this also returns limited, and we have user-defined (should be empty here if this path is taken without explicit list)
-                // This condition might be redundant here if user_defined_databases is empty.
-                // It ensures that if 'SHOW DATABASES' itself fails to return a comprehensive list even after falling back to a connection without dbname,
-                // and if there were user-defined databases (which in this else branch implies they were empty), it wouldn't use them.
-                // The intent here is to use whatever SHOW DATABASES returns in this fallback scenario.
-                
-                // Reset DB name if invalid
-                if (!in_array($_SESSION['db_name'], $databases) && !empty($databases)) {
-                     $_SESSION['db_name'] = $databases[0];
-                     header("Location: ?");
-                     exit;
-                }
-            } catch(Exception $ex) {
-                session_destroy();
-                die("Session Expired or DB Connection Failed. <a href='?'>Login again</a>");
+            } catch (Exception $e) {
+                error_log("Adminer reconnect with DB error: " . $e->getMessage());
+                // Tetap gunakan koneksi tanpa database
             }
         }
+        
+    } catch (Exception $e) {
+        session_destroy();
+        die("Database Connection Error: " . htmlspecialchars($e->getMessage()) . 
+            ". Check your credentials in adminer.db.json or contact administrator.");
     }
 }
 
@@ -352,7 +342,7 @@ function mermaid_relation_label($fromCol, $toCol) {
 }
 
 function plantuml_encode($text) {
-    $data = utf8_encode($text);
+    $data = mb_convert_encoding($text, 'UTF-8', 'ISO-8859-1');
     $compressed = gzdeflate($data);
     return plantuml_encode64($compressed);
 }
@@ -824,6 +814,72 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
              $error = "No rows selected or primary key missing.";
         }
     }
+    // --- MANAGE DATABASE LIST (JSON) ---
+    elseif ($action === 'add_database_list') {
+        $dbName = trim($_POST['name'] ?? '');
+        if ($dbName && is_valid_db_name($dbName)) {
+            $currentList = load_config($configFile)['databases'] ?? [];
+            if (!in_array($dbName, $currentList)) {
+                $currentList[] = $dbName;
+                save_config($configFile, ['databases' => $currentList]);
+                $msg = "Database '$dbName' added to list.";
+            } else {
+                $error = "Database already in list.";
+            }
+        } else {
+            $error = "Invalid database name.";
+        }
+        redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
+    }
+    elseif ($action === 'remove_database_list') {
+        $dbName = $_POST['name'] ?? '';
+        $currentList = load_config($configFile)['databases'] ?? [];
+        if (($key = array_search($dbName, $currentList)) !== false) {
+            unset($currentList[$key]);
+            save_config($configFile, ['databases' => array_values($currentList)]);
+            $msg = "Database '$dbName' removed from list.";
+        }
+        redirect("?view=manage_dbs&msg=" . urlencode($msg ?? ''));
+    }
+    // --- MANAGE DATABASE SERVER (SQL) ---
+    elseif ($action === 'create_database_server') {
+        $dbName = trim($_POST['name'] ?? '');
+        if ($dbName && is_valid_db_name($dbName)) {
+            try {
+                $pdo->exec("CREATE DATABASE `$dbName`");
+                $msg = "Database '$dbName' created on server.";
+                // Auto add to list
+                $currentList = load_config($configFile)['databases'] ?? [];
+                if (!in_array($dbName, $currentList)) {
+                    $currentList[] = $dbName;
+                    save_config($configFile, ['databases' => $currentList]);
+                }
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        } else {
+            $error = "Invalid database name.";
+        }
+        redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
+    }
+    elseif ($action === 'drop_database_server') {
+        $dbName = $_POST['name'] ?? '';
+        if ($dbName) {
+            try {
+                $pdo->exec("DROP DATABASE `$dbName`");
+                $msg = "Database '$dbName' dropped from server.";
+                // Remove from list too
+                $currentList = load_config($configFile)['databases'] ?? [];
+                if (($key = array_search($dbName, $currentList)) !== false) {
+                    unset($currentList[$key]);
+                    save_config($configFile, ['databases' => array_values($currentList)]);
+                }
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        }
+        redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
+    }
 }
 
 // ===== GET HANDLERS =====
@@ -844,6 +900,16 @@ if ($is_logged_in) {
     if (isset($_GET['msg'])) $msg = $_GET['msg'];
 }
 
+// // Debug: Tampilkan status variabel
+// echo "<pre style='background:#000; color:#0f0; padding:10px;'>";
+// echo "DEBUG INFO:\n";
+// echo "is_logged_in: " . ($is_logged_in ? 'TRUE' : 'FALSE') . "\n";
+// echo "hasSelectedDatabase: " . ($hasSelectedDatabase ? 'TRUE' : 'FALSE') . "\n";
+// echo "DB_NAME: " . htmlspecialchars($DB_NAME) . "\n";
+// echo "pdo is null? " . (is_null($pdo) ? 'YES' : 'NO') . "\n";
+// echo "Session db_name: " . ($_SESSION['db_name'] ?? 'NOT SET') . "\n";
+// echo "</pre>";
+
 // ===== DATA PREPARATION =====
 $tables = [];
 $totalRows = 0;
@@ -853,25 +919,34 @@ $erdDiagram = '';
 $relationshipPlantumlEncoded = null;
 $erdPlantumlEncoded = null;
 
-if ($is_logged_in) {
+// Hanya jalankan jika ada koneksi PDO yang valid DAN ada database yang dipilih
+if ($is_logged_in && isset($pdo) && $pdo !== null && $hasSelectedDatabase) {
     // Tables list
     try {
         $stmt = $pdo->query("SHOW TABLE STATUS");
         $tables = $stmt->fetchAll();
     } catch (Exception $e) {
-        $stmt = $pdo->query("SHOW TABLES");
-        while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
-            $tables[] = ['Name' => $row[0], 'Rows' => 0, 'Data_length' => 0, 'Index_length' => 0, 'Collation' => ''];
+        // Jika error SHOW TABLE STATUS, coba SHOW TABLES
+        try {
+            $stmt = $pdo->query("SHOW TABLES");
+            while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
+                $tables[] = ['Name' => $row[0], 'Rows' => 0, 'Data_length' => 0, 'Index_length' => 0, 'Collation' => ''];
+            }
+        } catch (Exception $ex) {
+            // Biarkan tables kosong jika masih error
+            $tables = [];
+            error_log("Adminer DATA PREPARATION error: " . $ex->getMessage());
         }
     }
 
+    // Hitung total rows dan size hanya jika ada tables
     foreach ($tables as $t) {
-        $totalRows += $t['Rows'];
-        $totalSize += $t['Data_length'] + $t['Index_length'];
+        $totalRows += $t['Rows'] ?? 0;
+        $totalSize += ($t['Data_length'] ?? 0) + ($t['Index_length'] ?? 0);
     }
 }
 
-if ($is_logged_in && !$currentTable) {
+if ($is_logged_in && $hasSelectedDatabase && !$currentTable && isset($pdo)) {
     try {
         $schemaFkStmt = $pdo->prepare("
             SELECT 
@@ -1058,7 +1133,7 @@ $searchVal = $_GET['search_val'] ?? '';
 $orderBy = $_GET['order_by'] ?? null;
 $orderDir = $_GET['order_dir'] ?? 'ASC';
 
-if ($is_logged_in && $currentTable) {
+if ($is_logged_in && $currentTable && isset($pdo)) {
     $stmt = $pdo->query("DESCRIBE `$currentTable`");
     $tableStructure = $stmt->fetchAll();
     $tableColumns = array_column($tableStructure, 'Field');
@@ -1370,6 +1445,107 @@ if ($is_logged_in && $currentTable) {
                         melalui modul manajemen di bawah.
                     </p>
                 </div>
+
+                <!-- MANAGEMENT UI -->
+                <div class="card">
+                    <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
+                    
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Database Name</th>
+                                    <th style="width:100px; text-align:right;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $configList = load_config($configFile)['databases'] ?? [];
+                                foreach ($configList as $dbItem): 
+                                ?>
+                                <tr>
+                                    <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
+                                    <td style="text-align:right;">
+                                        <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
+                                            <input type="hidden" name="action" value="remove_database_list">
+                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;"><i class="fas fa-times"></i></button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if(empty($configList)): ?>
+                                    <tr><td colspan="2" style="text-align:center; color:var(--text-secondary);">No databases in list.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <form method="POST" style="margin-top:15px; display:flex; gap:10px;">
+                        <input type="hidden" name="action" value="add_database_list">
+                        <input type="text" name="name" class="form-control" placeholder="Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
+                        <button type="submit" class="btn btn-primary">Add to List</button>
+                    </form>
+                </div>
+
+                <!-- <div class="card">
+                    <h3><i class="fas fa-server"></i> Server Databases</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
+                    
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Database Name</th>
+                                    <th style="width:150px; text-align:right;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $serverDbs = [];
+                                try {
+                                    $stmt = $pdo->query("SHOW DATABASES");
+                                    $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                } catch (Exception $e) {
+                                    if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
+                                        echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                    } else {
+                                        echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                    }
+                                }
+
+                                foreach ($serverDbs as $dbItem): 
+                                    $inList = in_array($dbItem, $configList);
+                                ?>
+                                <tr>
+                                    <td><?=htmlspecialchars($dbItem)?></td>
+                                    <td style="text-align:right;">
+                                        <?php if(!$inList): ?>
+                                            <form method="POST" style="display:inline;">
+                                                <input type="hidden" name="action" value="add_database_list">
+                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                                <button type="submit" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Add to List"><i class="fas fa-plus"></i></button>
+                                            </form>
+                                        <?php endif; ?>
+                                        <form method="POST" onsubmit="saConfirmForm(event, 'DROP DATABASE <?=htmlspecialchars($dbItem)?>? THIS DESTROYS ALL DATA!')" style="display:inline;">
+                                            <input type="hidden" name="action" value="drop_database_server">
+                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
+                        <input type="hidden" name="action" value="create_database_server">
+                        <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
+                    </form>
+                </div> -->
             <?php elseif ($currentTable):
                 ?>
                 <!-- TABLE VIEW -->
@@ -2097,6 +2273,106 @@ if ($is_logged_in && $currentTable) {
             <?php else:
                 ?>
                 <!-- DASHBOARD -->
+                <div class="card">
+                    <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
+                    
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Database Name</th>
+                                    <th style="width:100px; text-align:right;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $configList = load_config($configFile)['databases'] ?? [];
+                                foreach ($configList as $dbItem): 
+                                ?>
+                                <tr>
+                                    <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
+                                    <td style="text-align:right;">
+                                        <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
+                                            <input type="hidden" name="action" value="remove_database_list">
+                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;"><i class="fas fa-times"></i></button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                                <?php if(empty($configList)): ?>
+                                    <tr><td colspan="2" style="text-align:center; color:var(--text-secondary);">No databases in list.</td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <form method="POST" style="margin-top:15px; display:flex; gap:10px;">
+                        <input type="hidden" name="action" value="add_database_list">
+                        <input type="text" name="name" class="form-control" placeholder="Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
+                        <button type="submit" class="btn btn-primary">Add to List</button>
+                    </form>
+                </div>
+
+                <!-- <div class="card">
+                    <h3><i class="fas fa-server"></i> Server Databases</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
+                    
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Database Name</th>
+                                    <th style="width:150px; text-align:right;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php 
+                                $serverDbs = [];
+                                try {
+                                    $stmt = $pdo->query("SHOW DATABASES");
+                                    $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                } catch (Exception $e) {
+                                    if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
+                                        echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                    } else {
+                                        echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                    }
+                                }
+
+                                foreach ($serverDbs as $dbItem): 
+                                    $inList = in_array($dbItem, $configList);
+                                ?>
+                                <tr>
+                                    <td><?=htmlspecialchars($dbItem)?></td>
+                                    <td style="text-align:right;">
+                                        <?php if(!$inList): ?>
+                                            <form method="POST" style="display:inline;">
+                                                <input type="hidden" name="action" value="add_database_list">
+                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                                <button type="submit" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Add to List"><i class="fas fa-plus"></i></button>
+                                            </form>
+                                        <?php endif; ?>
+                                        <form method="POST" onsubmit="saConfirmForm(event, 'DROP DATABASE <?=htmlspecialchars($dbItem)?>? THIS DESTROYS ALL DATA!')" style="display:inline;">
+                                            <input type="hidden" name="action" value="drop_database_server">
+                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
+                        <input type="hidden" name="action" value="create_database_server">
+                        <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
+                    </form>
+                </div>
+                 -->
                 <div class="card" style="margin-bottom:20px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                         <h3 style="margin:0;">Quick SQL</h3>

@@ -4355,6 +4355,8 @@
                   border-width: 2px;
                   padding: 10px;
                   outline: none;
+                    background: black;
+                    color: white;
               }
 
               .btn-2 {
