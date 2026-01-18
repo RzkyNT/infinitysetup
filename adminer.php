@@ -2,6 +2,7 @@
 session_start();
 
 $dbConfigPath = __DIR__ . '/adminer.db.json';
+$dbListPath   = __DIR__ . '/adminer.databases.json';
 
 function load_db_config($path)
 {
@@ -21,7 +22,56 @@ function load_db_config($path)
 
 function save_db_config($path, $data)
 {
-    $payload = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $filtered = [
+        'host' => $data['host'] ?? '',
+        'user' => $data['user'] ?? '',
+        'pass' => $data['pass'] ?? '',
+    ];
+    $payload = json_encode($filtered, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    return file_put_contents($path, $payload) !== false;
+}
+
+function is_valid_db_name($name)
+{
+    return (bool) preg_match('/^[A-Za-z0-9_\\$\\-\\.]+$/', $name);
+}
+
+function load_db_list($path)
+{
+    if (!file_exists($path)) {
+        return [];
+    }
+    $raw = file_get_contents($path);
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        return [];
+    }
+    $clean = [];
+    foreach ($data as $item) {
+        $item = trim((string) $item);
+        if ($item === '' || !is_valid_db_name($item)) {
+            continue;
+        }
+        if (!in_array($item, $clean, true)) {
+            $clean[] = $item;
+        }
+    }
+    return $clean;
+}
+
+function save_db_list($path, $names)
+{
+    $clean = [];
+    foreach ($names as $item) {
+        $item = trim((string) $item);
+        if ($item === '' || !is_valid_db_name($item)) {
+            continue;
+        }
+        if (!in_array($item, $clean, true)) {
+            $clean[] = $item;
+        }
+    }
+    $payload = json_encode($clean, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     return file_put_contents($path, $payload) !== false;
 }
 
@@ -29,7 +79,6 @@ function render_db_setup($defaults = [], $error = '', $success = '')
 {
     $host = htmlspecialchars($defaults['host'] ?? '');
     $user = htmlspecialchars($defaults['user'] ?? '');
-    $name = htmlspecialchars($defaults['name'] ?? '');
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -64,8 +113,6 @@ function render_db_setup($defaults = [], $error = '', $success = '')
                 <input type="text" id="user" name="db_user" value="<?php echo $user; ?>" required>
                 <label for="pass">DB Password</label>
                 <input type="password" id="pass" name="db_pass" value="" placeholder="Leave blank to keep existing">
-                <label for="name">Database Name</label>
-                <input type="text" id="name" name="db_name" value="<?php echo $name; ?>" required>
                 <button type="submit"><i class="fas fa-save"></i> Save Configuration</button>
             </form>
         </div>
@@ -76,24 +123,24 @@ function render_db_setup($defaults = [], $error = '', $success = '')
 }
 
 $dbConfig = load_db_config($dbConfigPath);
+$user_defined_databases = load_db_list($dbListPath);
 
 if (isset($_POST['db_setup_action'])) {
     $host = trim($_POST['db_host'] ?? '');
     $user = trim($_POST['db_user'] ?? '');
     $pass = $_POST['db_pass'] ?? '';
-    $name = trim($_POST['db_name'] ?? '');
 
-    $existing = $dbConfig ?? ['host' => '', 'user' => '', 'pass' => '', 'name' => ''];
-    if ($host === '' || $user === '' || $name === '') {
+    $existing = $dbConfig ?? ['host' => '', 'user' => '', 'pass' => ''];
+    if ($host === '' || $user === '') {
         render_db_setup(
-            ['host' => $host, 'user' => $user, 'name' => $name],
-            'Host, user, and database name are required.'
+            ['host' => $host, 'user' => $user],
+            'Host dan user wajib diisi.'
         );
     }
     if ($pass === '' && isset($existing['pass'])) {
         $pass = $existing['pass'];
     }
-    $payload = ['host' => $host, 'user' => $user, 'pass' => $pass, 'name' => $name];
+    $payload = ['host' => $host, 'user' => $user, 'pass' => $pass];
     if (!save_db_config($dbConfigPath, $payload)) {
         render_db_setup($payload, 'Failed to save configuration. Check file permissions.');
     }
@@ -111,10 +158,11 @@ if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === tr
         $_SESSION['db_host'] = $dbConfig['host'];
         $_SESSION['db_user'] = $dbConfig['user'];
         $_SESSION['db_pass'] = $dbConfig['pass'];
-        $_SESSION['db_name'] = $dbConfig['name'];
+        $_SESSION['db_name'] = $_SESSION['db_name'] ?? '';
     }
 }
 $DB_NAME = $_SESSION['db_name'] ?? '';
+$hasSelectedDatabase = $DB_NAME !== '';
 
 
 // ===== LOGOUT LOGIC =====
@@ -148,14 +196,6 @@ $databases = []; // List of databases
 $sqlResults = [];
 $lastResultSet = null;
 
-// --- Configurable List of User Databases ---
-// IMPORTANT: If 'SHOW DATABASES' is restricted by your hosting,
-// populate this array with the names of databases you have access to.
-// These will be used to populate the dropdown for selection.
-$user_defined_databases = [
-];
-// ------------------------------------------
-
 if ($is_logged_in) {
     try {
         // Try connecting with selected DB
@@ -188,11 +228,9 @@ if ($is_logged_in) {
             }
         } catch (Exception $e) {
             // If SHOW DATABASES fails, use user-defined list or just the current one if no user-defined
-            if (!empty($user_defined_databases)) {
-                $databases = $user_defined_databases;
-            } else {
-                $databases = [$_SESSION['db_name']];
-            }
+            $databases = !empty($user_defined_databases)
+                ? $user_defined_databases
+                : array_values(array_filter([$_SESSION['db_name']]));
         }
 
     } catch (Exception $e) {
@@ -201,8 +239,7 @@ if ($is_logged_in) {
         // Or, if user-defined databases are present, use those.
         if (!empty($user_defined_databases)) {
             $databases = $user_defined_databases;
-            // If current selected DB is no longer valid, switch to first available user-defined DB
-            if (!in_array($_SESSION['db_name'], $databases) && !empty($databases)) {
+            if (!in_array($_SESSION['db_name'], $databases, true) && !empty($databases)) {
                 $_SESSION['db_name'] = $databases[0];
                 header("Location: ?");
                 exit;
@@ -1267,6 +1304,7 @@ if ($is_logged_in && $currentTable) {
         <div class="db-info">
             <form method="GET" style="margin-bottom: 5px;">
                 <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: #222; color: white; border: 1px solid #444; width: 100%;">
+                    <option value="">-- Pilih Database --</option>
                     <?php foreach ($databases as $db): ?>
                         <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
                             <?=htmlspecialchars($db)?>
@@ -1324,7 +1362,15 @@ if ($is_logged_in && $currentTable) {
                 <div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> <?=htmlspecialchars($error)?></div>
             <?php endif; ?>
 
-            <?php if ($currentTable):
+            <?php if (!$hasSelectedDatabase): ?>
+                <div class="card">
+                    <h3>Pilih Database</h3>
+                    <p style="color:var(--text-secondary); line-height:1.6;">
+                        Kredensial sudah disimpan. Silakan pilih database dari dropdown di sidebar atau kelola daftar database
+                        melalui modul manajemen di bawah.
+                    </p>
+                </div>
+            <?php elseif ($currentTable):
                 ?>
                 <!-- TABLE VIEW -->
                 <div class="tabs">
