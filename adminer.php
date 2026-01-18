@@ -1404,16 +1404,14 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                 </select>
             </form>
             <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
-                <div class="nav-list">
+        </div>
+        <div class="nav-list">
             <div style="padding: 0 20px 10px;">
                 <input type="text" id="tableSearch" class="form-control" placeholder="Search tables..." style="width: 100%;">
             </div>
             <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
-            </div>
-        </div>
-        <div class="nav-list">
             <div class="nav-header"><span>Tables (<?=count($tables)?>)</span></div>
             <?php foreach ($tables as $t): ?>
                 <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>">
@@ -2088,7 +2086,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
                             <div style="display:flex; gap:10px;">
                                 <div style="flex:1;">
-                                    <textarea name="query" id="queryInput" class="form-control" rows="10" style="font-family:monospace; background: #000; border:1px solid #444;max-width: 680px; color:#0f0;" placeholder="SELECT * FROM..."><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : "SELECT * FROM `$currentTable` LIMIT 100"?></textarea>
+                                    <textarea name="query" id="queryInput" class="form-control" rows="10" style="font-family:monospace; background: #000; border:1px solid #444;max-width: 100%; color:#0f0;" placeholder="SELECT * FROM..."><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : "SELECT * FROM `$currentTable` LIMIT 100"?></textarea>
                                 </div>
                                 <div style="width: 250px; display: flex; flex-direction: column;">
                                     <div style="font-weight:bold; margin-bottom:5px; color:var(--text-secondary);">History</div>
@@ -2418,7 +2416,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     </div>
                     <form method="POST">
                         <input type="hidden" name="action" value="sql_query">
-                        <textarea name="query" rows="6" class="form-control" style="font-family:monospace; background:#000; color:#0f0; margin-bottom:10px; max-width: 935px;" placeholder="Enter SQL here..."></textarea>
+                        <textarea name="query" rows="6" class="form-control" style="font-family:monospace; background:#000; color:#0f0; margin-bottom:10px; max-width: 100%;" placeholder="Enter SQL here..."></textarea>
                         <div style="display:flex; gap:10px; align-items:center;">
                             <button type="submit" class="btn btn-primary"><i class="fas fa-play"></i> Run SQL</button>
                             <span style="font-size:0.8rem; color:var(--text-secondary);">Multiple statements separated by ';'</span>
