@@ -1485,10 +1485,11 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 <tr>
                                     <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
                                     <td style="text-align:right;">
+                                        <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-check"></i> Use</a>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
                                             <input type="hidden" name="action" value="remove_database_list">
                                             <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;"><i class="fas fa-times"></i></button>
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Remove from list"><i class="fas fa-times"></i></button>
                                         </form>
                                     </td>
                                 </tr>
@@ -2311,10 +2312,11 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 <tr>
                                     <td><i class="fas fa-database" style="color:var(--text-secondary); margin-right:8px;"></i> <?=htmlspecialchars($dbItem)?></td>
                                     <td style="text-align:right;">
+                                        <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-check"></i> Use</a>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'Remove <?=htmlspecialchars($dbItem)?> from list?')" style="display:inline;">
                                             <input type="hidden" name="action" value="remove_database_list">
                                             <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;"><i class="fas fa-times"></i></button>
+                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Remove from list"><i class="fas fa-times"></i></button>
                                         </form>
                                     </td>
                                 </tr>
