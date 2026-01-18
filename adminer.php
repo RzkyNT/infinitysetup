@@ -1485,7 +1485,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 ?>
                                 <tr style="<?= $isActive ? 'background:rgba(16, 185, 129, 0.1); color: var(--success)' : '' ?>">
                                     <td>
-                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--success)'?>; margin-right:8px;"></i> 
+                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--accent)'?>; margin-right:8px;"></i> 
                                         <?=htmlspecialchars($dbItem)?>
                                         <?php if($isActive): ?>
                                             <span style="font-size:0.75rem; background:var(--success); color:white; padding:2px 6px; border-radius:4px; margin-left:8px;">Active</span>
@@ -2321,7 +2321,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 ?>
                                 <tr style="<?= $isActive ? 'background:rgba(16, 185, 129, 0.1); color: var(--success)' : '' ?>">
                                     <td>
-                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--success)'?>; margin-right:8px;"></i> 
+                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--accent)'?>; margin-right:8px;"></i> 
                                         <?=htmlspecialchars($dbItem)?>
                                         <?php if($isActive): ?>
                                             <span style="font-size:0.75rem; background:var(--success); color:white; padding:2px 6px; border-radius:4px; margin-left:8px;">Active</span>
