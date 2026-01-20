@@ -1640,36 +1640,56 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                 <?php if ($view === 'data'): 
                     ?>
                     <!-- ADVANCED SEARCH -->
-                    <form class="search-bar" method="GET">
-                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                        <input type="hidden" name="view" value="data">
+                    <div style="margin-bottom:15px;">
+                        <form class="search-bar" method="GET" style="margin-bottom:5px;">
+                            <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                            <input type="hidden" name="view" value="data">
+                            
+                            <div class="search-group" style="flex:1;">
+                                <select name="search_col" class="form-select" style="width: 150px; background: var(--bg-card);">
+                                    <option value="">- All Cols -</option>
+                                    <?php foreach($tableColumns as $col):
+                                        ?><option value="<?=htmlspecialchars($col)?>" <?=$searchColumn===$col?'selected':''?>><?=htmlspecialchars($col)?></option><?php 
+                                    endforeach; ?>
+                                </select>
+                                <select name="search_op" class="form-select" style="width: 100px; background: var(--bg-card); border-left:1px solid var(--border-color);">
+                                    <option value="LIKE" <?=$searchOp==='LIKE'?'selected':''?>>LIKE</option>
+                                    <option value="=" <?=$searchOp==='='?'selected':''?>>=</option>
+                                    <option value="!=" <?=$searchOp==='!='?'selected':''?>>!=</option>
+                                    <option value=">" <?=$searchOp==='>'?'selected':''?>>&gt;</option>
+                                    <option value="<" <?=$searchOp==='<'?'selected':''?>>&lt;</option>
+                                </select>
+                                <input type="text" name="search_val" class="form-control" placeholder="Server-side Search..." value="<?=htmlspecialchars($searchVal)?>" style="width: 100%;">
+                            </div>
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Filter</button>
+                            <?php if($searchVal):
+                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i></a><?php 
+                            endif; ?>
+                        </form>
                         
-                        <div class="search-group" style="flex:1;">
-                            <select name="search_col" class="form-select" style="width: 150px; background: var(--bg-card);">
-                                <option value="">- All Cols -</option>
-                                <?php foreach($tableColumns as $col):
-                                    ?><option value="<?=htmlspecialchars($col)?>" <?=$searchColumn===$col?'selected':''?>><?=htmlspecialchars($col)?></option><?php 
-                                endforeach; ?>
-                            </select>
-                            <select name="search_op" class="form-select" style="width: 100px; background: var(--bg-card); border-left:1px solid var(--border-color);">
-                                <option value="LIKE" <?=$searchOp==='LIKE'?'selected':''?>>LIKE</option>
-                                <option value="=" <?=$searchOp==='='?'selected':''?>>=</option>
-                                <option value="!=" <?=$searchOp==='!='?'selected':''?>>!=</option>
-                                <option value=">" <?=$searchOp==='>'?'selected':''?>>&gt;</option>
-                                <option value="<" <?=$searchOp==='<'?'selected':''?>>&lt;</option>
-                            </select>
-                            <input type="text" name="search_val" class="form-control" placeholder="Search..." value="<?=htmlspecialchars($searchVal)?>" style="width: 100%;">
+                        <!-- Client-side Controls -->
+                        <div style="display:flex; gap:10px; align-items:center; background:var(--bg-hover); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+                            <div style="flex:1; display:flex; gap:10px; align-items:center;">
+                                <i class="fas fa-filter" style="color:var(--text-secondary);"></i>
+                                <input type="text" id="pageFilterInput" class="form-control" placeholder="Realtime Filter (Displayed Rows)..." style="max-width:300px;">
+                            </div>
+                            
+                            <div style="position:relative;">
+                                <button type="button" class="btn" onclick="document.getElementById('colToggleDropdown').classList.toggle('show')">
+                                    <i class="fas fa-columns"></i> Columns <i class="fas fa-caret-down" style="margin-left:5px;"></i>
+                                </button>
+                                <div id="colToggleDropdown" style="display:none; position:absolute; right:0; top:100%; background:var(--bg-card); border:1px solid var(--border-color); border-radius:6px; padding:10px; z-index:100; min-width:200px; box-shadow:0 10px 20px rgba(0,0,0,0.5); max-height:300px; overflow-y:auto;">
+                                    <div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333; font-weight:bold; font-size:0.85rem;">Toggle Columns</div>
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+
+                            <div style="margin-left:auto; display:flex; gap:10px;">
+                                <button type="button" onclick="submitBulkDelete()" class="btn btn-danger" id="bulkDeleteBtn" style="display:none;"><i class="fas fa-trash"></i> Delete Selected</button>
+                                <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
+                            </div>
                         </div>
-                        <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Filter</button>
-                        <?php if($searchVal):
-                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i></a><?php 
-                        endif; ?>
-                        
-                        <div style="margin-left:auto; display:flex; gap:10px;">
-                            <button type="button" onclick="submitBulkDelete()" class="btn btn-danger" id="bulkDeleteBtn" style="display:none;"><i class="fas fa-trash"></i> Delete Selected</button>
-                            <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
-                        </div>
-                    </form>
+                    </div>
 
                     <form method="POST" id="bulkForm">
                         <input type="hidden" name="action" value="bulk_delete">
@@ -1695,7 +1715,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                                     . "&search_val=" . urlencode($searchVal)
                                                     . "&order_by=" . urlencode($col)
                                                     . "&order_dir=" . urlencode($newOrderDir);
-                                        ?><th><a href="<?=$sortLink?>" style="color:inherit; text-decoration:none; display:flex; align-items:center; justify-content:space-between;"><?=$sortIcon?><?=htmlspecialchars($col)?></a></th><?php 
+                                        ?><th data-col="<?=htmlspecialchars($col)?>"><a href="<?=$sortLink?>" style="color:inherit; text-decoration:none; display:flex; align-items:center; justify-content:space-between;"><?=$sortIcon?><?=htmlspecialchars($col)?></a></th><?php 
                                     endforeach; ?>
                                 </tr>
                             </thead>
@@ -1725,7 +1745,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                                 // Check if table exists (optional, skipping for speed)
                                                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
                                             }
-                                            ?><td title="<?=htmlspecialchars((string)$val)?>"><?=$displayVal?></td><?php 
+                                            ?><td data-col="<?=htmlspecialchars($key)?>" title="<?=htmlspecialchars((string)$val)?>"><?=$displayVal?></td><?php 
                                         endforeach; ?>
                                     </tr>
                                 <?php endforeach; ?>
@@ -2654,47 +2674,146 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         });
     }
 
-    // Sidebar Toggle Functionality
+    // --- SIDEBAR TOGGLE & PERSISTENCE ---
     const sidebar = document.getElementById('sidebar');
-    const mainContent = document.querySelector('.main-content'); // Get main content
+    const mainContent = document.querySelector('.main-content');
     const sidebarToggle = document.getElementById('sidebarToggle');
     const toggleIcon = sidebarToggle.querySelector('i');
-    
-    // Set initial state based on window width
-    if (window.innerWidth <= 768) {
-        sidebar.classList.add('collapsed');
-        mainContent.classList.add('sidebar-collapsed');
-        toggleIcon.classList.remove('fa-angle-left');
-        toggleIcon.classList.add('fa-angle-right');
-    }
+    const SIDEBAR_STORAGE_KEY = 'adminer_sidebar_collapsed';
 
-    sidebarToggle.addEventListener('click', () => {
-        sidebar.classList.toggle('collapsed');
-        mainContent.classList.toggle('sidebar-collapsed'); // Toggle class on main content
-        if (sidebar.classList.contains('collapsed')) {
+    function setSidebarState(collapsed) {
+        if (collapsed) {
+            sidebar.classList.add('collapsed');
+            mainContent.classList.add('sidebar-collapsed');
             toggleIcon.classList.remove('fa-angle-left');
             toggleIcon.classList.add('fa-angle-right');
         } else {
+            sidebar.classList.remove('collapsed');
+            mainContent.classList.remove('sidebar-collapsed');
             toggleIcon.classList.remove('fa-angle-right');
             toggleIcon.classList.add('fa-angle-left');
         }
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed);
+    }
+
+    // Initialize Sidebar State
+    const storedState = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    const isSmallScreen = window.innerWidth <= 768;
+    // Default: Collapsed on small screens, Expanded on large (unless stored)
+    if (storedState === 'true' || (storedState === null && isSmallScreen)) {
+        setSidebarState(true);
+    } else {
+        setSidebarState(false);
+    }
+
+    sidebarToggle.addEventListener('click', () => {
+        setSidebarState(!sidebar.classList.contains('collapsed'));
     });
 
-    // Table Search Functionality
+    // --- TABLE SEARCH (Sidebar) ---
     const tableSearchInput = document.getElementById('tableSearch');
-    const navList = document.querySelector('.nav-list');
-    const tableItems = navList.querySelectorAll('.nav-item'); // Get all nav items
+    if (tableSearchInput) {
+        const navList = document.querySelector('.nav-list');
+        const tableItems = navList.querySelectorAll('.nav-item');
+        tableSearchInput.addEventListener('keyup', function() {
+            const searchTerm = this.value.toLowerCase();
+            tableItems.forEach(item => {
+                // Skip dashboard link
+                if (item.getAttribute('href') === '?') return;
+                const tableName = item.textContent.toLowerCase();
+                item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
+            });
+        });
+    }
 
-    tableSearchInput.addEventListener('keyup', function() {
-        const searchTerm = this.value.toLowerCase();
-        tableItems.forEach(item => {
-            const tableName = item.textContent.toLowerCase();
-            if (tableName.includes(searchTerm)) {
-                item.style.display = 'flex'; // Show matching items
-            } else {
-                item.style.display = 'none'; // Hide non-matching items
+    // --- REALTIME PAGE FILTER ---
+    const pageFilterInput = document.getElementById('pageFilterInput');
+    if (pageFilterInput) {
+        pageFilterInput.addEventListener('keyup', function() {
+            const term = this.value.toLowerCase();
+            const rows = document.querySelectorAll('tbody tr');
+            rows.forEach(row => {
+                // Ignore rows that are just 'No data' messages
+                if (row.cells.length === 1 && row.textContent.trim() === 'No data found') return;
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(term) ? '' : 'none';
+            });
+        });
+    }
+
+    // --- COLUMN VISIBILITY ---
+    // Inject CSS for the show class
+    const style = document.createElement('style');
+    style.innerHTML = '#colToggleDropdown.show { display: block !important; }';
+    document.head.appendChild(style);
+
+    function initColumnVisibility() {
+        const dropdown = document.getElementById('colToggleDropdown');
+        if (!dropdown) return;
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableName = urlParams.get('table');
+        if (!tableName) return;
+        
+        const storageKey = 'adminer_hidecols_' + tableName;
+        let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
+
+        // Get all headers that have data-col attribute
+        const headers = document.querySelectorAll('th[data-col]');
+        
+        headers.forEach(th => {
+            const colName = th.getAttribute('data-col');
+            const isHidden = hiddenCols.includes(colName);
+            
+            // Create Checkbox UI
+            const div = document.createElement('div');
+            div.style.padding = '4px 0';
+            div.innerHTML = `
+                <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
+                    <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
+                    <span style="font-size:0.9rem;">${colName}</span>
+                </label>
+            `;
+            dropdown.appendChild(div);
+            
+            const checkbox = div.querySelector('input');
+            checkbox.addEventListener('change', (e) => {
+                toggleColumn(colName, e.target.checked);
+            });
+
+            // Apply initial state
+            if (isHidden) {
+                toggleColumn(colName, false);
             }
         });
+
+        function toggleColumn(colName, show) {
+            // Toggle Header
+            const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
+            if (th) th.style.display = show ? '' : 'none';
+
+            // Toggle Cells
+            const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
+            cells.forEach(td => td.style.display = show ? '' : 'none');
+            
+            // Update Storage
+            if (show) {
+                hiddenCols = hiddenCols.filter(c => c !== colName);
+            } else {
+                if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
+            }
+            localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
+        }
+    }
+    initColumnVisibility();
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(event) {
+        const dropdown = document.getElementById('colToggleDropdown');
+        const button = document.querySelector('button[onclick*="colToggleDropdown"]');
+        if (dropdown && button && !dropdown.contains(event.target) && !button.contains(event.target)) {
+            dropdown.classList.remove('show');
+        }
     });
 
     if (typeof mermaid !== 'undefined') {
