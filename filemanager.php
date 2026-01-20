@@ -3865,6 +3865,8 @@
           <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
           <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with RFILE Manager">
           <meta name="author" content="@RzkyNT">
+          <link rel="icon" type="image/svg+xml" href="https://am.ct.ws/icon.svg">
+          <link rel="shortcut icon" href="https://am.ct.ws/icon.svg">
           <meta name="robots" content="noindex, nofollow">
           <meta name="googlebot" content="noindex">
           <?php if ($favicon_path) {

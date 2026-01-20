@@ -52,6 +52,47 @@ function save_db_list($path, $names) {
     return save_config($path, ['databases' => $names]);
 }
 
+function normalize_db_host($host) {
+    $normalized = strtolower(trim((string) $host));
+    if (strpos($normalized, ':') !== false) {
+        $normalized = explode(':', $normalized, 2)[0];
+    }
+    return $normalized;
+}
+
+function detect_host_profile($host) {
+    $normalized = normalize_db_host($host);
+    if ($normalized === 'localhost' || $normalized === '127.0.0.1') {
+        return 'local';
+    }
+    if ($normalized !== '' && preg_match('/(infinityfree|epizy|ezyro)/', $normalized)) {
+        return 'infinityfree';
+    }
+    return 'remote';
+}
+
+function should_prefix_database_names($hostProfile) {
+    return $hostProfile === 'infinityfree';
+}
+
+function should_show_managed_database_list($hostProfile) {
+    return $hostProfile !== 'local';
+}
+
+function should_show_server_database_panel($hostProfile) {
+    return $hostProfile !== 'infinityfree';
+}
+
+function apply_database_prefix($dbname, $dbUser, $hostProfile) {
+    if (!$dbname || !$dbUser) {
+        return $dbname;
+    }
+    if (!should_prefix_database_names($hostProfile)) {
+        return $dbname;
+    }
+    return (strpos($dbname, $dbUser . '_') === 0) ? $dbname : $dbUser . '_' . $dbname;
+}
+
 function render_db_setup($defaults = [], $error = '', $success = '')
 {
     $host = htmlspecialchars($defaults['host'] ?? '');
@@ -63,6 +104,8 @@ function render_db_setup($defaults = [], $error = '', $success = '')
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Database Setup</title>
+        <link rel="icon" type="image/svg+xml" href="https://am.ct.ws/icon.svg">
+        <link rel="shortcut icon" href="https://am.ct.ws/icon.svg">
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
         <style>
             body { background:#0b0b0b; color:#f0f0f0; font-family: 'Segoe UI', system-ui, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
@@ -157,7 +200,7 @@ if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === tr
 }
 $DB_NAME = $_SESSION['db_name'] ?? '';
 $hasSelectedDatabase = $DB_NAME !== '';
-$currentTable = isset($_GET['table']) ? preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['table']) : null;
+$currentTable = isset($_GET['table']) ? preg_replace('/[^a-zA-Z0-9_\$\- ]/', '', $_GET['table']) : null;
 $view = isset($_GET['view']) ? $_GET['view'] : 'structure';
 
 
@@ -192,6 +235,7 @@ $pdo = null;
 $databases = []; // List of databases
 $sqlResults = [];
 $lastResultSet = null;
+$hostProfile = detect_host_profile($dbConfig['host'] ?? $_SESSION['db_host'] ?? '');
 
 // Debug log
 error_log("Adminer: is_logged_in=$is_logged_in, hasSelectedDatabase=$hasSelectedDatabase, DB_NAME=" . ($_SESSION['db_name'] ?? 'empty'));
@@ -220,6 +264,11 @@ if ($is_logged_in) {
             // Prioritaskan database dari server
             if (!empty($databases_from_server)) {
                 $databases = $databases_from_server;
+            } elseif ($hostProfile === 'local') {
+                // Jika di localhost, kita asumsikan full akses.
+                // Jika SHOW DATABASES kosong, berarti memang tidak ada database (atau error koneksi),
+                // jadi jangan fallback ke JSON (sesuai request user).
+                $databases = $databases_from_server; 
             } elseif (!empty($user_defined_databases)) {
                 // Fallback ke user defined databases
                 $databases = $user_defined_databases;
@@ -820,10 +869,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $config = load_config($configFile);
         $dbUser = $config['user'] ?? '';
-        // Auto-prefix with username if not present (InfinityFree style)
-        if ($dbUser && strpos($dbName, $dbUser . '_') !== 0) {
-             $dbName = $dbUser . '_' . $dbName;
-        }
+        $dbName = apply_database_prefix($dbName, $dbUser, $hostProfile);
 
         if ($dbName && is_valid_db_name($dbName)) {
             $currentList = $config['databases'] ?? [];
@@ -855,10 +901,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $config = load_config($configFile);
         $dbUser = $config['user'] ?? '';
-        // Auto-prefix with username if not present
-        if ($dbUser && strpos($dbName, $dbUser . '_') !== 0) {
-             $dbName = $dbUser . '_' . $dbName;
-        }
+        $dbName = apply_database_prefix($dbName, $dbUser, $hostProfile);
 
         if ($dbName && is_valid_db_name($dbName)) {
             try {
@@ -933,6 +976,7 @@ $totalSize = 0;
 $relationshipDiagram = '';
 $erdDiagram = '';
 $relationshipPlantumlEncoded = null;
+$plantumlDiagramEncoded = null;
 $erdPlantumlEncoded = null;
 
 // Hanya jalankan jika ada koneksi PDO yang valid DAN ada database yang dipilih
@@ -1462,11 +1506,14 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     </p>
                 </div>
 
+                <?php 
+                $configList = load_config($configFile)['databases'] ?? [];
+                if (should_show_managed_database_list($hostProfile)): ?>
                 <!-- MANAGEMENT UI -->
                 <div class="card">
                     <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
                     <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
-                    
+
                     <div class="table-wrapper">
                         <table>
                             <thead>
@@ -1514,8 +1561,9 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <button type="submit" class="btn btn-primary">Add to List</button>
                     </form>
                 </div>
-
-                <!-- <div class="card">
+                <?php endif; ?>
+                <?php if (should_show_server_database_panel($hostProfile)): ?>
+                <div class="card">
                     <h3><i class="fas fa-server"></i> Server Databases</h3>
                     <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
                     
@@ -1541,18 +1589,17 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                     }
                                 }
 
+                                $configList = load_config($configFile)['databases'] ?? [];
                                 foreach ($serverDbs as $dbItem): 
                                     $inList = in_array($dbItem, $configList);
                                 ?>
                                 <tr>
                                     <td><?=htmlspecialchars($dbItem)?></td>
                                     <td style="text-align:right;">
-                                        <?php if(!$inList): ?>
-                                            <form method="POST" style="display:inline;">
-                                                <input type="hidden" name="action" value="add_database_list">
-                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                                <button type="submit" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Add to List"><i class="fas fa-plus"></i></button>
-                                            </form>
+                                        <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
+                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php else: ?>
+                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
                                         <?php endif; ?>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'DROP DATABASE <?=htmlspecialchars($dbItem)?>? THIS DESTROYS ALL DATA!')" style="display:inline;">
                                             <input type="hidden" name="action" value="drop_database_server">
@@ -1571,7 +1618,8 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
                         <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
                     </form>
-                </div> -->
+                </div>
+                <?php endif; ?>
             <?php elseif ($currentTable):
                 ?>
                 <!-- TABLE VIEW -->
@@ -1693,7 +1741,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         $pagination_params = "&search_col=" . urlencode($searchColumn)
                                             . "&search_op=" . urlencode($searchOp)
                                             . "&search_val=" . urlencode($searchVal)
-                                            . "&order_by=" . urlencode($orderBy)
+                                            . "&order_by=" . urlencode($orderBy ?? '')
                                             . "&order_dir=" . urlencode($orderDir);
                         if($offset > 0):
                             ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=max(0, $offset-$limit)?><?=$pagination_params?>" class="btn">Previous</a><?php 
@@ -2299,6 +2347,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             <?php else:
                 ?>
                 <!-- DASHBOARD -->
+                <?php if (should_show_managed_database_list($hostProfile)): ?>
                 <div class="card">
                     <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
                     <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
@@ -2350,8 +2399,9 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <button type="submit" class="btn btn-primary">Add to List</button>
                     </form>
                 </div>
+                <?php endif; ?>
 
-                <!-- <div class="card">
+                <div class="card">
                     <h3><i class="fas fa-server"></i> Server Databases</h3>
                     <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
                     
@@ -2377,18 +2427,17 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                     }
                                 }
 
+                                $configList = load_config($configFile)['databases'] ?? [];
                                 foreach ($serverDbs as $dbItem): 
                                     $inList = in_array($dbItem, $configList);
                                 ?>
                                 <tr>
                                     <td><?=htmlspecialchars($dbItem)?></td>
                                     <td style="text-align:right;">
-                                        <?php if(!$inList): ?>
-                                            <form method="POST" style="display:inline;">
-                                                <input type="hidden" name="action" value="add_database_list">
-                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                                <button type="submit" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Add to List"><i class="fas fa-plus"></i></button>
-                                            </form>
+                                        <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
+                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                        <?php else: ?>
+                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
                                         <?php endif; ?>
                                         <form method="POST" onsubmit="saConfirmForm(event, 'DROP DATABASE <?=htmlspecialchars($dbItem)?>? THIS DESTROYS ALL DATA!')" style="display:inline;">
                                             <input type="hidden" name="action" value="drop_database_server">
@@ -2408,7 +2457,6 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
                     </form>
                 </div>
-                 -->
                 <div class="card" style="margin-bottom:20px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                         <h3 style="margin:0;">Quick SQL</h3>
@@ -2550,8 +2598,8 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                                 <input type="checkbox" name="tables[]" value="<?=htmlspecialchars($t['Name'])?>" class="table-checkbox">
                                             </td>
                                             <td><a href="?table=<?=htmlspecialchars($t['Name'])?>" style="font-weight: bold; color: var(--accent);"><?=htmlspecialchars($t['Name'])?></a></td>
-                                            <td><?=number_format($t['Rows'])?></td>
-                                            <td><?=formatSize($t['Data_length'] + $t['Index_length'])?></td>
+                                            <td><?=number_format($t['Rows'] ?? 0)?></td>
+                                            <td><?=formatSize(($t['Data_length'] ?? 0) + ($t['Index_length'] ?? 0))?></td>
                                             <td><?=$t['Collation']?></td>
                                             <td>
                                                 <a href="?table=<?=htmlspecialchars($t['Name'])?>&view=structure" class="btn" style="padding:2px 6px; font-size:0.75rem;">Struct</a>
@@ -2564,7 +2612,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         </div>
                     </form>
                 </div>
-            <?php endif; ?>
+                <?php endif; ?>
         </div>
     </div>
 
