@@ -37,6 +37,8 @@ if (!isset($_SESSION['portal_logged_in'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="https://am.ct.ws/icon.svg">
+    <link rel="shortcut icon" href="https://am.ct.ws/icon.svg">
     <title>Infinity Portal</title>
     <style>
         body { background: #121212; color: #eee; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
@@ -46,6 +48,8 @@ if (!isset($_SESSION['portal_logged_in'])) {
         input:focus { border-color: #0d6efd; }
         button { width: 100%; padding: 12px; background: #0d6efd; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; font-weight: 600; transition: 0.2s; }
         button:hover { background: #0b5ed7; }
+        .button { width: 100%; padding: 12px; background: #0d6efd; color: white; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; font-weight: 600; transition: 0.2s; }
+        .button:hover { background: #0b5ed7; }
         .error { color: #ff6b6b; margin-bottom: 1rem; font-size: 0.9rem; }
     </style>
 </head>
@@ -184,6 +188,9 @@ if (
     <nav class="navbar">
         <div class="brand"><i class="fas fa-infinity"></i> Infinity Portal</div>
         <div class="actions">
+            <a href="filemanager.php?p=&edit=adminer.config.json" class="button">
+                <i class="fas fa-gear"></i> DB Config
+            </a>
             <form method="POST" class="update-form" id="update-form">
                 <input type="hidden" name="update_action" value="1">
                 <button type="submit"><i class="fas fa-rotate"></i> Update</button>
