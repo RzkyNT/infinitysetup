@@ -1280,8 +1280,10 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
     <title>DB Manager <?= $is_logged_in ? '- ' . htmlspecialchars($_SESSION['db_name']) : '' ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css"> <!-- SweetAlert2 Dark Theme -->
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.bootstrap5.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
     <style>
         :root {
             --bg-body: #050505;
@@ -1298,6 +1300,14 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             --sidebar-width: 260px;
             --sidebar-collapsed-width: 50px; /* New variable for collapsed width */
         }
+        /* TomSelect Dark Mode Fixes */
+        .ts-control { background-color: var(--bg-input) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; border-radius: 4px; }
+        .ts-control input { color: var(--text-primary) !important; }
+        .ts-dropdown { background-color: var(--bg-card) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
+        .ts-dropdown .option { color: var(--text-primary) !important; }
+        .ts-dropdown .active { background-color: var(--accent) !important; color: white !important; }
+        .ts-wrapper.single .ts-control:after { border-color: #888 transparent transparent transparent !important; }
+        
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', system-ui, sans-serif; 
@@ -2382,8 +2392,8 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                     }
                                 }
                                 
-                                // Fetch Limit 200
-                                $dataStmt = $pdo->query("SELECT `$refCol`, `$displayCol` FROM `$refTable` LIMIT 200");
+                                // Fetch Limit 1000
+                                $dataStmt = $pdo->query("SELECT `$refCol`, `$displayCol` FROM `$refTable` LIMIT 1000");
                                 $fkInfo['data'] = $dataStmt->fetchAll();
                                 $fkInfo['display'] = $displayCol;
                             }
@@ -2428,7 +2438,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                             $inputHtml .= '<option value="'.htmlspecialchars($pkVal).'" '.$selected.'>'.htmlspecialchars($label).'</option>';
                                         }
                                         $inputHtml .= '</select>';
-                                        $inputHtml .= '<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">Ref: '.$fk['table'].' (Limit 200)</div>';
+                                        $inputHtml .= '<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">Ref: '.$fk['table'].' (Limit 1000)</div>';
                                     }
                                     // ENUM / SET
                                     elseif (preg_match("/^(enum|set)\((.*)\)$/i", $type, $matches)) {
@@ -3003,6 +3013,24 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             }
         });
     }
+
+    // Initialize TomSelect for Searchable Dropdowns
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('form select.form-select').forEach((el) => {
+            // Apply only if not in the export form or bulk action form (optional check, but safe to apply generally in edit forms)
+            // We specifically want this for the Row Editor
+            if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
+                new TomSelect(el, {
+                    plugins: ['clear_button'],
+                    maxOptions: 50,
+                    sortField: {
+                        field: "text",
+                        direction: "asc"
+                    }
+                });
+            }
+        });
+    });
 </script>
 </body>
 </html>
