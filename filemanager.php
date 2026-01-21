@@ -1549,6 +1549,247 @@
       exit;
   }
 
+  // --- GIT FTP GUI ---
+  if (isset($_GET['git_ftp']) && !FM_READONLY) {
+      fm_show_header();
+      fm_show_nav_path(FM_PATH);
+      
+      // Determine target directory
+      $targetDir = FM_ROOT_PATH;
+      if (FM_PATH != '') {
+          $targetDir .= DIRECTORY_SEPARATOR . FM_PATH;
+      }
+      // Fix slash for Windows checks
+      $targetDir = str_replace('/', DIRECTORY_SEPARATOR, $targetDir);
+      
+      $msg = '';
+      $output = '';
+      $msgType = 'success';
+      $configFile = $targetDir . DIRECTORY_SEPARATOR . '.git-ftp-config.json';
+      $config = ['host' => '', 'user' => '', 'pass' => '', 'path' => '/public_html/'];
+      
+      // Load Config
+      if (file_exists($configFile)) {
+          $loaded = json_decode(file_get_contents($configFile), true);
+          if (is_array($loaded)) $config = array_merge($config, $loaded);
+      }
+      
+      // Handle Actions
+      if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+          // Save Config automatically on any action
+          $config['host'] = $_POST['host'] ?? '';
+          $config['user'] = $_POST['user'] ?? '';
+          $config['pass'] = $_POST['pass'] ?? '';
+          $config['path'] = $_POST['path'] ?? '';
+          
+          file_put_contents($configFile, json_encode($config));
+          
+          $action = $_POST['action'] ?? '';
+          $dryRun = isset($_POST['dry_run']) ? '--dry-run' : '';
+          
+          // Construct Git FTP Command
+          // Note: On Windows, use double quotes mostly, but git-ftp usually runs in bash context if available.
+          // Assuming 'git' is in Windows PATH.
+          
+          $remoteUrl = "ftp://" . $config['host'] . $config['path'];
+          $cmdPrefix = "git ftp $action --user " . escapeshellarg($config['user']) . " --passwd " . escapeshellarg($config['pass']) . " $dryRun " . escapeshellarg($remoteUrl);
+          
+          // Prepare Environment
+          putenv("HOME=" . $targetDir); // Important for Git to find global config if needed
+          
+          // Command Chaining (Cross-platform friendly)
+          $cdCmd = "cd " . escapeshellarg($targetDir);
+          
+          if ($action === 'init_repo') {
+               $cmd = "$cdCmd && git init 2>&1";
+               $rawOutput = shell_exec($cmd);
+               $output = $rawOutput;
+               if (strpos($output, 'Initialized') !== false || file_exists($targetDir . '/.git')) {
+                   $msg = "Git Repository Initialized successfully.";
+               } else {
+                   $msg = "Failed to initialize Git. Check permissions or git installation.";
+                   $msgType = 'danger';
+               }
+          } elseif ($action === 'add_commit') {
+               $cmd = "$cdCmd && git config user.email 'admin@filemanager' && git config user.name 'FileManager' && git add . && git commit -m \"Auto commit " . date('Y-m-d H:i:s') . "\" 2>&1";
+               $output = shell_exec($cmd);
+               $msg = "Changes committed locally.";
+          } elseif ($action === 'init' || $action === 'push' || $action === 'catchup') {
+               $cmd = "$cdCmd && $cmdPrefix 2>&1";
+               $rawOutput = shell_exec($cmd);
+               // Mask password
+               $output = str_replace($config['pass'], '*****', $rawOutput);
+               $msg = "Command '$action' executed.";
+          }
+      }
+      
+      $hasGit = file_exists($targetDir . DIRECTORY_SEPARATOR . '.git');
+      
+      // Get Git Status
+      $gitStatus = [];
+      if ($hasGit) {
+          $statusCmd = "cd " . escapeshellarg($targetDir) . " && git status --porcelain 2>&1";
+          // Fix environment for Windows if needed
+          putenv("HOME=" . $targetDir);
+          
+          $rawStatus = shell_exec($statusCmd);
+          if ($rawStatus) {
+              $lines = explode("\n", trim($rawStatus));
+              foreach ($lines as $line) {
+                  if (strlen($line) > 3) {
+                      $code = substr($line, 0, 2);
+                      $file = substr($line, 3);
+                      $gitStatus[] = ['code' => $code, 'file' => $file];
+                  }
+              }
+          }
+      }
+      
+      ?>
+      <div class="col-md-8 offset-md-2 pt-3">
+          <div class="card mb-2" data-bs-theme="<?php echo FM_THEME; ?>">
+              <h6 class="card-header d-flex justify-content-between align-items-center">
+                  <span><i class="fa fa-git"></i> Git FTP Manager (<?= htmlspecialchars(FM_PATH ?: 'root') ?>)</span>
+                  <a href="?p=<?php echo FM_PATH ?>" class="text-danger"><i class="fa fa-times-circle-o"></i> <?php echo lng('Cancel') ?></a>
+              </h6>
+              <div class="card-body">
+                  <?php if ($msg): ?>
+                      <div class="alert alert-<?= $msgType ?>"><?php echo htmlspecialchars($msg) ?></div>
+                  <?php endif; ?>
+                  
+                  <?php if (!$hasGit): ?>
+                      <div class="alert alert-warning">
+                          <h5 class="alert-heading"><i class="fa fa-exclamation-triangle"></i> No Git Repository Found!</h5>
+                          <p>Git belum diinisialisasi di folder ini (<code><?= htmlspecialchars($targetDir) ?></code>).</p>
+                          <hr>
+                          <p class="mb-0">Klik tombol di bawah untuk membuat repository git baru di sini.</p>
+                          <form method="POST" style="margin-top:15px;">
+                               <input type="hidden" name="action" value="init_repo">
+                               <button type="submit" class="btn btn-warning w-100">Initialize Git Repo Here</button>
+                          </form>
+                      </div>
+                  <?php else: ?>
+                  
+                  <?php if (!empty($gitStatus)): ?>
+                      <div class="card mb-4" style="border: 1px solid #444;">
+                          <div class="card-header bg-dark text-white" style="font-size: 0.9rem;">
+                              <i class="fa fa-list"></i> Pending Changes (<?= count($gitStatus) ?>)
+                          </div>
+                          <div class="table-responsive" style="max-height: 200px; overflow-y: auto;">
+                              <table class="table table-sm table-dark table-striped mb-0" style="font-size: 0.85rem;">
+                                  <thead>
+                                      <tr>
+                                          <th style="width: 50px;">Status</th>
+                                          <th>File</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      <?php foreach ($gitStatus as $item): 
+                                          $code = $item['code'];
+                                          $color = 'secondary';
+                                          $icon = 'question';
+                                          if (strpos($code, 'M') !== false) { $color = 'warning'; $icon = 'pencil'; }
+                                          elseif (strpos($code, 'A') !== false || strpos($code, '?') !== false) { $color = 'success'; $icon = 'plus'; }
+                                          elseif (strpos($code, 'D') !== false) { $color = 'danger'; $icon = 'trash'; }
+                                      ?>
+                                      <tr>
+                                          <td class="text-center"><span class="badge bg-<?= $color ?>"><?= htmlspecialchars($code) ?></span></td>
+                                          <td><?= htmlspecialchars($item['file']) ?></td>
+                                      </tr>
+                                      <?php endforeach; ?>
+                                  </tbody>
+                              </table>
+                          </div>
+                      </div>
+                  <?php else: ?>
+                      <div class="alert alert-success py-2 mb-4" style="font-size: 0.9rem;">
+                          <i class="fa fa-check-circle"></i> No local changes. Working tree clean.
+                      </div>
+                  <?php endif; ?>
+
+                  <div class="accordion mb-4" id="gitGuideAccordion">
+                      <div class="accordion-item" style="background: transparent; border: 1px solid #444;">
+                          <h2 class="accordion-header" id="headingGuide">
+                              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseGuide" style="padding: 10px; background: rgba(255,255,255,0.05);">
+                                  <i class="fa fa-book me-2"></i> Guide / Panduan Penggunaan & Status
+                              </button>
+                          </h2>
+                          <div id="collapseGuide" class="accordion-collapse collapse" data-bs-parent="#gitGuideAccordion">
+                              <div class="accordion-body" style="font-size: 0.9rem;">
+                                  <ul style="padding-left: 20px;">
+                                      <li class="mb-2"><strong>Edit Config:</strong> Form di bawah ini otomatis terisi dari file config tersembunyi. Anda bisa mengeditnya kapan saja. Perubahan tersimpan saat Anda menekan tombol aksi apapun.</li>
+                                      <li class="mb-2"><span class="badge bg-secondary">1. Commit</span>: Wajib dilakukan sebelum upload. Ini menyimpan perubahan file lokal ke "sejarah" Git lokal.</li>
+                                      <li class="mb-2"><span class="badge bg-info">2. Setup (Init)</span>: Gunakan ini <strong>HANYA</strong> untuk upload pertama kali ke server FTP kosong. Ini akan mengupload SEMUA file.</li>
+                                      <li class="mb-2"><span class="badge bg-success">3. Push</span>: Gunakan ini untuk sehari-hari. Ini hanya mengupload file yang <strong>berubah</strong> sejak upload terakhir.</li>
+                                      <li class="mb-2"><span class="badge bg-warning text-dark">Catchup</span>: Gunakan jika file di server FTP dan lokal SUDAH SAMA, tapi Anda baru saja menginstall Git FTP. Ini menandai server "sudah up-to-date" tanpa mengupload apa-apa.</li>
+                                  </ul>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+
+                  <form method="POST">
+                      <div class="row mb-3">
+                          <div class="col-md-6">
+                              <label>FTP Host</label>
+                              <input type="text" name="host" class="form-control" value="<?php echo htmlspecialchars($config['host']) ?>" placeholder="ftp.example.com" required>
+                          </div>
+                          <div class="col-md-6">
+                              <label>Remote Path</label>
+                              <input type="text" name="path" class="form-control" value="<?php echo htmlspecialchars($config['path']) ?>" placeholder="/public_html/" required>
+                          </div>
+                      </div>
+                      <div class="row mb-3">
+                          <div class="col-md-6">
+                              <label>FTP User</label>
+                              <input type="text" name="user" class="form-control" value="<?php echo htmlspecialchars($config['user']) ?>" required>
+                          </div>
+                          <div class="col-md-6">
+                              <label>FTP Password</label>
+                              <input type="password" name="pass" class="form-control" value="<?php echo htmlspecialchars($config['pass']) ?>" required>
+                          </div>
+                      </div>
+                      
+                      <div class="mb-3 form-check p-3" style="background: rgba(255,255,255,0.05); border-radius: 4px; margin-left: 12px; margin-right: 12px;">
+                          <input type="checkbox" class="form-check-input" name="dry_run" id="dryRun">
+                          <label class="form-check-label" for="dryRun"><strong>Dry Run (Mode Tes)</strong> - Centang ini untuk melihat file apa yang akan diupload TANPA benar-benar menguploadnya.</label>
+                      </div>
+                      
+                      <div class="d-grid gap-2">
+                           <button type="submit" name="action" value="add_commit" class="btn btn-secondary text-start">
+                               <i class="fa fa-save me-2"></i> 1. Commit Local Changes (Simpan Perubahan Lokal)
+                           </button>
+                           
+                           <div class="btn-group" role="group">
+                               <button type="submit" name="action" value="init" class="btn btn-info text-white" onclick="return confirm('WARNING: Setup akan mengupload SEMUA file. Gunakan ini hanya jika FTP kosong. Lanjutkan?')">
+                                   <i class="fa fa-cloud-upload me-2"></i> 2. Setup (Upload All)
+                               </button>
+                               <button type="submit" name="action" value="push" class="btn btn-success">
+                                   <i class="fa fa-arrow-circle-up me-2"></i> 3. Push (Sync Changes)
+                               </button>
+                               <button type="submit" name="action" value="catchup" class="btn btn-warning text-dark" title="Mark server as up-to-date without uploading">
+                                   <i class="fa fa-check me-2"></i> Catchup (Skip Upload)
+                               </button>
+                           </div>
+                      </div>
+                  </form>
+                  
+                  <?php if ($output): ?>
+                      <div class="mt-4">
+                          <h6><i class="fa fa-terminal"></i> Command Output:</h6>
+                          <pre style="background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 5px; max-height: 400px; overflow: auto; font-family: monospace; font-size: 0.85rem; border: 1px solid #333;"><?php echo htmlspecialchars($output) ?></pre>
+                      </div>
+                  <?php endif; ?>
+                  
+                  <?php endif; ?>
+              </div>
+          </div>
+      </div>
+      <?php
+      fm_show_footer();
+      exit;
+  }
+
   if (isset($_GET['settings']) && !FM_READONLY) {
       fm_show_header(); // HEADER
       fm_show_nav_path(FM_PATH); // current path
@@ -3810,8 +4051,9 @@
                                   <i class="fa fa-user-circle"></i>
                               </a>
 
-                              <div class="dropdown-menu dropdown-menu-end text-small shadow" aria-labelledby="navbarDropdownMenuLink-5" data-bs-theme="<?php echo FM_THEME; ?>">
+                              <div class="dropdown-menu dropdown-menu-end text-small shadow" aria-labelledby="navbarDropdownMenuLink-5" data-bs-theme="<?php echo FM_THEME; ?>" style="background: #0f0f0f !important;">
                                   <?php if (!FM_READONLY): ?>
+                                      <a title="Git FTP" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;git_ftp=1"><i class="fa fa-git" aria-hidden="true"></i> Git FTP</a>
                                       <a title="<?php echo lng('Settings') ?>" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;settings=1"><i class="fa fa-cog" aria-hidden="true"></i> <?php echo lng('Settings') ?></a>
                                   <?php endif ?>
                                   <a title="<?php echo lng('Help') ?>" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;help=2"><i class="fa fa-exclamation-circle" aria-hidden="true"></i> <?php echo lng('Help') ?></a>
@@ -3820,6 +4062,9 @@
                           </li>
                       <?php else: ?>
                           <?php if (!FM_READONLY): ?>
+                              <li class="nav-item">
+                                  <a title="Git FTP" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;git_ftp=1"><i class="fa fa-git" aria-hidden="true"></i> Git FTP</a>
+                              </li>
                               <li class="nav-item">
                                   <a title="<?php echo lng('Settings') ?>" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;settings=1"><i class="fa fa-cog" aria-hidden="true"></i> <?php echo lng('Settings') ?></a>
                               </li>
@@ -4004,7 +4249,7 @@
               .h-100vh {
                   min-height: 100vh;
               }
-          </style>
+              </style>
       </head>
 
       <body class="fm-login-page <?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?>">

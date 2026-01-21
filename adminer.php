@@ -663,48 +663,80 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- EXPORT ---
     elseif ($action === 'export') {
         $exportTable = $_POST['table'] ?? null; // If null, export all
-        $filename = ($exportTable ? $exportTable : $_SESSION['db_name']) . "_" . date("Y-m-d_H-i-s") . ".sql";
+        $format = $_POST['format'] ?? 'sql';
+        $filename = ($exportTable ? $exportTable : $_SESSION['db_name']) . "_" . date("Y-m-d_H-i-s");
 
-        header('Content-Type: application/octet-stream');
-        header("Content-Transfer-Encoding: Binary"); 
-        header("Content-disposition: attachment; filename=\"$filename\""); 
-        
-        $tablesToExport = [];
-        if ($exportTable) {
-            $tablesToExport[] = $exportTable;
+        if ($format === 'csv') {
+            header('Content-Type: text/csv');
+            header("Content-disposition: attachment; filename=\"$filename.csv\"");
+            $out = fopen('php://output', 'w');
+            
+            // Only support single table export for CSV for simplicity
+            if ($exportTable) {
+                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $first = true;
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    if ($first) {
+                        fputcsv($out, array_keys($row));
+                        $first = false;
+                    }
+                    fputcsv($out, $row);
+                }
+            }
+            fclose($out);
+        } elseif ($format === 'json') {
+            header('Content-Type: application/json');
+            header("Content-disposition: attachment; filename=\"$filename.json\"");
+            
+            $data = [];
+            if ($exportTable) {
+                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+            echo json_encode($data, JSON_PRETTY_PRINT);
         } else {
-            $stmt = $pdo->query("SHOW TABLES");
-            while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
-                $tablesToExport[] = $row[0];
-            }
-        }
-        
-        echo "-- Adminer Export: " . date("Y-m-d H:i:s") . "\n";
-        echo "-- Database: " . $_SESSION['db_name'] . "\n\n";
-        
-        foreach ($tablesToExport as $t) {
-            echo "-- --------------------------------------------------------\n";
-            echo "-- Structure for table `$t`\n";
-            echo "--\n\n";
+            // SQL EXPORT (Default)
+            header('Content-Type: application/octet-stream');
+            header("Content-Transfer-Encoding: Binary"); 
+            header("Content-disposition: attachment; filename=\"$filename.sql\""); 
             
-            $stmt = $pdo->query("SHOW CREATE TABLE `$t`");
-            $row = $stmt->fetch(PDO::FETCH_NUM);
-            echo "DROP TABLE IF EXISTS `$t`;\n";
-            echo $row[1] . "\n\n";
-            
-            echo "-- Data for table `$t`\n\n";
-            $stmt = $pdo->query("SELECT * FROM `$t`");
-            while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                $keys = array_keys($r);
-                $vals = array_values($r);
-                
-                $vals = array_map(function($v) use ($pdo) {
-                    return $v === null ? "NULL" : $pdo->quote($v);
-                }, $vals);
-                
-                echo "INSERT INTO `$t` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+            $tablesToExport = [];
+            if ($exportTable) {
+                $tablesToExport[] = $exportTable;
+            } else {
+                $stmt = $pdo->query("SHOW TABLES");
+                while ($row = $stmt->fetch(PDO::FETCH_NUM)) {
+                    $tablesToExport[] = $row[0];
+                }
             }
-            echo "\n";
+            
+            echo "-- Adminer Export: " . date("Y-m-d H:i:s") . "\n";
+            echo "-- Database: " . $_SESSION['db_name'] . "\n\n";
+            
+            foreach ($tablesToExport as $t) {
+                echo "-- --------------------------------------------------------\n";
+                echo "-- Structure for table `$t`\n";
+                echo "--\n\n";
+                
+                $stmt = $pdo->query("SHOW CREATE TABLE `$t`");
+                $row = $stmt->fetch(PDO::FETCH_NUM);
+                echo "DROP TABLE IF EXISTS `$t`;\n";
+                echo $row[1] . ";\n\n";
+                
+                echo "-- Data for table `$t`\n\n";
+                $stmt = $pdo->query("SELECT * FROM `$t`");
+                while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $keys = array_keys($r);
+                    $vals = array_values($r);
+                    
+                    $vals = array_map(function($v) use ($pdo) {
+                        return $v === null ? "NULL" : $pdo->quote($v);
+                    }, $vals);
+                    
+                    echo "INSERT INTO `$t` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+                }
+                echo "\n";
+            }
         }
         exit;
     }
@@ -1386,10 +1418,10 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         .alert-danger { background: rgba(239, 68, 68, 0.1); border-color: var(--danger); color: var(--danger); }
 
         /* DATA TABLES */
-        .table-wrapper { border: 1px solid var(--border-color); border-radius: 6px; overflow-x: auto; background: var(--bg-card); }
+        .table-wrapper { border: 1px solid var(--border-color); border-radius: 6px; overflow-x: auto; background: var(--bg-card); max-height: 80vh; }
         table { width: 100%; border-collapse: collapse; min-width: 600px; }
         th, td { padding: 10px 15px; text-align: left; border-bottom: 1px solid var(--border-color); }
-        th { background: var(--bg-hover); font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; white-space: nowrap; }
+        th { background: #1a1a1a; font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; white-space: nowrap; position: sticky; top: 0; z-index: 5; box-shadow: 0 2px 5px rgba(0,0,0,0.5); }
         tr:hover td { background: var(--bg-hover); }
         td { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1630,10 +1662,15 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
                     <div style="flex:1;"></div>
                     <!-- Export Button -->
-                     <form method="POST" style="margin:0;">
+                     <form method="POST" style="margin:0; display:flex;">
                         <input type="hidden" name="action" value="export">
                         <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                        <button type="submit" class="btn"><i class="fas fa-download"></i> Export Table</button>
+                        <select name="format" class="form-select" style="border-radius:4px 0 0 4px; border-right:none; width:auto; padding:5px 10px; font-size:0.85rem;">
+                            <option value="sql">SQL</option>
+                            <option value="json">JSON</option>
+                            <option value="csv">CSV</option>
+                        </select>
+                        <button type="submit" class="btn" style="border-radius:0 4px 4px 0;"><i class="fas fa-download"></i> Export</button>
                     </form>
                 </div>
 
@@ -2310,6 +2347,47 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         if ($isCopyMode && isset($primaryKey) && $primaryKey && isset($formData[$primaryKey])) {
                             unset($formData[$primaryKey]);
                         }
+
+                        // --- FETCH FOREIGN KEYS (Smart Dropdown Logic) ---
+                        $fks = [];
+                        try {
+                            $fkStmt = $pdo->prepare("
+                                SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                                WHERE TABLE_SCHEMA = :db AND TABLE_NAME = :table AND REFERENCED_TABLE_NAME IS NOT NULL
+                            ");
+                            $fkStmt->execute(['db' => $DB_NAME, 'table' => $currentTable]);
+                            while ($row = $fkStmt->fetch()) {
+                                $fks[$row['COLUMN_NAME']] = [
+                                    'table' => $row['REFERENCED_TABLE_NAME'],
+                                    'col' => $row['REFERENCED_COLUMN_NAME'],
+                                    'data' => []
+                                ];
+                            }
+                            
+                            // Fetch Data for Dropdowns
+                            foreach ($fks as $colName => &$fkInfo) {
+                                $refTable = $fkInfo['table'];
+                                $refCol = $fkInfo['col'];
+                                
+                                // Get columns of ref table to find a display column
+                                $refColsStmt = $pdo->query("DESCRIBE `$refTable`");
+                                $refCols = $refColsStmt->fetchAll(PDO::FETCH_COLUMN);
+                                
+                                $displayCol = $refCol; // Default to ID
+                                foreach ($refCols as $rc) {
+                                    if ($rc !== $refCol && !preg_match('/id$/i', $rc) && !preg_match('/password/i', $rc)) {
+                                        $displayCol = $rc;
+                                        break;
+                                    }
+                                }
+                                
+                                // Fetch Limit 200
+                                $dataStmt = $pdo->query("SELECT `$refCol`, `$displayCol` FROM `$refTable` LIMIT 200");
+                                $fkInfo['data'] = $dataStmt->fetchAll();
+                                $fkInfo['display'] = $displayCol;
+                            }
+                        } catch (Exception $e) { /* Ignore FK errors */ }
                     ?>
                     <div class="card">
                         <h3 style="margin-bottom: 20px; color:var(--accent);">
@@ -2325,22 +2403,77 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
 
                             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 20px;">
                                 <?php foreach ($tableStructure as $col):
-                                    ?><div class="form-group">
+                                    $field = $col['Field'];
+                                    $type = strtolower($col['Type']);
+                                    $val = $formData[$field] ?? null;
+                                    $inputHtml = '';
+
+                                    if ($col['Extra'] == 'auto_increment') {
+                                        $inputHtml = '<input type="text" class="form-control" disabled value="(Auto Increment)" style="opacity:0.5;">';
+                                    } 
+                                    // FOREIGN KEY DROPDOWN
+                                    elseif (isset($fks[$field])) {
+                                        $fk = $fks[$field];
+                                        $inputHtml = '<select name="data['.htmlspecialchars($field).']" class="form-select">';
+                                        if ($col['Null'] === 'YES') {
+                                            $inputHtml .= '<option value="" '.(is_null($val)?'selected':'').'>NULL</option>';
+                                        }
+                                        foreach ($fk['data'] as $item) {
+                                            $pkVal = $item[$fk['col']];
+                                            $dispVal = $item[$fk['display']];
+                                            $label = $pkVal;
+                                            if ($pkVal != $dispVal) $label .= " - " . substr($dispVal, 0, 50);
+                                            
+                                            $selected = ((string)$val === (string)$pkVal) ? 'selected' : '';
+                                            $inputHtml .= '<option value="'.htmlspecialchars($pkVal).'" '.$selected.'>'.htmlspecialchars($label).'</option>';
+                                        }
+                                        $inputHtml .= '</select>';
+                                        $inputHtml .= '<div style="font-size:0.75rem; color:var(--text-secondary); margin-top:2px;">Ref: '.$fk['table'].' (Limit 200)</div>';
+                                    }
+                                    // ENUM / SET
+                                    elseif (preg_match("/^(enum|set)\((.*)\)$/i", $type, $matches)) {
+                                        $options = str_getcsv($matches[2], ",", "'");
+                                        $inputHtml = '<select name="data['.htmlspecialchars($field).']" class="form-select">';
+                                        if ($col['Null'] === 'YES') {
+                                            $inputHtml .= '<option value="" '.(is_null($val)?'selected':'').'>NULL</option>';
+                                        }
+                                        foreach($options as $opt) {
+                                            $selected = ((string)$val === (string)$opt) ? 'selected' : '';
+                                            $inputHtml .= '<option value="'.htmlspecialchars($opt).'" '.$selected.'>'.htmlspecialchars($opt).'</option>';
+                                        }
+                                        $inputHtml .= '</select>';
+                                    }
+                                    // DATE
+                                    elseif ($type === 'date') {
+                                        $inputHtml = '<input type="date" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($val ?? '').'">';
+                                    }
+                                    // DATETIME / TIMESTAMP
+                                    elseif (strpos($type, 'datetime') !== false || strpos($type, 'timestamp') !== false) {
+                                        $dtVal = $val ? date('Y-m-d\TH:i', strtotime($val)) : '';
+                                        $inputHtml = '<input type="datetime-local" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($dtVal).'">';
+                                    }
+                                    // NUMBERS
+                                    elseif (preg_match('/(int|decimal|float|double|numeric|real)/', $type)) {
+                                        $step = (strpos($type, 'int') !== false) ? '1' : 'any';
+                                        $inputHtml = '<input type="number" step="'.$step.'" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($val ?? '').'">';
+                                    }
+                                    // LONG TEXT
+                                    elseif (strpos($type, 'text') !== false || strpos($type, 'blob') !== false || strpos($type, 'json') !== false) {
+                                        $inputHtml = '<textarea name="data['.htmlspecialchars($field).']" class="form-control" rows="4">'.htmlspecialchars($val ?? '').'</textarea>';
+                                    }
+                                    // DEFAULT
+                                    else {
+                                        $inputHtml = '<input type="text" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($val ?? '').'">';
+                                    }
+                                    ?>
+                                    <div class="form-group">
                                         <label style="display: block; margin-bottom: 5px; font-weight: bold; font-size:0.85rem;">
-                                            <?=htmlspecialchars($col['Field'])?> 
+                                            <?=htmlspecialchars($field)?> 
                                             <span style="font-size: 0.8em; color: var(--text-secondary); font-weight:normal;">(<?=htmlspecialchars($col['Type'])?>)</span>
                                         </label>
-                                        <?php if ($col['Extra'] == 'auto_increment'): 
-                                            ?><input type="text" class="form-control" disabled value="(Auto Increment)" style="opacity:0.5;"><?php 
-                                        else:
-                                            ?><?php if(strpos($col['Type'], 'text') !== false):
-                                                 ?><textarea name="data[<?=htmlspecialchars($col['Field'])?>]" class="form-control" rows="3"><?=isset($formData[$col['Field']]) ? htmlspecialchars($formData[$col['Field']]) : ''?></textarea><?php 
-                                            else:
-                                                ?><input type="text" name="data[<?=htmlspecialchars($col['Field'])?>]" class="form-control" value="<?=isset($formData[$col['Field']]) ? htmlspecialchars($formData[$col['Field']]) : ''?>"><?php 
-                                            endif; ?><?php 
-                                        endif; ?>
-                                    </div><?php 
-                                endforeach; ?>
+                                        <?=$inputHtml?>
+                                    </div>
+                                <?php endforeach; ?>
                             </div>
                             <div style="margin-top: 30px; display:flex; gap:10px;">
                                 <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Row</button>
@@ -2579,9 +2712,14 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <h3>Database Tables</h3>
                         <div style="display:flex; gap:10px; flex-wrap:wrap;">
                             <a href="?view=import" class="btn"><i class="fas fa-upload"></i> Import Database</a>
-                            <form method="POST" style="margin:0;">
+                            <form method="POST" style="margin:0; display:flex;">
                                 <input type="hidden" name="action" value="export">
-                                <button type="submit" class="btn btn-primary"><i class="fas fa-download"></i> Export Database</button>
+                                <select name="format" class="form-select" style="border-radius:4px 0 0 4px; border-right:none; width:auto;">
+                                    <option value="sql">SQL</option>
+                                    <option value="json">JSON</option>
+                                    <option value="csv">CSV</option>
+                                </select>
+                                <button type="submit" class="btn btn-primary" style="border-radius:0 4px 4px 0;"><i class="fas fa-download"></i> Export</button>
                             </form>
                         </div>
                     </div>
