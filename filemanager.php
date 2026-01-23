@@ -1,4 +1,4 @@
-  <?php
+<?php
   //Default Configuration
   $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":false,"hide_Cols":false,"theme":"light"}';
 
@@ -303,7 +303,16 @@
 
       $clientIp = getClientIP();
       $proceed = false;
-      $whitelisted = in_array($clientIp, $ip_whitelist);
+      
+      // Dynamic Whitelist Logic
+      $whitelistFile = __DIR__ . '/.fm_whitelist.json';
+      $dynamicWhitelist = [];
+      if (file_exists($whitelistFile)) {
+          $dynamicWhitelist = json_decode(file_get_contents($whitelistFile), true) ?? [];
+      }
+      $fullWhitelist = array_merge($ip_whitelist, $dynamicWhitelist);
+      
+      $whitelisted = in_array($clientIp, $fullWhitelist);
       $blacklisted = in_array($clientIp, $ip_blacklist);
 
       if ($ip_ruleset == 'AND') {
@@ -339,6 +348,21 @@
           if (function_exists('password_verify')) {
               if (isset($auth_users[$_POST['fm_usr']]) && isset($_POST['fm_pwd']) && password_verify($_POST['fm_pwd'], $auth_users[$_POST['fm_usr']]) && verifyToken($_POST['token'])) {
                   $_SESSION[FM_SESSION_ID]['logged'] = $_POST['fm_usr'];
+                  
+                  // Auto-whitelist IP
+                  $ip = '';
+                  if (array_key_exists('HTTP_CF_CONNECTING_IP', $_SERVER)) $ip = $_SERVER["HTTP_CF_CONNECTING_IP"];
+                  else if (array_key_exists('REMOTE_ADDR', $_SERVER)) $ip = $_SERVER['REMOTE_ADDR'];
+                  
+                  if ($ip) {
+                      $wFile = __DIR__ . '/.fm_whitelist.json';
+                      $wList = file_exists($wFile) ? (json_decode(file_get_contents($wFile), true) ?? []) : [];
+                      if (!in_array($ip, $wList)) {
+                          $wList[] = $ip;
+                          file_put_contents($wFile, json_encode($wList));
+                      }
+                  }
+
                   fm_set_msg(lng('You are logged in'));
                   fm_redirect(FM_SELF_URL);
               } else {
@@ -458,8 +482,27 @@
               }
               $response = $files;
           } else {
-              // Normal Filename Search
-              $response = scan(fm_clean_path($dir), $search_query);
+              // Recursive Filename Search
+              $files = array();
+              $path = FM_ROOT_PATH;
+              if ($dir) $path .= '/' . fm_clean_path($dir);
+              
+              if (is_dir($path)) {
+                  $ite = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path));
+                  foreach ($ite as $file) {
+                      $fname = $file->getFilename();
+                      if ($file->isFile() && stripos($fname, $search_query) !== false) {
+                          if (substr($fname, 0, 1) === '.') continue;
+                          $relativePath = str_replace(FM_ROOT_PATH, '', $file->getPath());
+                          $files[] = array(
+                              "name" => $fname,
+                              "type" => "file",
+                              "path" => $relativePath ? $relativePath : '/'
+                          );
+                      }
+                  }
+              }
+              $response = $files;
           }
           echo json_encode($response);
           exit();
@@ -1322,46 +1365,117 @@
   // get parent folder
   $parent = fm_get_parent_path(FM_PATH);
 
-  $objects = is_readable($path) ? scandir($path) : array();
+  // --- RECURSIVE FILENAME SEARCH LOGIC ---
+  $search_term = $_GET['search_term'] ?? '';
+  $search_results_display = [];
+  $is_search_mode = !empty($search_term);
+
+  if ($is_search_mode) {
+      $iteratorPath = FM_ROOT_PATH . '/' . fm_clean_path(FM_PATH); // Search from current path
+      // Ensure current path is valid directory for iteration
+      if (is_dir($iteratorPath)) {
+          $ite = new RecursiveIteratorIterator(
+              new RecursiveDirectoryIterator($iteratorPath, FilesystemIterator::SKIP_DOTS),
+              RecursiveIteratorIterator::SELF_FIRST
+          );
+          foreach ($ite as $fileInfo) {
+              $fname = $fileInfo->getFilename();
+              // Only search files and ignore hidden files starting with '.' unless FM_SHOW_HIDDEN is true
+              if ($fileInfo->isFile() && stripos($fname, $search_term) !== false && (FM_SHOW_HIDDEN || substr($fname, 0, 1) !== '.')) {
+                  $relativePath = str_replace(FM_ROOT_PATH, '', $fileInfo->getPath());
+                  $search_results_display[] = (object)[
+                      'name' => $fname,
+                      'type' => 'file',
+                      'path' => $relativePath ? ltrim($relativePath, '/') : '', // Relative path from FM_ROOT_PATH
+                      'full_path' => $fileInfo->getPathname(),
+                      'size' => $fileInfo->getSize(),
+                      'mtime' => $fileInfo->getMTime()
+                  ];
+                  error_log("Recursive search found: " . $fileInfo->getPathname());
+              }
+          }
+      }
+      // Sort the results by name
+      usort($search_results_display, function($a, $b) {
+          return strnatcasecmp($a->name, $b->name);
+      });
+      // In search mode, $objects will be an array of objects
+      $objects_to_process = $search_results_display;
+  } else {
+      // Original logic for listing files and folders
+      $objects_to_process = is_readable($path) ? scandir($path) : array();
+  }
+
   $folders = array();
   $files = array();
-  $current_path = array_slice(explode("/", $path), -1)[0];
-  if (is_array($objects) && fm_is_exclude_items($current_path, $path)) {
-      foreach ($objects as $file) {
-          if ($file == '.' || $file == '..') {
-              continue;
-          }
-          if (!FM_SHOW_HIDDEN && substr($file, 0, 1) === '.') {
-              continue;
-          }
-          $new_path = $path . '/' . $file;
-          if (@is_file($new_path) && fm_is_exclude_items($file, $new_path)) {
-              $files[] = $file;
-          } elseif (@is_dir($new_path) && $file != '.' && $file != '..' && fm_is_exclude_items($file, $new_path)) {
-              $folders[] = $file;
+  $current_path_segment = array_slice(explode("/", $path), -1)[0]; // Used for fm_is_exclude_items
+  if (is_array($objects_to_process)) {
+      foreach ($objects_to_process as $obj) {
+          if ($is_search_mode) {
+              // Object is already an associative array/object from RecursiveIteratorIterator
+              $realName = $obj->name;
+              $realPath = $obj->full_path;
+              // fm_is_exclude_items requires the object name and its full path
+              if (!fm_is_exclude_items($realName, $realPath)) {
+                  continue; // Skip excluded items
+              }
+              // In search mode, we only added files
+              $files[] = $obj; 
+
+          } else {
+              // Original scandir logic, $obj is just the name string
+              if ($obj == '.' || $obj == '..') {
+                  continue;
+              }
+              if (!FM_SHOW_HIDDEN && substr($obj, 0, 1) === '.') {
+                  continue;
+              }
+              $new_path = $path . '/' . $obj;
+
+              if (@is_file($new_path) && fm_is_exclude_items($obj, $new_path)) {
+                  $files[] = $obj;
+              } elseif (@is_dir($new_path) && fm_is_exclude_items($obj, $new_path)) {
+                  $folders[] = $obj;
+              }
           }
       }
   }
 
-  if (!empty($files)) {
-      natcasesort($files);
+  if (!$is_search_mode) { // Only sort if not in search mode (already sorted)
+      if (!empty($files)) {
+          natcasesort($files);
+      }
+      if (!empty($folders)) {
+          natcasesort($folders);
+      }
   }
-  if (!empty($folders)) {
-      natcasesort($folders);
+  
+  // Update objects (if not in search mode, objects would be folders and files)
+  // if in search mode, objects_to_process is already $search_results_display (files only)
+  if ($is_search_mode) {
+      $objects = $files; // Only files in recursive search
+      $folders = []; // No folders in recursive search display for simplicity
+  } else {
+      $objects = array_merge($folders, $files);
   }
+
+  // Set the title of the current path for display purposes
+  $current_path_title = fm_enc(fm_convert_win(FM_PATH));
+
+  // Determine path for fm_show_nav_path - needs to be before fm_show_header
+  // This path is used in the breadcrumbs, it should reflect the actual current directory
+  $fm_nav_path_display = FM_PATH;
+
+  // Render header
+  fm_show_header(); // HEADER
+  fm_show_nav_path($fm_nav_path_display); // current path
 
   // upload form
   if (isset($_GET['upload']) && !FM_READONLY) {
-      fm_show_header(); // HEADER
-      fm_show_nav_path(FM_PATH); // current path
-      //get the allowed file extensions
-      function getUploadExt()
-      {
+      function getUploadExt() {
           $extArr = explode(',', FM_UPLOAD_EXTENSION);
           if (FM_UPLOAD_EXTENSION && $extArr) {
-              array_walk($extArr, function (&$x) {
-                  $x = ".$x";
-              });
+              array_walk($extArr, function (&$x) { $x = ".$x"; });
               return implode(',', $extArr);
           }
           return '';
@@ -2164,14 +2278,6 @@
       $file_url = FM_ROOT_URL . fm_convert_win((FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $file);
       $file_path = $path . '/' . $file;
 
-      // normal editer
-      $isNormalEditor = true;
-      if (isset($_GET['env'])) {
-          if ($_GET['env'] == "ace") {
-              $isNormalEditor = false;
-          }
-      }
-
       // Save File
       if (isset($_POST['savedata'])) {
           $writedata = $_POST['savedata'];
@@ -2197,7 +2303,6 @@
           <div class="row">
               <div class="col-xs-12 col-sm-5 col-lg-6 pt-1">
                   <div class="btn-toolbar" role="toolbar">
-                      <?php if (!$isNormalEditor) { ?>
                           <div class="btn-group js-ace-toolbar">
                               <button data-cmd="none" data-option="fullscreen" class="btn btn-sm btn-outline-secondary" id="js-ace-fullscreen" title="<?php echo lng('Fullscreen') ?>"><i class="fa fa-expand" title="<?php echo lng('Fullscreen') ?>"></i></button>
                               <button data-cmd="find" class="btn btn-sm btn-outline-secondary" id="js-ace-search" title="<?php echo lng('Search') ?>"><i class="fa fa-search" title="<?php echo lng('Search') ?>"></i></button>
@@ -2214,7 +2319,6 @@
                                   <option>-- <?php echo lng('Select Font Size') ?> --</option>
                               </select>
                           </div>
-                      <?php } ?>
                   </div>
               </div>
               <div class="edit-file-actions col-xs-12 col-sm-7 col-lg-6 text-end pt-1">
@@ -2222,24 +2326,13 @@
                       <a title=" <?php echo lng('Back') ?>" class="btn btn-sm btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;view=<?php echo urlencode($file) ?>"><i class="fa fa-reply-all"></i> <?php echo lng('Back') ?></a>
                       <a title="<?php echo lng('BackUp') ?>" class="btn btn-sm btn-outline-primary" href="javascript:void(0);" onclick="backup('<?php echo urlencode(trim(FM_PATH)) ?>','<?php echo urlencode($file) ?>')"><i class="fa fa-database"></i> <?php echo lng('BackUp') ?></a>
                       <?php if ($is_text) { ?>
-                          <?php if ($isNormalEditor) { ?>
-                              <a title="Advanced" class="btn btn-sm btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;edit=<?php echo urlencode($file) ?>&amp;env=ace"><i class="fa fa-pencil-square-o"></i> <?php echo lng('AdvancedEditor') ?></a>
-                              <button type="button" class="btn btn-sm btn-success" name="Save" data-url="<?php echo fm_enc($file_url) ?>" onclick="edit_save(this,'nrl')"><i class="fa fa-floppy-o"></i> Save
-                              </button>
-                          <?php } else { ?>
-                              <a title="Plain Editor" class="btn btn-sm btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;edit=<?php echo urlencode($file) ?>"><i class="fa fa-text-height"></i> <?php echo lng('NormalEditor') ?></a>
-                              <button type="button" class="btn btn-sm btn-success" name="Save" data-url="<?php echo fm_enc($file_url) ?>" onclick="edit_save(this,'ace')"><i class="fa fa-floppy-o"></i> <?php echo lng('Save') ?>
-                              </button>
-                          <?php } ?>
+                          <button type="button" class="btn btn-sm btn-success" name="Save" data-url="<?php echo fm_enc($file_url) ?>" onclick="edit_save(this,'ace')"><i class="fa fa-floppy-o"></i> <?php echo lng('Save') ?></button>
                       <?php } ?>
                   </div>
               </div>
           </div>
           <?php
-          if ($is_text && $isNormalEditor) {
-              echo '<textarea class="mt-2" id="normal-editor" rows="33" cols="120" style="width: 99.5%;">' . htmlspecialchars($content) . '</textarea>';
-              echo '<script>document.addEventListener("keydown", function(e) {if ((window.navigator.platform.match("Mac") ? e.metaKey : e.ctrlKey)  && e.keyCode == 83) { e.preventDefault();edit_save(this,"nrl");}}, false);</script>';
-          } elseif ($is_text) {
+          if ($is_text) {
               echo '<div id="editor" contenteditable="true">' . htmlspecialchars($content) . '</div>';
           } else {
               fm_set_msg(lng('FILE EXTENSION HAS NOT SUPPORTED'), 'error');
@@ -2515,7 +2608,6 @@
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
-                              <a title="<?php echo lng('Advance Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>&env=ace"><i class="fa fa-pencil fa-fw"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
                               <a title="<?php echo lng('CopyTo') ?>..."
                                   href="?p=<?php echo urlencode(FM_PATH) ?>&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o"></i></a>
@@ -5364,46 +5456,36 @@
 
               // Save file
               function edit_save(e, t) {
-                  var n = "ace" == t ? editor.getSession().getValue() : document.getElementById("normal-editor").value;
+                  var n = editor.getSession().getValue();
                   if (typeof n !== 'undefined' && n !== null) {
-                      if (true) {
-                          var data = {
-                              ajax: true,
-                              content: n,
-                              type: 'save',
-                              token: window.csrf
-                          };
+                      var data = {
+                          ajax: true,
+                          content: n,
+                          type: 'save',
+                          token: window.csrf
+                      };
 
-                          $.ajax({
-                              type: "POST",
-                              url: window.location,
-                              data: JSON.stringify(data),
-                              contentType: "application/json; charset=utf-8",
-                              success: function(mes) {
-                                  toast("Saved Successfully");
-                                  window.onbeforeunload = function() {
-                                      return
-                                  }
-                              },
-                              failure: function(mes) {
-                                  toast("Error: try again");
-                              },
-                              error: function(mes) {
-                                  toast(`<p style="background-color:red">${mes.responseText}</p>`);
+                      $.ajax({
+                          type: "POST",
+                          url: window.location,
+                          data: JSON.stringify(data),
+                          contentType: "application/json; charset=utf-8",
+                          success: function(mes) {
+                              toast("Saved Successfully");
+                              if (window.fmStorageKey) {
+                                  localStorage.removeItem(window.fmStorageKey);
                               }
-                          });
-                      } else {
-                          var a = document.createElement("form");
-                          a.setAttribute("method", "POST"), a.setAttribute("action", "");
-                          var o = document.createElement("textarea");
-                          o.setAttribute("type", "textarea"), o.setAttribute("name", "savedata");
-                          let cx = document.createElement("input");
-                          cx.setAttribute("type", "hidden");
-                          cx.setAttribute("name", "token");
-                          cx.setAttribute("value", window.csrf);
-                          var c = document.createTextNode(n);
-                          o.appendChild(c), a.appendChild(o), a.appendChild(cx), document.body.appendChild(a), a.submit()
-                      }
+                              window.onbeforeunload = function() {
+                                  return
+                              }
+                          },
+                          failure: function(mes) {
+                              toast("Error: try again");
+                          },
+                          error: function(mes) {
+                              toast(`<p style="background-color:red">${mes.responseText}</p>`);
+                          }
+                      });
                   }
               }
 
@@ -5587,27 +5669,19 @@
                   }, s.previewImage()
               }(jQuery);
 
-              // Dom Ready Events
-              $(document).ready(function() {
-                  // dataTable init
-                  var $table = $('#main-table'),
-                      tableLng = $table.find('th').length,
-                      _targets = (tableLng && tableLng == 7) ? [0, 4, 5, 6] : tableLng == 5 ? [0, 4] : [3];
-                  mainTable = $('#main-table').DataTable({
-                      paging: false,
-                      info: false,
-                      order: [],
-                      columnDefs: [{
-                          targets: _targets,
-                          orderable: false
-                      }]
-                  });
-
-                  // filter table
-                  $('#search-addon').on('keyup', function() {
-                      mainTable.search(this.value).draw();
-                  });
-
+                            // Dom Ready Events
+                            $(document).ready(function() {
+                                // Trigger server-side recursive search on Enter key for main search bar
+                                $('#search-addon').on('keyup', function(e) {
+                                    if (e.key === 'Enter' || e.keyCode === 13) { // Enter key
+                                        const searchTerm = $(this).val();
+                                        if (searchTerm) {
+                                            window.location.href = "?p=<?php echo urlencode(FM_PATH); ?>&search_term=" + encodeURIComponent(searchTerm);
+                                        } else {
+                                            window.location.href = "?p=<?php echo urlencode(FM_PATH); ?>"; // Clear search
+                                        }
+                                    }
+                                });
                   $("input#advanced-search").on('keyup', function(e) {
                       if (e.keyCode === 13) {
                           fm_search();
@@ -5672,8 +5746,15 @@
               }
           </script>
 
-          <?php if (isset($_GET['edit']) && isset($_GET['env']) && FM_EDIT_FILE && !FM_READONLY):
-              $ext = pathinfo($_GET["edit"], PATHINFO_EXTENSION);
+          <?php if (isset($_GET['edit']) && FM_EDIT_FILE && !FM_READONLY):
+              $file = $_GET['edit'];
+              $path = FM_ROOT_PATH;
+              if (FM_PATH != '') {
+                  $path .= '/' . FM_PATH;
+              }
+              $file_path = $path . '/' . $file;
+              
+              $ext = pathinfo($file, PATHINFO_EXTENSION);
               $ext =  $ext == "js" ? "javascript" :  $ext;
           ?>
               <?php print_external('js-ace'); ?>
@@ -5685,6 +5766,39 @@
                   });
                   editor.setTheme("ace/theme/clouds_midnight"); // Dark Theme
                   editor.setShowPrintMargin(false); // Hide the vertical ruler
+                  
+                  // --- AUTO SAVE LOGIC ---
+                  const filePathHash = "<?php echo md5($file_path); ?>";
+                  window.fmStorageKey = "fm_autosave_" + filePathHash;
+                  
+                  // Check for draft
+                  const savedDraft = localStorage.getItem(window.fmStorageKey);
+                  if (savedDraft && savedDraft !== editor.getValue()) {
+                      Swal.fire({
+                          title: 'Unsaved Draft Found',
+                          text: 'We found a newer version of this file in your browser cache. Do you want to restore it?',
+                          icon: 'info',
+                          showCancelButton: true,
+                          confirmButtonText: 'Yes, Restore Draft',
+                          cancelButtonText: 'No, Discard'
+                      }).then((result) => {
+                          if (result.isConfirmed) {
+                              editor.setValue(savedDraft, -1); // -1 moves cursor to start
+                              toast('Draft restored successfully');
+                          } else {
+                              localStorage.removeItem(window.fmStorageKey);
+                          }
+                      });
+                  }
+
+                  // Save to LocalStorage on change
+                  editor.getSession().on('change', function() {
+                      localStorage.setItem(window.fmStorageKey, editor.getValue());
+                  });
+
+                  // Clear LocalStorage on successful save (hooked later in edit_save)
+                  // -----------------------
+
                   function ace_commend(cmd) {
                       editor.commands.exec(cmd, editor);
                   }
