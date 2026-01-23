@@ -150,18 +150,18 @@
 
   // External CDN resources that can be used in the HTML (replace for GDPR compliance)
   $external = array(
-      'css-bootstrap' => '<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">',
-      'css-dropzone' => '<link href="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.css" rel="stylesheet">',
-      'css-font-awesome' => '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css" crossorigin="anonymous">',
-      'css-highlightjs' => '<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/' . $highlightjs_style . '.min.css">',
-      'js-ace' => '<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js"></script>',
-      'js-bootstrap' => '<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>',
-      'js-dropzone' => '<script src="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.js"></script>',
-      'js-jquery' => '<script src="https://code.jquery.com/jquery-3.6.1.min.js" integrity="sha256-o88AwQnZB+VDvE9tvIXrMQaPlFFSUTR+nldQm1LuPXQ=" crossorigin="anonymous"></script>',
-      'js-jquery-datatables' => '<script src="https://cdn.datatables.net/1.13.1/js/jquery.dataTables.min.js" crossorigin="anonymous" defer></script>',
-      'js-highlightjs' => '<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>',
-      'pre-jsdelivr' => '<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin/><link rel="dns-prefetch" href="https://cdn.jsdelivr.net"/>',
-      'pre-cloudflare' => '<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin/><link rel="dns-prefetch" href="https://cdnjs.cloudflare.com"/>'
+      'css-bootstrap' => '<link href="assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">',
+      'css-dropzone' => '<link href="assets/vendor/dropzone/dropzone.min.css" rel="stylesheet">',
+      'css-font-awesome' => '<link rel="stylesheet" href="assets/vendor/fontawesome4/css/font-awesome.min.css">',
+      'css-highlightjs' => '<link rel="stylesheet" href="assets/vendor/highlightjs/highlight-vs.min.css">',
+      'js-ace' => '<script src="assets/vendor/ace/ace.js"></script>',
+      'js-bootstrap' => '<script src="assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>',
+      'js-dropzone' => '<script src="assets/vendor/dropzone/dropzone.min.js"></script>',
+      'js-jquery' => '<script src="assets/vendor/jquery/jquery-3.6.1.min.js"></script>',
+      'js-jquery-datatables' => '<script src="assets/vendor/datatables/jquery.dataTables.min.js" defer></script>',
+      'js-highlightjs' => '<script src="assets/vendor/highlightjs/highlight.min.js"></script>',
+      'pre-jsdelivr' => '',
+      'pre-cloudflare' => ''
   );
 
   // --- EDIT BELOW CAREFULLY OR DO NOT EDIT AT ALL ---
@@ -763,6 +763,9 @@
       $FM_PATH = FM_PATH;
       fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
   }
+  if (isset($_POST['foldersize'])) {
+  $_SESSION[FM_SESSION_ID]['foldersize'] = !($_SESSION[FM_SESSION_ID]['foldersize']??false);
+}
 
   // Copy folder / file
   if (isset($_GET['copy'], $_GET['finish']) && !FM_READONLY) {
@@ -967,6 +970,22 @@
           // Call the download function
           fm_download_file($path . '/' . $dl, $dl, 1024); // Download with a buffer size of 1024 bytes
           exit;
+           } else if ($dl != '' && is_dir($path . '/' . $dl)) {
+        chdir($path);
+
+        // zip the directory
+        $zipname = sys_get_temp_dir() .'/'. $dl;
+        $zipper = new FM_Zipper();
+        $res = $zipper->create($zipname, $dl);
+
+        if ($res) {
+            // download the zip file and delete it afterwards
+            fm_download_file($zipname, $dl . '.zip', 1024);
+            unlink($zipname);
+        } else {
+            fm_set_msg(lng('Error while creating Archive'), 'error');
+        }
+        exit;
       } else {
           // Handle the case where the file is not found
           fm_set_msg(lng('File not found'), 'error');
@@ -2082,6 +2101,7 @@
       $is_audio = false;
       $is_video = false;
       $is_text = false;
+      $is_csv = false;
       $is_onlineViewer = false;
 
       $view_title = 'File';
@@ -2104,6 +2124,9 @@
       } elseif (in_array($ext, fm_get_video_exts())) {
           $is_video = true;
           $view_title = 'Video';
+     } elseif ($ext == 'csv') {
+        $is_csv = true;
+        $view_title = "CSV File";
       } elseif (in_array($ext, fm_get_text_exts()) || substr($mime_type, 0, 4) == 'text' || in_array($mime_type, fm_get_text_mimes())) {
           $is_text = true;
           $content = file_get_contents($file_path);
@@ -2183,8 +2206,8 @@
                       </form>
                   <?php
                   }
-                  if ($is_text && !FM_READONLY) {
-                  ?>
+                if (!FM_READONLY && ($is_text || $is_csv)) {
+                    ?>
                       <a class="fw-bold btn btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;edit=<?php echo urlencode($file) ?>" class="edit-file">
                           <i class="fa fa-pencil-square"></i> <?php echo lng('Edit') ?>
                       </a>
@@ -2228,7 +2251,15 @@
                   } elseif ($is_video) {
                       // Video content
                       echo '<div class="preview-video"><video src="' . fm_enc($file_url) . '" width="640" height="360" controls preload="metadata"></video></div>';
-                  } elseif ($is_text) {
+                  } elseif ($is_csv) {
+				$tableTheme = (FM_THEME == "dark") ? "text-white bg-dark table-dark" : "bg-white";
+                echo '<table class="table table-hover table-sm ' . $tableTheme .'">';
+                $csvFilePointer = fopen($file_path, 'r');
+                while ( ($csvRow = fgetcsv($csvFilePointer) ) !== FALSE ) {
+                    echo '<tr><td>'. implode('</td><td>', $csvRow). '</td></tr>';
+                }
+                fclose($csvFilePointer);
+                echo '</table>';} elseif ($is_text) {
                       if (FM_USE_HIGHLIGHTJS) {
                           // highlight
                           $hljs_classes = array(
@@ -2478,7 +2509,16 @@
                   $modif = date(FM_DATETIME_FORMAT, $modif_raw);
                   $date_sorting = strtotime(date("F d Y H:i:s.", $modif_raw));
                   $filesize_raw = "";
-                  $filesize = lng('Folder');
+                  // Logic: Global Toggle OR Single Click Calculation
+                  $global_calc = $_SESSION[FM_SESSION_ID]['foldersize'] ?? false;
+                  $single_calc = (isset($_GET['calc']) && $_GET['calc'] === $f);
+                  
+                  if ($global_calc || $single_calc) {
+                      $filesize = fm_get_filesize(fm_foldersize($path . '/' . $f));
+                  } else {
+                      $calcUrl = '?p=' . urlencode(FM_PATH) . '&calc=' . urlencode($f);
+                      $filesize = '<a href="' . $calcUrl . '" title="Calculate Size" style="opacity:0.7; text-decoration:none;">[Calc]</a>';
+                  }
                   $perms = substr(decoct(fileperms($path . '/' . $f)), -4);
                   $owner = array('name' => '?'); 
                   $group = array('name' => '?');
@@ -2534,6 +2574,7 @@
                               <a title="<?php echo lng('CopyTo') ?>..." href="?p=&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o" aria-hidden="true"></i></a>
                           <?php endif; ?>
                           <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f . '/') ?>" target="_blank"><i class="fa fa-link" aria-hidden="true"></i></a>
+                            <a title="<?php echo lng('Download') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1211, '<?php echo lng('Download'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-download"></i></a>
                       </td>
                   </tr>
               <?php
@@ -2702,6 +2743,8 @@
                       <a href="#" onclick="confirmMassAction(event, 'a-tar', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Tar') ?> </a>
                       <input type="submit" class="hidden" name="copy" id="a-copy" value="Copy">
                       <a href="javascript:document.getElementById('a-copy').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?> </a>
+                      <li class="list-inline-item"><input type="submit" class="hidden" name="foldersize" id="a-foldersize" value="Foldersize">
+                      <a href="javascript:document.getElementById('a-foldersize').click();" class="btn btn-small btn-outline-primary btn-2 <?php echo $_SESSION[FM_SESSION_ID]['foldersize']??false ? 'btn-active':''; ?>"><i class="fa fa-pie-chart"></i> <?php echo lng('Foldersize') ?> </a></li>
                   </div>
               </div>
               <div class="col-3 d-none d-sm-block"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">RFILE Manager <?php echo VERSION; ?></a></div>
@@ -2747,7 +2790,26 @@
       }
       return false;
   }
+function fm_foldersize($path) {
+    $total_size = 0;
+    $files = scandir($path);
+    $cleanPath = rtrim($path, '/'). '/';
+    foreach($files as $t) {
+        if ($t<>"." && $t<>"..") {
+            $currentFile = $cleanPath . $t;
+            if (is_dir($currentFile)) {
+                $size = fm_foldersize($currentFile);
+                $total_size += $size;
+            }
+            else {
+                $size = filesize($currentFile);
+                $total_size += $size;
+            }
+        }
+    }
 
+    return $total_size;
+}
   /**
    * Delete  file or folder (recursively)
    * @param string $path
@@ -3151,22 +3213,22 @@
    */
   function fm_get_zif_info($path, $ext)
   {
-      if ($ext == 'zip' && function_exists('zip_open')) {
-          $arch = @zip_open($path);
-          if ($arch) {
+    if ($ext == 'zip' && class_exists('ZipArchive')) {
+        $arch = new ZipArchive;
+        if ($arch->open($path)) {
               $filenames = array();
-              while ($zip_entry = @zip_read($arch)) {
-                  $zip_name = @zip_entry_name($zip_entry);
-                  $zip_folder = substr($zip_name, -1) == '/';
-                  $filenames[] = array(
-                      'name' => $zip_name,
-                      'filesize' => @zip_entry_filesize($zip_entry),
-                      'compressed_size' => @zip_entry_compressedsize($zip_entry),
+              for($i = 0; $i < $arch->numFiles; $i++ ){ 
+    		$stat = $arch->statIndex($i); 
+    		$zip_folder = substr($stat['name'], -1) == '/';
+    		$filenames[] = array(
+                    'name' => $stat['name'],
+                    'filesize' => $stat['size'],
+                    'compressed_size' => $stat['comp_size'],
                       'folder' => $zip_folder
-                      //'compression_method' => zip_entry_compressionmethod($zip_entry),
+                    //'compression_method' => $stat['comp_method'],                      //'compression_method' => zip_entry_compressionmethod($zip_entry),
                   );
-              }
-              @zip_close($arch);
+            }            
+            $arch->close();
               return $filenames;
           }
       } elseif ($ext == 'tar' && class_exists('PharData')) {
