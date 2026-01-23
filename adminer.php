@@ -1370,7 +1370,6 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             display: flex; 
             flex-direction: column; 
             overflow-y: auto; /* Allow main content to scroll */
-            position: relative; 
             width: 100%; /* Take full available width */
             transition: margin-left 0.3s ease; 
         }        
@@ -1905,8 +1904,10 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                             <label>Add 1 column(s)</label>
                             <button type="submit" class="btn btn-primary">Go</button>
                         </form>
+                        
+                        <a href="#foreign-keys-section" class="btn" style="margin-left:10px;"><i class="fas fa-link"></i> Add Relation</a>
 
-                        <div style="display: flex; gap: 10px;">
+                        <div style="display: flex; gap: 10px; margin-left:auto;">
                              <form method="POST" onsubmit="saConfirmForm(event, 'TRUNCATE this table? All data will be lost!')" style="display:inline;">
                                 <input type="hidden" name="action" value="truncate_table">
                                 <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
@@ -2002,7 +2003,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         $stmt = $pdo->query("SHOW TABLES");
                         while ($r = $stmt->fetch(PDO::FETCH_NUM)) $allTables[] = $r[0];
                     ?>
-                    <div class="card" style="margin-top: 20px;">
+                    <div class="card" style="margin-top: 20px;" id="foreign-keys-section">
                         <h3>Foreign Keys</h3>
                         <?php if($fks): ?>
                             <div class="table-wrapper">
@@ -2682,6 +2683,54 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     <div class="stat-card">
                         <div class="stat-label">Database Size</div>
                         <div class="stat-val"><?=formatSize($totalSize)?></div>
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:20px;">
+                    <!-- System Health -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h3><i class="fas fa-heartbeat"></i> System Health</h3>
+                        <ul style="list-style:none; padding:0; margin:0; font-size:0.9rem;">
+                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
+                                <span>PHP Version</span>
+                                <span style="font-weight:bold; color:var(--accent);"><?=phpversion()?></span>
+                            </li>
+                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
+                                <span>MySQL Version</span>
+                                <span style="font-weight:bold; color:var(--accent);"><?=$pdo->getAttribute(PDO::ATTR_SERVER_VERSION)?></span>
+                            </li>
+                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
+                                <span>Memory Usage</span>
+                                <span style="font-weight:bold; color:var(--success);"><?=formatSize(memory_get_usage())?></span>
+                            </li>
+                            <li style="padding:8px 0; display:flex; justify-content:space-between;">
+                                <span>Server OS</span>
+                                <span style="font-weight:bold;"><?=PHP_OS?></span>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <!-- Recent Tables -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h3><i class="fas fa-history"></i> Recently Modified</h3>
+                        <?php
+                            try {
+                                $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 5");
+                                $recentTables = $recentStmt->fetchAll();
+                            } catch (Exception $e) { $recentTables = []; }
+                        ?>
+                        <ul style="list-style:none; padding:0; margin:0; font-size:0.9rem;">
+                            <?php if ($recentTables): foreach ($recentTables as $rt): ?>
+                                <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+                                    <a href="?table=<?=htmlspecialchars($rt['TABLE_NAME'])?>" style="color:var(--text-primary); text-decoration:none; display:flex; align-items:center; gap:8px;">
+                                        <i class="fas fa-table" style="color:var(--text-secondary);"></i> <?=htmlspecialchars($rt['TABLE_NAME'])?>
+                                    </a>
+                                    <small style="color:var(--text-secondary);"><?= date('M d H:i', strtotime($rt['UPDATE_TIME'])) ?></small>
+                                </li>
+                            <?php endforeach; else: ?>
+                                <li style="padding:10px 0; color:var(--text-secondary);">No recent activity recorded.</li>
+                            <?php endif; ?>
+                        </ul>
                     </div>
                 </div>
 
