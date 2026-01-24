@@ -5,6 +5,13 @@ session_start();
 
 $configFile = __DIR__ . '/adminer.config.json';
 
+function get_asset_url($localPath, $cdnUrl) {
+    if (file_exists(__DIR__ . '/' . $localPath)) {
+        return $localPath;
+    }
+    return $cdnUrl;
+}
+
 function load_config($path)
 {
     if (!file_exists($path)) {
@@ -104,9 +111,9 @@ function render_db_setup($defaults = [], $error = '', $success = '')
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Database Setup</title>
-        <link rel="icon" type="image/svg+xml" href="assets/vendor/icon.svg">
-        <link rel="shortcut icon" href="assets/vendor/icon.svg">
-        <link rel="stylesheet" href="assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css">
+        <link rel="icon" type="image/svg+xml" href="<?= get_asset_url('assets/vendor/icon.svg', 'https://am.ct.ws/icon.svg') ?>">
+        <link rel="shortcut icon" href="<?= get_asset_url('assets/vendor/icon.svg', 'https://am.ct.ws/icon.svg') ?>">
+        <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css') ?>">
         <style>
             body { background:#0b0b0b; color:#f0f0f0; font-family: 'Segoe UI', system-ui, sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
             .setup-card { background:#161616; padding:2rem; border:1px solid #333; border-radius:12px; width:100%; max-width:420px; box-shadow:0 10px 40px rgba(0,0,0,0.5); }
@@ -1278,12 +1285,12 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DB Manager <?= $is_logged_in ? '- ' . htmlspecialchars($_SESSION['db_name']) : '' ?></title>
-    <link rel="stylesheet" href="assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css">
-    <link rel="stylesheet" href="assets/vendor/sweetalert2/sweetalert2-dark.min.css"> <!-- SweetAlert2 Dark Theme -->
-    <link href="assets/vendor/tom-select/tom-select.bootstrap5.min.css" rel="stylesheet">
-    <script src="assets/vendor/sweetalert2/sweetalert2.all.min.js"></script>
-    <script src="assets/vendor/mermaid/mermaid.min.js"></script>
-    <script src="assets/vendor/tom-select/tom-select.complete.min.js"></script>
+    <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css') ?>">
+    <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2-dark.min.css', 'https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css') ?>"> <!-- SweetAlert2 Dark Theme -->
+    <link href="<?= get_asset_url('assets/vendor/tom-select/tom-select.bootstrap5.min.css', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.bootstrap5.min.css') ?>" rel="stylesheet">
+    <script src="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2.all.min.js', 'https://cdn.jsdelivr.net/npm/sweetalert2@11') ?>"></script>
+    <script src="<?= get_asset_url('assets/vendor/mermaid/mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js') ?>"></script>
+    <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
     <style>
         :root {
             --bg-body: #050505;

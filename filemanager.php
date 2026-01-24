@@ -1,6 +1,6 @@
 <?php
   //Default Configuration
-  $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":false,"hide_Cols":false,"theme":"light"}';
+  $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":true,"hide_Cols":true,"theme":"dark","show_disk_usage":true}';
 
   /**
    * H3K ~ RFILE Manager V2.6
@@ -148,18 +148,31 @@
       @include($config_file);
   }
 
+  // Helper for Offline/Online Fallback
+  function get_asset_url($localPath, $cdnUrl) {
+      if (file_exists(__DIR__ . '/' . $localPath)) {
+          return $localPath;
+      }
+      return $cdnUrl;
+  }
+
   // External CDN resources that can be used in the HTML (replace for GDPR compliance)
+  // Modified to support local fallback
   $external = array(
-      'css-bootstrap' => '<link href="assets/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">',
-      'css-dropzone' => '<link href="assets/vendor/dropzone/dropzone.min.css" rel="stylesheet">',
-      'css-font-awesome' => '<link rel="stylesheet" href="assets/vendor/fontawesome4/css/font-awesome.min.css">',
-      'css-highlightjs' => '<link rel="stylesheet" href="assets/vendor/highlightjs/highlight-vs.min.css">',
-      'js-ace' => '<script src="assets/vendor/ace/ace.js"></script>',
-      'js-bootstrap' => '<script src="assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>',
-      'js-dropzone' => '<script src="assets/vendor/dropzone/dropzone.min.js"></script>',
-      'js-jquery' => '<script src="assets/vendor/jquery/jquery-3.6.1.min.js"></script>',
-      'js-jquery-datatables' => '<script src="assets/vendor/datatables/jquery.dataTables.min.js" defer></script>',
-      'js-highlightjs' => '<script src="assets/vendor/highlightjs/highlight.min.js"></script>',
+      'css-bootstrap' => '<link href="' . get_asset_url('assets/vendor/bootstrap/bootstrap.min.css', 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css') . '" rel="stylesheet">',
+      'css-dropzone' => '<link href="' . get_asset_url('assets/vendor/dropzone/dropzone.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.css') . '" rel="stylesheet">',
+      'css-font-awesome' => '<link rel="stylesheet" href="' . get_asset_url('assets/vendor/fontawesome4/css/font-awesome.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css') . '">',
+      'css-highlightjs' => '<link rel="stylesheet" href="' . get_asset_url('assets/vendor/highlightjs/highlight-vs.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/' . $highlightjs_style . '.min.css') . '">',
+      'js-ace' => '<script src="' . get_asset_url('assets/vendor/ace/ace.js', 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js') . '"></script>',
+      'js-aceext-language_tools' => '<script src="' . get_asset_url(
+    'assets/vendor/ace/ext-language_tools.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/ace/1.4.12/ext-language_tools.js'
+) . '"></script>',
+      'js-bootstrap' => '<script src="' . get_asset_url('assets/vendor/bootstrap/bootstrap.bundle.min.js', 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js') . '"></script>',
+      'js-dropzone' => '<script src="' . get_asset_url('assets/vendor/dropzone/dropzone.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.js') . '"></script>',
+      'js-jquery' => '<script src="' . get_asset_url('assets/vendor/jquery/jquery-3.6.1.min.js', 'https://code.jquery.com/jquery-3.6.1.min.js') . '"></script>',
+      'js-jquery-datatables' => '<script src="' . get_asset_url('assets/vendor/datatables/jquery.dataTables.min.js', 'https://cdn.datatables.net/1.13.1/js/jquery.dataTables.min.js') . '" defer></script>',
+      'js-highlightjs' => '<script src="' . get_asset_url('assets/vendor/highlightjs/highlight.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js') . '"></script>',
       'pre-jsdelivr' => '',
       'pre-cloudflare' => ''
   );
@@ -194,7 +207,7 @@
 
   // Theme
   $theme = isset($cfg->data['theme']) ? $cfg->data['theme'] : 'dark';
-
+$show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_usage'] : true;
   define('FM_THEME', $theme);
 
   //available languages
@@ -449,56 +462,90 @@
           $dir = $_POST['path'] == "." ? '' : $_POST['path'];
           $search_query = $_POST['content'];
           $is_content_search = isset($_POST['is_content']) && $_POST['is_content'] === 'true';
+          $is_recursive_search = isset($_POST['is_recursive']) && $_POST['is_recursive'] === 'true'; // New parameter
           
           if ($is_content_search) {
               // Content Search (Grep)
               $files = array();
               $path = FM_ROOT_PATH . '/' . fm_clean_path($dir);
               if (is_dir($path)) {
-                  $ite = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path));
-                  foreach ($ite as $file) {
-                      if ($file->isFile()) {
-                          $fname = $file->getFilename();
-                          // Skip hidden files/dots
-                          if (substr($fname, 0, 1) === '.') continue;
-                          
-                          // Check extension (only text based)
-                          $ext = strtolower($file->getExtension());
-                          if (in_array($ext, fm_get_text_exts())) {
-                              // Read content (limit to 1MB files for performance)
-                              if ($file->getSize() < 1000000) {
-                                  $content = file_get_contents($file->getPathname());
-                                  if (stripos($content, $search_query) !== false) {
-                                      $files[] = array(
-                                          "name" => $fname,
-                                          "type" => "file",
-                                          "path" => str_replace(FM_ROOT_PATH, '', $file->getPath())
-                                      );
+                  try {
+                      $dirIterator = new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS);
+                      $ite = new RecursiveIteratorIterator($dirIterator, RecursiveIteratorIterator::SELF_FIRST);
+                      foreach ($ite as $file) {
+                          if ($file->isFile()) {
+                              $fname = $file->getFilename();
+                              // Check extension (only text based)
+                              $ext = strtolower($file->getExtension());
+                              if (in_array($ext, fm_get_text_exts())) {
+                                  // Read content (limit to 1MB files for performance)
+                                  if ($file->getSize() < 1000000) {
+                                      $content = @file_get_contents($file->getPathname());
+                                      if ($content !== false && stripos($content, $search_query) !== false) {
+                                          $fullPath = str_replace('\\', '/', $file->getPath());
+                                          $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
+                                          $relativePath = str_replace($rootPathNormalized, '', $fullPath);
+                                          $files[] = array(
+                                              "name" => $fname,
+                                              "type" => "file",
+                                              "path" => $relativePath ? ltrim($relativePath, '/') : ''
+                                          );
+                                      }
                                   }
                               }
                           }
                       }
+                  } catch (Exception $e) {
+                      // Ignore permission errors
                   }
               }
               $response = $files;
           } else {
-              // Recursive Filename Search
+              // Filename Search
               $files = array();
-              $path = FM_ROOT_PATH;
-              if ($dir) $path .= '/' . fm_clean_path($dir);
+              $startPath = FM_ROOT_PATH;
+              if ($dir) $startPath .= '/' . fm_clean_path($dir);
               
-              if (is_dir($path)) {
-                  $ite = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path));
-                  foreach ($ite as $file) {
-                      $fname = $file->getFilename();
-                      if ($file->isFile() && stripos($fname, $search_query) !== false) {
-                          if (substr($fname, 0, 1) === '.') continue;
-                          $relativePath = str_replace(FM_ROOT_PATH, '', $file->getPath());
-                          $files[] = array(
-                              "name" => $fname,
-                              "type" => "file",
-                              "path" => $relativePath ? $relativePath : '/'
-                          );
+              if (is_dir($startPath)) {
+                  if ($is_recursive_search) {
+                      // Recursive Search
+                      try {
+                          $dirIterator = new RecursiveDirectoryIterator($startPath, FilesystemIterator::SKIP_DOTS);
+                          $ite = new RecursiveIteratorIterator($dirIterator, RecursiveIteratorIterator::SELF_FIRST);
+                          foreach ($ite as $file) {
+                              $fname = $file->getFilename();
+                              if (($file->isFile() || $file->isDir()) && stripos($fname, $search_query) !== false) { // Include folders in recursive search
+                                  $fullPath = str_replace('\\', '/', $file->getPath());
+                                  $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
+                                  $relativePath = str_replace($rootPathNormalized, '', $fullPath);
+                                  $files[] = array(
+                                      "name" => $fname,
+                                      "type" => $file->isFile() ? "file" : "folder",
+                                      "path" => $relativePath ? ltrim($relativePath, '/') : ''
+                                  );
+                              }
+                          }
+                      } catch (Exception $e) {
+                          // Ignore permission errors
+                      }
+                  } else {
+                      // Non-Recursive (Current Folder Only) Search
+                      $currentDirFiles = is_readable($startPath) ? scandir($startPath) : array();
+                      foreach ($currentDirFiles as $item) {
+                          if ($item == '.' || $item == '..') continue;
+                          if (!FM_SHOW_HIDDEN && substr($item, 0, 1) === '.') continue;
+                          
+                          $itemPath = $startPath . '/' . $item;
+                          if ((is_file($itemPath) || is_dir($itemPath)) && stripos($item, $search_query) !== false) { // Search both files and folders
+                              $fullPath = str_replace('\\', '/', dirname($itemPath)); 
+                              $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
+                              $relativePath = str_replace($rootPathNormalized, '', $fullPath);
+                              $files[] = array(
+                                  "name" => $item,
+                                  "type" => is_file($itemPath) ? "file" : "folder",
+                                  "path" => $relativePath ? ltrim($relativePath, '/') : ''
+                              );
+                          }
                       }
                   }
               }
@@ -578,6 +625,7 @@
           $erp = isset($_POST['js-error-report']) && $_POST['js-error-report'] == "true" ? true : false;
           $shf = isset($_POST['js-show-hidden']) && $_POST['js-show-hidden'] == "true" ? true : false;
           $hco = isset($_POST['js-hide-cols']) && $_POST['js-hide-cols'] == "true" ? true : false;
+                  $sdu = isset($_POST['js-show-usage']) && $_POST['js-show-usage'] == "true" ? true : false;
           $te3 = $_POST['js-theme-3'];
 
           if ($cfg->data['lang'] != $newLng) {
@@ -596,6 +644,10 @@
               $cfg->data['show_hidden'] = $shf;
               $show_hidden_files = $shf;
           }
+                  if ($cfg->data['show_disk_usage'] != $sdu) {
+            $cfg->data['show_disk_usage'] = $sdu;
+            $show_disk_usage = $sdu;
+        }
           if ($cfg->data['hide_Cols'] != $hco) {
               $cfg->data['hide_Cols'] = $hco;
               $hide_Cols = $hco;
@@ -1780,7 +1832,7 @@
       
       ?>
       <div class="col-md-8 offset-md-2 pt-3">
-          <div class="card mb-2" data-bs-theme="<?php echo FM_THEME; ?>">
+          <div class="card mb-2" data-bs-theme="<?php echo FM_THEME; ?>" style="max-width:97vw !important">
               <h6 class="card-header d-flex justify-content-between align-items-center">
                   <span><i class="fa fa-git"></i> Git FTP Manager (<?= htmlspecialchars(FM_PATH ?: 'root') ?>)</span>
                   <a href="?p=<?php echo FM_PATH ?>" class="text-danger"><i class="fa fa-times-circle-o"></i> <?php echo lng('Cancel') ?></a>
@@ -1973,6 +2025,14 @@
                           </div>
                       </div>
 
+                          <div class="mb-3 row">
+                        <label for="js-show-hidden" class="col-sm-3 col-form-label"><?php echo lng('ShowDiskUsage') ?></label>
+                        <div class="col-sm-9">
+                            <div class="form-check form-switch">
+                              <input class="form-check-input" type="checkbox" role="switch" id="js-show-usage" name="js-show-usage" value="true" <?php echo $show_disk_usage ? 'checked' : ''; ?> />
+                            </div>
+                        </div>
+                    </div>
                       <div class="mb-3 row">
                           <label for="js-hide-cols" class="col-sm-3 col-form-label"><?php echo lng('HideColumns') ?></label>
                           <div class="col-sm-9">
@@ -2460,7 +2520,7 @@
   $num_folders = count($folders);
   $all_files_size = 0;
   ?>
-  <form action="" method="post" class="pt-3">
+  <form action="" method="post" class="pt-3" style="max-width:97vw !important">
       <input type="hidden" name="p" value="<?php echo fm_enc(FM_PATH) ?>">
       <input type="hidden" name="group" value="1">
       <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
@@ -2509,13 +2569,21 @@
                   $modif = date(FM_DATETIME_FORMAT, $modif_raw);
                   $date_sorting = strtotime(date("F d Y H:i:s.", $modif_raw));
                   $filesize_raw = "";
-                  // Logic: Global Toggle OR Single Click Calculation
+                  // Logic: Cache -> Global Toggle -> Single Click Calculation
+                  $cacheVal = fm_get_cached_size($path . '/' . $f);
                   $global_calc = $_SESSION[FM_SESSION_ID]['foldersize'] ?? false;
                   $single_calc = (isset($_GET['calc']) && $_GET['calc'] === $f);
                   
-                  if ($global_calc || $single_calc) {
-                      $filesize = fm_get_filesize(fm_foldersize($path . '/' . $f));
+                  if ($single_calc || $global_calc) {
+                      $size = fm_foldersize($path . '/' . $f);
+                      fm_save_cached_size($path . '/' . $f, $size); // Save to cache
+                      $filesize = fm_get_filesize($size);
+                  } elseif ($cacheVal !== null) {
+                      // Show Cached Value + Refresh Button
+                      $calcUrl = '?p=' . urlencode(FM_PATH) . '&calc=' . urlencode($f);
+                      $filesize = fm_get_filesize($cacheVal) . ' <a href="' . $calcUrl . '" title="Recalculate Size" style="margin-left:5px; opacity:0.5;"><i class="fa fa-refresh"></i></a>';
                   } else {
+                      // Show Calc Button
                       $calcUrl = '?p=' . urlencode(FM_PATH) . '&calc=' . urlencode($f);
                       $filesize = '<a href="' . $calcUrl . '" title="Calculate Size" style="opacity:0.7; text-decoration:none;">[Calc]</a>';
                   }
@@ -2672,10 +2740,30 @@
                   </tfoot>
               <?php
               } else { ?>
+                    <?php
+            // Check if show_disk_usage is true before getting disk size
+                if ($show_disk_usage) {
+                // Get total and free space
+                $total = disk_total_space(FM_ROOT_PATH.'/'.FM_PATH);
+                $free = disk_free_space(FM_ROOT_PATH.'/'.FM_PATH);
+
+                // Format sizes
+                $total_size = fm_get_filesize($total);
+                $free_size = fm_get_filesize($free);
+                $total_used_size = fm_get_filesize($total - $free);
+                }
+            ?>
                   <tfoot>
                       <tr>
                           <td class="gray fs-7" colspan="<?php echo (!FM_IS_WIN && !$hide_Cols) ? (FM_READONLY ? '6' : '7') : (FM_READONLY ? '4' : '5') ?>">
                               <?php echo lng('FullSize') . ': <span class="badge text-bg-light border-radius-0">' . fm_get_filesize($all_files_size) . '</span>' ?>
+                                                          <?php
+                                // Check if show_disk_usage is true before displaying disk usage
+                                if ($show_disk_usage) {
+                                echo lng('UsedSpace').': <span class="badge text-bg-light border-radius-0">' .$total_used_size.'</span>';
+                                echo lng('RemainingSpace').': <span class="badge text-bg-light border-radius-0">' .$free_size.'</span>';
+                                } 
+                            ?>
                               <?php echo lng('File') . ': <span class="badge text-bg-light border-radius-0">' . $num_files . '</span>' ?>
                               <?php echo lng('Folder') . ': <span class="badge text-bg-light border-radius-0">' . $num_folders . '</span>' ?>
                           </td>
@@ -2729,7 +2817,7 @@
 
       <div class="row">
           <?php if (!FM_READONLY): ?>
-              <div class="col-xs-12 col-sm-9">
+              <div class="col-xs-15 col-sm-12">
                   <div class="btn-group flex-wrap" data-toggle="buttons" role="toolbar">
                       <a href="#" class="btn btn-small btn-outline-primary btn-2" onclick="toggleView();return false;" title="Toggle View"><i class="fa fa-th-large" id="view-icon"></i></a>
                       <a href="#/select-all" class="btn btn-small btn-outline-primary btn-2" onclick="select_all();return false;"><i class="fa fa-check-square"></i> <?php echo lng('SelectAll') ?> </a>
@@ -2790,6 +2878,22 @@
       }
       return false;
   }
+// --- FOLDER SIZE CACHING ---
+function fm_get_cached_size($path) {
+    $cacheFile = __DIR__ . '/.fm_cache.json';
+    if (!file_exists($cacheFile)) return null;
+    $cache = json_decode(file_get_contents($cacheFile), true);
+    $key = md5($path);
+    return isset($cache[$key]) ? $cache[$key] : null;
+}
+
+function fm_save_cached_size($path, $size) {
+    $cacheFile = __DIR__ . '/.fm_cache.json';
+    $cache = file_exists($cacheFile) ? json_decode(file_get_contents($cacheFile), true) : [];
+    $cache[md5($path)] = $size;
+    file_put_contents($cacheFile, json_encode($cache, JSON_PRETTY_PRINT));
+}
+
 function fm_foldersize($path) {
     $total_size = 0;
     $files = scandir($path);
@@ -4205,7 +4309,7 @@ function fm_foldersize($path) {
                                   <i class="fa fa-user-circle"></i>
                               </a>
 
-                              <div class="dropdown-menu dropdown-menu-end text-small shadow" aria-labelledby="navbarDropdownMenuLink-5" data-bs-theme="<?php echo FM_THEME; ?>" style="background: #0f0f0f !important;">
+                              <div class="dropdown-menu dropdown-menu-end text-small shadow" aria-labelledby="navbarDropdownMenuLink-5" data-bs-theme="<?php echo FM_THEME; ?>" style="max-width:97vw !important"style="background: #0f0f0f !important;">
                                   <?php if (!FM_READONLY): ?>
                                       <a title="Git FTP" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;git_ftp=1"><i class="fa fa-git" aria-hidden="true"></i> Git FTP</a>
                                       <a title="<?php echo lng('Settings') ?>" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;settings=1"><i class="fa fa-cog" aria-hidden="true"></i> <?php echo lng('Settings') ?></a>
@@ -4442,7 +4546,7 @@ function fm_foldersize($path) {
           $isStickyNavBar = $sticky_navbar ? 'navbar-fixed' : 'navbar-normal';
   ?>
       <!DOCTYPE html>
-      <html data-bs-theme="<?php echo FM_THEME; ?>">
+      <html data-bs-theme="<?php echo FM_THEME; ?>" style="max-width:97vw !important">
 
       <head>
           <meta charset="utf-8">
@@ -5324,6 +5428,12 @@ function fm_foldersize($path) {
                                       <span class="input-group-text" id="search-addon3"><i class="fa fa-search"></i></span>
                                   </div>
                                   <div class="form-check form-switch" style="font-size: 0.9rem;">
+                                      <input class="form-check-input" type="checkbox" role="switch" id="js-search-options-recursive" checked>
+                                      <label class="form-check-label" for="js-search-options-recursive">Search in subfolders</label>
+                                      <input class="form-check-input ms-3" type="checkbox" role="switch" id="js-search-options-content">
+                                      <label class="form-check-label" for="js-search-options-content">Search file content (for text files)</label>
+                                  </div>
+                              </h5>
                                       <input class="form-check-input" type="checkbox" id="js-search-content">
                                       <label class="form-check-label" for="js-search-content">Search in file content (Grep)</label>
                                   </div>
@@ -5639,8 +5749,9 @@ function fm_foldersize($path) {
               function fm_search() {
                   var searchTxt = $("input#advanced-search").val(),
                       searchWrapper = $("ul#search-wrapper"),
-                      path = $("#js-search-modal").attr("href"),
-                      isContent = $("#js-search-content").is(':checked'),
+                      path = '<?php echo FM_PATH; ?>', // Use current FM_PATH
+                      isContent = $("#js-search-options-content").is(':checked'), // Corrected ID
+                      isRecursive = $("#js-search-options-recursive").is(':checked'), // New parameter
                       _html = "",
                       $loader = $("div.lds-facebook");
                   if (!!searchTxt && searchTxt.length > 2 && path) {
@@ -5650,6 +5761,7 @@ function fm_foldersize($path) {
                           path: path,
                           type: 'search',
                           is_content: isContent,
+                          is_recursive: isRecursive, // Add new parameter
                           token: window.csrf
                       };
                       $.ajax({
@@ -5731,20 +5843,28 @@ function fm_foldersize($path) {
                   }, s.previewImage()
               }(jQuery);
 
-                            // Dom Ready Events
-                            $(document).ready(function() {
-                                // Trigger server-side recursive search on Enter key for main search bar
-                                $('#search-addon').on('keyup', function(e) {
-                                    if (e.key === 'Enter' || e.keyCode === 13) { // Enter key
-                                        const searchTerm = $(this).val();
-                                        if (searchTerm) {
-                                            window.location.href = "?p=<?php echo urlencode(FM_PATH); ?>&search_term=" + encodeURIComponent(searchTerm);
-                                        } else {
-                                            window.location.href = "?p=<?php echo urlencode(FM_PATH); ?>"; // Clear search
-                                        }
-                                    }
-                                });
-                  $("input#advanced-search").on('keyup', function(e) {
+                                          // Dom Ready Events
+                                          $(document).ready(function() {
+                                              // Trigger AJAX recursive search on Enter key for main search bar
+                                              $('#search-addon').on('keyup', function(e) {
+                                                  if (e.key === 'Enter' || e.keyCode === 13) { // Enter key
+                                                      const searchTerm = $(this).val().trim();
+                                                      if (searchTerm) {
+                                                          // Use the AJAX search function (fm_search) logic
+                                                          // But first, we might need to set the value to the modal input if we want to reuse the same function fully,
+                                                          // or just call the logic directly. 
+                                                          // Since fm_search uses input#advanced-search, let's just create a direct AJAX call or sync the value.
+                                                          // Let's create a specific handler here for the main search bar to show results in the main table or modal?
+                                                          // The user asked for "like oldtinyfilemanager", which used a modal/table update.
+                                                          // Let's assume we want to use the same fm_search functionality which populates a modal.
+                                                          
+                                                          // Sync value to advanced search input (which is in the modal)
+                                                          $("#advanced-search").val(searchTerm);
+                                                          // Trigger search
+                                                          fm_search();
+                                                      }
+                                                  }
+                                              });                  $("input#advanced-search").on('keyup', function(e) {
                       if (e.keyCode === 13) {
                           fm_search();
                       }
@@ -5820,13 +5940,21 @@ function fm_foldersize($path) {
               $ext =  $ext == "js" ? "javascript" :  $ext;
           ?>
               <?php print_external('js-ace'); ?>
+                  <?php print_external('js-aceext-language_tools'); ?>
               <script>
+                    ace.require("ace/ext/language_tools");
                   var editor = ace.edit("editor");
                   editor.getSession().setMode({
                       path: "ace/mode/<?php echo $ext; ?>",
                       inline: true
                   });
                   editor.setTheme("ace/theme/clouds_midnight"); // Dark Theme
+                          // enable autocompletion and snippets
+                    editor.setOptions({
+                        enableBasicAutocompletion: true,
+                        enableSnippets: true,
+                        enableLiveAutocompletion: true
+                    });
                   editor.setShowPrintMargin(false); // Hide the vertical ruler
                   
                   // --- AUTO SAVE LOGIC ---
@@ -6278,6 +6406,9 @@ function fm_foldersize($path) {
           $tr['en']['Invalid characters in file or folder name']      = 'Invalid characters in file or folder name';
           $tr['en']['Operations with archives are not available']     = 'Operations with archives are not available';
           $tr['en']['File or folder with this path already exists']   = 'File or folder with this path already exists';
+              $tr['en']['RemainingSpace']                                 = 'Remaining Space';
+    $tr['en']['UsedSpace']                                      = 'Used Space';
+    $tr['en']['ShowDiskUsage']                                  = 'Show Disk Usage';
           $tr['en']['Are you sure want to rename?']                   = 'Are you sure want to rename?';
           $tr['en']['Are you sure want to']                           = 'Are you sure want to';
           $tr['en']['Date Modified']                                  = 'Date Modified';
