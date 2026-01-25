@@ -5427,20 +5427,15 @@ function fm_foldersize($path) {
                                       <input type="text" class="form-control" placeholder="<?php echo lng('Search') ?> <?php echo lng('a files') ?>" aria-label="<?php echo lng('Search') ?>" aria-describedby="search-addon3" id="advanced-search" autofocus required>
                                       <span class="input-group-text" id="search-addon3"><i class="fa fa-search"></i></span>
                                   </div>
-                                  <div class="form-check form-switch" style="font-size: 0.9rem;">
-                                      <input class="form-check-input" type="checkbox" role="switch" id="js-search-options-recursive" checked>
-                                      <label class="form-check-label" for="js-search-options-recursive">Search in subfolders</label>
-                                      <input class="form-check-input ms-3" type="checkbox" role="switch" id="js-search-options-content">
-                                      <label class="form-check-label" for="js-search-options-content">Search file content (for text files)</label>
-                                  </div>
-                              </h5>
-                                      <input class="form-check-input" type="checkbox" id="js-search-content">
-                                      <label class="form-check-label" for="js-search-content">Search in file content (Grep)</label>
-                                  </div>
-                              </h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                          </div>
-                          <div class="modal-body">
+                                          <div class="form-check form-switch" style="font-size: 0.9rem;">
+                                              <input class="form-check-input" type="checkbox" role="switch" id="js-search-options-recursive" checked>
+                                              <label class="form-check-label" for="js-search-options-recursive">Search in subfolders</label>
+                                              <input class="form-check-input ms-3" type="checkbox" role="switch" id="js-search-options-content">
+                                              <label class="form-check-label" for="js-search-options-content">Search file content (for text files)</label>
+                                          </div>
+                                      </h5>
+                                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                  </div>                          <div class="modal-body">
                               <form action="" method="post">
                                   <div class="lds-facebook">
                                       <div></div>
@@ -5747,11 +5742,10 @@ function fm_foldersize($path) {
 
               // Advance search
               function fm_search() {
-                  var searchTxt = $("input#advanced-search").val(),
-                      searchWrapper = $("ul#search-wrapper"),
-                      path = '<?php echo FM_PATH; ?>', // Use current FM_PATH
-                      isContent = $("#js-search-options-content").is(':checked'), // Corrected ID
-                      isRecursive = $("#js-search-options-recursive").is(':checked'), // New parameter
+                          var searchTxt = $("input#advanced-search").val(),
+                              searchWrapper = $("ul#search-wrapper"),
+                              path = '<?php echo addslashes(FM_PATH); ?>', // Use current FM_PATH
+                              isContent = $("#js-search-options-content").is(':checked'), // Corrected ID                      isRecursive = $("#js-search-options-recursive").is(':checked'), // New parameter
                       _html = "",
                       $loader = $("div.lds-facebook");
                   if (!!searchTxt && searchTxt.length > 2 && path) {
