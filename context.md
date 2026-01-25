@@ -1,64 +1,12 @@
-[{
-	"resource": "/C:/laragon/www/test/infinitysetup/filemanager.php",
-	"owner": "_generated_diagnostic_collection_name_#3",
-	"severity": 8,
-	"message": "']' expected.",
-	"source": "php",
-	"startLineNumber": 1392,
-	"startColumn": 55,
-	"endLineNumber": 1392,
-	"endColumn": 55,
-	"modelVersionId": 203,
-	"origin": "extHost1"
-},{
-	"resource": "/C:/laragon/www/test/infinitysetup/filemanager.php",
-	"owner": "_generated_diagnostic_collection_name_#3",
-	"severity": 8,
-	"message": "';' expected.",
-	"source": "php",
-	"startLineNumber": 1392,
-	"startColumn": 55,
-	"endLineNumber": 1392,
-	"endColumn": 55,
-	"modelVersionId": 203,
-	"origin": "extHost1"
-},{
-	"resource": "/C:/laragon/www/test/infinitysetup/filemanager.php",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": "P1001",
-	"severity": 8,
-	"message": "Unexpected 'Name'. Expected ','.",
-	"source": "intelephense",
-	"startLineNumber": 1393,
-	"startColumn": 19,
-	"endLineNumber": 1393,
-	"endColumn": 28,
-	"modelVersionId": 203,
-	"origin": "extHost1"
-},{
-	"resource": "/C:/laragon/www/test/infinitysetup/filemanager.php",
-	"owner": "_generated_diagnostic_collection_name_#6",
-	"code": "PHP2014",
-	"severity": 8,
-	"message": "Syntax error: unexpected token 'error_log'",
-	"source": "PHP",
-	"startLineNumber": 1393,
-	"startColumn": 19,
-	"endLineNumber": 1393,
-	"endColumn": 28,
-	"modelVersionId": 203,
-	"origin": "extHost1"
-},{
-	"resource": "/C:/laragon/www/test/infinitysetup/filemanager.php",
-	"owner": "_generated_diagnostic_collection_name_#1",
-	"code": "P1001",
-	"severity": 8,
-	"message": "Unexpected ';'.",
-	"source": "intelephense",
-	"startLineNumber": 1393,
-	"startColumn": 83,
-	"endLineNumber": 1393,
-	"endColumn": 84,
-	"modelVersionId": 203,
-	"origin": "extHost1"
-}]
+filemanager.php?p=:3120 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:3120:104)
+filemanager.php?p=:2306 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:2306:105)
+onclick @ filemanager.php?p=:2306
+/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
+/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
+filemanager.php?p=:2394 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:2394:103)
+onclick @ filemanager.php?p=:2394
+/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
+/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
