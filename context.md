@@ -1,12 +1,19 @@
-filemanager.php?p=:3120 Uncaught ReferenceError: rename is not defined
-    at HTMLAnchorElement.onclick (filemanager.php?p=:3120:104)
-filemanager.php?p=:2306 Uncaught ReferenceError: rename is not defined
-    at HTMLAnchorElement.onclick (filemanager.php?p=:2306:105)
-onclick @ filemanager.php?p=:2306
-/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
-/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
-filemanager.php?p=:2394 Uncaught ReferenceError: rename is not defined
-    at HTMLAnchorElement.onclick (filemanager.php?p=:2394:103)
-onclick @ filemanager.php?p=:2394
-/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
-/config/filemanager.php?p=#:1 Unchecked runtime.lastError: The message port closed before a response was received.
+filemanager.php?p=:2032 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:2032:101)
+onclick @ filemanager.php?p=:2032
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+Unchecked runtime.lastError: The message port closed before a response was received.
+filemanager.php?p=:2032 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:2032:101)
+onclick @ filemanager.php?p=:2032
+filemanager.php?p=:2032 Uncaught ReferenceError: rename is not defined
+    at HTMLAnchorElement.onclick (filemanager.php?p=:2032:101)
+onclick @ filemanager.php?p=:2032

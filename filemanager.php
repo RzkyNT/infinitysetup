@@ -5745,7 +5745,8 @@ function fm_foldersize($path) {
                           var searchTxt = $("input#advanced-search").val(),
                               searchWrapper = $("ul#search-wrapper"),
                               path = '<?php echo addslashes(FM_PATH); ?>', // Use current FM_PATH
-                              isContent = $("#js-search-options-content").is(':checked'), // Corrected ID                      isRecursive = $("#js-search-options-recursive").is(':checked'), // New parameter
+                              isContent = $("#js-search-options-content").is(':checked'),
+                              isRecursive = $("#js-search-options-recursive").is(':checked'),
                       _html = "",
                       $loader = $("div.lds-facebook");
                   if (!!searchTxt && searchTxt.length > 2 && path) {
@@ -5858,7 +5859,9 @@ function fm_foldersize($path) {
                                                           fm_search();
                                                       }
                                                   }
-                                              });                  $("input#advanced-search").on('keyup', function(e) {
+                                              });
+                                              
+                                              $("input#advanced-search").on('keyup', function(e) {
                       if (e.keyCode === 13) {
                           fm_search();
                       }
