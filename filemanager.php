@@ -1,6 +1,7 @@
 <?php
-  //Default Configuration
-  $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":true,"hide_Cols":true,"theme":"dark","show_disk_usage":true}';
+ob_start(); // Start output buffering to prevent "headers already sent" errors
+//Default Configuration
+$CONFIG = '{"lang":"en","error_reporting":true,"show_hidden":true,"hide_Cols":true,"theme":"dark","show_disk_usage":true}';
 
   /**
    * H3K ~ RFILE Manager V2.6
@@ -457,6 +458,31 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           die("Invalid Token.");
       }
 
+      // get list of folders
+      if (isset($_POST['type']) && $_POST['type'] == "get_folders") {
+          $dir = isset($_POST['path']) ? $_POST['path'] : '';
+          $path = FM_ROOT_PATH;
+          if ($dir != '') {
+              $path .= '/' . fm_clean_path($dir);
+          }
+          
+          $folders = array();
+          if (is_dir($path)) {
+              $objects = scandir($path);
+              foreach ($objects as $file) {
+                  if ($file != '.' && $file != '..' && is_dir($path . '/' . $file)) {
+                      if (!FM_SHOW_HIDDEN && substr($file, 0, 1) === '.') continue;
+                      $folders[] = array(
+                          "name" => $file,
+                          "path" => ($dir ? $dir . '/' : '') . $file
+                      );
+                  }
+              }
+          }
+          echo json_encode($folders);
+          exit();
+      }
+
       //search : get list of files from the current folder
       if (isset($_POST['type']) && $_POST['type'] == "search") {
           $dir = $_POST['path'] == "." ? '' : $_POST['path'];
@@ -896,6 +922,8 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
 
       if (!verifyToken($_POST['token'])) {
           fm_set_msg(lng('Invalid Token.'), 'error');
+          $FM_PATH = FM_PATH;
+          fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
       }
 
       // from
@@ -916,7 +944,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       }
       if (!is_dir($copy_to_path)) {
           if (!fm_mkdir($copy_to_path, true)) {
-              fm_set_msg('Unable to create destination folder', 'error');
+              fm_set_msg('Unable to create destination folder: ' . $copy_to_path, 'error');
               $FM_PATH = FM_PATH;
               fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
           }
@@ -925,6 +953,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       $move = isset($_POST['move']);
       // copy/move
       $errors = 0;
+      $error_details = [];
       $files = $_POST['file'];
       if (is_array($files) && count($files)) {
           foreach ($files as $f) {
@@ -934,15 +963,32 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                   $from = $path . '/' . $f;
                   // abs path to
                   $dest = $copy_to_path . '/' . $f;
+                  
+                  // Check if source exists
+                  if (!file_exists($from)) {
+                      $errors++;
+                      $error_details[] = "Source not found: $f";
+                      continue;
+                  }
+                  
+                  // Check if destination already exists
+                  if (file_exists($dest)) {
+                      $errors++;
+                      $error_details[] = "Destination already exists: $f";
+                      continue;
+                  }
+                  
                   // do
                   if ($move) {
                       $rename = fm_rename($from, $dest);
                       if ($rename === false) {
                           $errors++;
+                          $error_details[] = "Failed to move: $f";
                       }
                   } else {
                       if (!fm_rcopy($from, $dest)) {
                           $errors++;
+                          $error_details[] = "Failed to copy: $f";
                       }
                   }
               }
@@ -952,6 +998,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
               fm_set_msg($msg);
           } else {
               $msg = $move ? 'Error while moving items' : 'Error while copying items';
+              $msg .= ': ' . implode(', ', $error_details);
               fm_set_msg($msg, 'error');
           }
       } else {
@@ -992,6 +1039,56 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       $FM_PATH = FM_PATH;
       fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
   }
+
+// Move
+if (isset($_POST['move_from'], $_POST['move_to'], $_POST['token']) && !FM_READONLY) {
+    if (!verifyToken($_POST['token'])) {
+        fm_set_msg("Invalid Token.", 'error');
+        fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+    }
+    $from = urldecode($_POST['move_from']);
+    $from = fm_clean_path($from);
+    $from = str_replace('/', '', $from);
+    
+    $to_path = urldecode($_POST['move_to']);
+    $to_path = fm_clean_path($to_path); // path to directory
+
+    $path = FM_ROOT_PATH;
+    if (FM_PATH != '') {
+        $path .= '/' . FM_PATH;
+    }
+    
+    $from_path = $path . '/' . $from;
+    $dest_path = FM_ROOT_PATH;
+    if ($to_path != '') {
+        $dest_path .= '/' . $to_path;
+    }
+    
+    // Auto-create destination folder if it doesn't exist
+    if (!is_dir($dest_path)) {
+        if (!fm_mkdir($dest_path, true)) {
+            fm_set_msg(lng('Unable to create destination folder'), 'error');
+            $FM_PATH = FM_PATH;
+            fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
+        }
+    }
+    
+    // Append filename to destination path
+    $dest_path .= '/' . $from;
+    
+    // Check if file/folder already exists at destination
+    if (file_exists($dest_path)) {
+        fm_set_msg(lng('File or folder with this path already exists'), 'error');
+    } else {
+        if (fm_rename($from_path, $dest_path)) {
+            fm_set_msg(sprintf(lng('Moved from') . ' <b>%s</b> ' . lng('to') . ' <b>%s</b>', fm_enc($from), fm_enc($to_path)));
+        } else {
+            fm_set_msg(sprintf(lng('Error while moving from') . ' <b>%s</b> ' . lng('to') . ' <b>%s</b>', fm_enc($from), fm_enc($to_path)), 'error');
+        }
+    }
+    $FM_PATH = FM_PATH;
+    fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
+}
 
   // Download
   if (isset($_GET['dl'], $_POST['token'])) {
@@ -2639,6 +2736,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                       <td class="inline-actions"><?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, '1028','<?php echo lng('Delete') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"> <i class="fa fa-trash-o" aria-hidden="true"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o" aria-hidden="true"></i></a>
+                            <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right" aria-hidden="true"></i></a>
                               <a title="<?php echo lng('CopyTo') ?>..." href="?p=&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o" aria-hidden="true"></i></a>
                           <?php endif; ?>
                           <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f . '/') ?>" target="_blank"><i class="fa fa-link" aria-hidden="true"></i></a>
@@ -2718,6 +2816,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
+                              <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right"></i></a>
                               <a title="<?php echo lng('CopyTo') ?>..."
                                   href="?p=<?php echo urlencode(FM_PATH) ?>&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o"></i></a>
                           <?php endif; ?>
@@ -2829,8 +2928,8 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                       <a href="#" onclick="confirmMassAction(event, 'a-zip', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Zip') ?> </a>
                       <input type="submit" class="hidden" name="tar" id="a-tar" value="tar">
                       <a href="#" onclick="confirmMassAction(event, 'a-tar', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Tar') ?> </a>
-                      <input type="submit" class="hidden" name="copy" id="a-copy" value="Copy">
-                      <a href="javascript:document.getElementById('a-copy').click();" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?> </a>
+                      <a href="#" onclick="showBulkCopyModal(event);" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?> </a>
+                      <a href="#" onclick="showBulkMoveModal(event);" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?> </a>
                       <li class="list-inline-item"><input type="submit" class="hidden" name="foldersize" id="a-foldersize" value="Foldersize">
                       <a href="javascript:document.getElementById('a-foldersize').click();" class="btn btn-small btn-outline-primary btn-2 <?php echo $_SESSION[FM_SESSION_ID]['foldersize']??false ? 'btn-active':''; ?>"><i class="fa fa-pie-chart"></i> <?php echo lng('Foldersize') ?> </a></li>
                   </div>
@@ -3114,6 +3213,9 @@ function fm_foldersize($path) {
    */
   function fm_redirect($url, $code = 302)
   {
+      if (ob_get_level()) {
+          ob_end_clean(); // Clear output buffer before redirect
+      }
       header('Location: ' . $url, true, $code);
       exit;
   }
@@ -5471,7 +5573,80 @@ function fm_foldersize($path) {
                   </div>
               </div>
 
-              <!-- Preview Modal -->
+              <!--Move Modal -->
+            <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="moveDailog" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog" role="document">
+                    <form class="modal-content rounded-3 shadow" method="post" autocomplete="off">
+                        <div class="modal-body p-4 text-center">
+                            <h5 class="mb-3"><?php echo lng('Move') ?></h5>
+                            <p class="mb-1">
+                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
+                                <input type="text" name="move_to" id="js-move-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" list="folderList" required>
+                                <datalist id="folderList">
+                                    <option value=".">
+                                    <option value="..">
+                                </datalist>
+                                <div id="js-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
+                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                                <input type="hidden" name="move_from" id="js-move-from">
+                            </p>
+                        </div>
+                        <div class="modal-footer flex-nowrap p-0">
+                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Move') ?></strong></button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!--Bulk Move Modal -->
+            <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="bulkMoveDailog" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog" role="document">
+                    <form class="modal-content rounded-3 shadow" method="post" autocomplete="off" id="bulkMoveForm">
+                        <div class="modal-body p-4 text-center">
+                            <h5 class="mb-3"><?php echo lng('Move') ?> <span id="bulk-move-count"></span> <?php echo lng('Items') ?></h5>
+                            <p class="mb-1">
+                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
+                                <input type="text" name="copy_to" id="js-bulk-move-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" required>
+                                <div id="js-bulk-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
+                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                                <input type="hidden" name="move" value="1">
+                                <input type="hidden" name="finish" value="1">
+                                <div id="bulk-move-files"></div>
+                            </p>
+                        </div>
+                        <div class="modal-footer flex-nowrap p-0">
+                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Move') ?></strong></button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!--Bulk Copy Modal -->
+            <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="bulkCopyDailog" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog" role="document">
+                    <form class="modal-content rounded-3 shadow" method="post" autocomplete="off" id="bulkCopyForm">
+                        <div class="modal-body p-4 text-center">
+                            <h5 class="mb-3"><?php echo lng('Copy') ?> <span id="bulk-copy-count"></span> <?php echo lng('Items') ?></h5>
+                            <p class="mb-1">
+                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
+                                <input type="text" name="copy_to" id="js-bulk-copy-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" required>
+                                <div id="js-bulk-copy-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
+                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                                <input type="hidden" name="finish" value="1">
+                                <div id="bulk-copy-files"></div>
+                            </p>
+                        </div>
+                        <div class="modal-footer flex-nowrap p-0">
+                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Copy') ?></strong></button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Preview Modal -->
               <div class="modal fade" id="previewModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
                   <div class="modal-dialog modal-lg" role="document">
                       <div class="modal-content">
@@ -5552,7 +5727,258 @@ function fm_foldersize($path) {
                   }
               }
               
-              function preview_file(url, ext) {
+              function move(e, t) {
+                if (t) {
+                    $("#js-move-from").val(t);
+                    // Get current path from PHP
+                    var currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                    $("#js-move-to").val(currentPath); // Auto-fill with current path
+                    $("#moveDailog").modal('show');
+                    loadFolders(currentPath); // Start from current folder
+                }
+            }
+
+            function loadFolders(path) {
+                const wrapper = $("#js-folder-tree");
+                wrapper.html('<div class="text-center p-2"><div class="spinner-border spinner-border-sm text-primary" role="status"></div> Loading...</div>');
+                
+                $.ajax({
+                    type: "POST",
+                    url: window.location.href, 
+                    data: {
+                        ajax: true,
+                        type: 'get_folders',
+                        path: path,
+                        token: window.csrf
+                    },
+                    success: function(data) {
+                        try {
+                            data = JSON.parse(data);
+                        } catch(e) { console.error(e); }
+                        
+                        let html = '<ul class="list-group list-group-flush small bg-white">';
+                        
+                        // "Current Path" Header
+                        let displayPath = path ? path : 'Root';
+                        html += `<li class="list-group-item bg-light fw-bold py-2" style="color: #4d4d4d;"><div class="d-flex justify-content-between align-items-center">
+                                        <span><i class="fa fa-folder-open-o"></i> ${displayPath}</span>
+                                        <button class="btn btn-sm btn-primary py-0" type="button" onclick="selectDestination('${path}')"><i class="fa fa-check"></i> Select This</button>
+                                    </div>
+                                 </li>`;
+
+                        // ".." Link
+                        if (path !== '') {
+                           let parent = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+                           html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadFolders('${parent}')">
+                                        <i class="fa fa-level-up"></i> .. (Up)
+                                    </li>`;
+                        }
+
+                        if (data && data.length) {
+                            $.each(data, function(i, f) {
+                                 html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadFolders('${f.path}')">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span><i class="fa fa-folder"></i> ${f.name}</span>
+                                    </div>
+                                 </li>`;
+                            });
+                        } else {
+                            html += '<li class="list-group-item text-muted py-2 fst-italic">No subfolders</li>';
+                        }
+                        html += '</ul>';
+                        wrapper.html(html);
+                    },
+                    error: function() {
+                        wrapper.html('<div class="text-danger p-2">Error loading folders</div>');
+                    }
+                });
+            }
+
+            function selectDestination(path) {
+                $("#js-move-to").val(path);
+            }
+
+            // Bulk Move Functions
+            function showBulkMoveModal(e) {
+                e.preventDefault();
+                var checkboxes = $('input[name="file[]"]:checked');
+                if (checkboxes.length === 0) {
+                    Swal.fire({
+                        title: '<?php echo lng('Nothing selected'); ?>',
+                        text: 'Please select files or folders to move',
+                        icon: 'warning'
+                    });
+                    return false;
+                }
+                
+                // Clear previous files
+                $("#bulk-move-files").empty();
+                
+                // Add each selected file as hidden input
+                checkboxes.each(function() {
+                    var fileName = $(this).val();
+                    $("#bulk-move-files").append('<input type="hidden" name="file[]" value="' + fileName + '">');
+                });
+                
+                $("#bulk-move-count").text(checkboxes.length);
+                var currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                $("#js-bulk-move-to").val(currentPath);
+                $("#bulkMoveDailog").modal('show');
+                loadBulkFolders(currentPath);
+                return false;
+            }
+
+            function loadBulkFolders(path) {
+                const wrapper = $("#js-bulk-folder-tree");
+                wrapper.html('<div class="text-center p-2"><div class="spinner-border spinner-border-sm text-primary" role="status"></div> Loading...</div>');
+                
+                $.ajax({
+                    type: "POST",
+                    url: window.location.href, 
+                    data: {
+                        ajax: true,
+                        type: 'get_folders',
+                        path: path,
+                        token: window.csrf
+                    },
+                    success: function(data) {
+                        try {
+                            data = JSON.parse(data);
+                        } catch(e) { console.error(e); }
+                        
+                        let html = '<ul class="list-group list-group-flush small bg-white">';
+                        
+                        // "Current Path" Header
+                        let displayPath = path ? path : 'Root';
+                        html += `<li class="list-group-item bg-light fw-bold py-2" style="color: #4d4d4d;"><div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="fa fa-folder-open-o"></i> ${displayPath}</span>
+                                    <button class="btn btn-sm btn-primary py-0" type="button" onclick="selectBulkDestination('${path}')"><i class="fa fa-check"></i> Select This</button>
+                                </div>
+                             </li>`;
+
+                        // ".." Link
+                        if (path !== '') {
+                           let parent = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+                           html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadBulkFolders('${parent}')">
+                                        <i class="fa fa-level-up"></i> .. (Up)
+                                    </li>`;
+                        }
+
+                        if (data && data.length) {
+                            $.each(data, function(i, f) {
+                                 html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadBulkFolders('${f.path}')">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span><i class="fa fa-folder"></i> ${f.name}</span>
+                                    </div>
+                                 </li>`;
+                            });
+                        } else {
+                            html += '<li class="list-group-item text-muted py-2 fst-italic">No subfolders</li>';
+                        }
+                        html += '</ul>';
+                        wrapper.html(html);
+                    },
+                    error: function() {
+                        wrapper.html('<div class="text-danger p-2">Error loading folders</div>');
+                    }
+                });
+            }
+
+            function selectBulkDestination(path) {
+                $("#js-bulk-move-to").val(path);
+            }
+
+            // Bulk Copy Functions
+            function showBulkCopyModal(e) {
+                e.preventDefault();
+                var checkboxes = $('input[name="file[]"]:checked');
+                if (checkboxes.length === 0) {
+                    Swal.fire({
+                        title: '<?php echo lng('Nothing selected'); ?>',
+                        text: 'Please select files or folders to copy',
+                        icon: 'warning'
+                    });
+                    return false;
+                }
+                
+                // Clear previous files
+                $("#bulk-copy-files").empty();
+                
+                // Add each selected file as hidden input
+                checkboxes.each(function() {
+                    var fileName = $(this).val();
+                    $("#bulk-copy-files").append('<input type="hidden" name="file[]" value="' + fileName + '">');
+                });
+                
+                $("#bulk-copy-count").text(checkboxes.length);
+                var currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                $("#js-bulk-copy-to").val(currentPath);
+                $("#bulkCopyDailog").modal('show');
+                loadBulkCopyFolders(currentPath);
+                return false;
+            }
+
+            function loadBulkCopyFolders(path) {
+                const wrapper = $("#js-bulk-copy-folder-tree");
+                wrapper.html('<div class="text-center p-2"><div class="spinner-border spinner-border-sm text-primary" role="status"></div> Loading...</div>');
+                
+                $.ajax({
+                    type: "POST",
+                    url: window.location.href, 
+                    data: {
+                        ajax: true,
+                        type: 'get_folders',
+                        path: path,
+                        token: window.csrf
+                    },
+                    success: function(data) {
+                        try {
+                            data = JSON.parse(data);
+                        } catch(e) { console.error(e); }
+                        
+                        let html = '<ul class="list-group list-group-flush small bg-white">';
+                        
+                        // "Current Path" Header
+                        let displayPath = path ? path : 'Root';
+                        html += `<li class="list-group-item bg-light fw-bold py-2" style="color: #4d4d4d;"><div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="fa fa-folder-open-o"></i> ${displayPath}</span>
+                                    <button class="btn btn-sm btn-primary py-0" type="button" onclick="selectBulkCopyDestination('${path}')"><i class="fa fa-check"></i> Select This</button>
+                                </div>
+                             </li>`;
+
+                        // ".." Link
+                        if (path !== '') {
+                           let parent = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+                           html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadBulkCopyFolders('${parent}')">
+                                        <i class="fa fa-level-up"></i> .. (Up)
+                                    </li>`;
+                        }
+
+                        if (data && data.length) {
+                            $.each(data, function(i, f) {
+                                 html += `<li class="list-group-item list-group-item-action cursor-pointer py-2" onclick="loadBulkCopyFolders('${f.path}')">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span><i class="fa fa-folder"></i> ${f.name}</span>
+                                    </div>
+                                 </li>`;
+                            });
+                        } else {
+                            html += '<li class="list-group-item text-muted py-2 fst-italic">No subfolders</li>';
+                        }
+                        html += '</ul>';
+                        wrapper.html(html);
+                    },
+                    error: function() {
+                        wrapper.html('<div class="text-danger p-2">Error loading folders</div>');
+                    }
+                });
+            }
+
+            function selectBulkCopyDestination(path) {
+                $("#js-bulk-copy-to").val(path);
+            }
+
+            function preview_file(url, ext) {
                   var content = $('#preview-content');
                   content.html('<div class="spinner-border text-primary" role="status"></div>');
                   $("#previewModal").modal('show');
@@ -6348,6 +6774,7 @@ function fm_foldersize($path) {
           $tr['en']['SourceFolder']   = 'Source Folder';
           $tr['en']['Files']          = 'Files';
           $tr['en']['Move']           = 'Move';
+          $tr['en']['Items']          = 'Items';
           $tr['en']['Change']         = 'Change';
           $tr['en']['Settings']       = 'Settings';
           $tr['en']['Language']       = 'Language';

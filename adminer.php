@@ -2450,7 +2450,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                     }
                                     // ENUM / SET
                                     elseif (preg_match("/^(enum|set)\((.*)\)$/i", $type, $matches)) {
-                                        $options = str_getcsv($matches[2], ",", "'");
+                                        $options = str_getcsv($matches[2], ",", "'", "\\");
                                         $inputHtml = '<select name="data['.htmlspecialchars($field).']" class="form-select">';
                                         if ($col['Null'] === 'YES') {
                                             $inputHtml .= '<option value="" '.(is_null($val)?'selected':'').'>NULL</option>';
