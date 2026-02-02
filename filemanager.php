@@ -2770,7 +2770,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       }
                   }
               ?>
-                  <tr>
+                  <tr data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>">
                       <?php if (!FM_READONLY): ?>
                           <td class="custom-checkbox-td">
                               <div class="custom-control custom-checkbox">
@@ -2844,7 +2844,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       }
                   }
               ?>
-                  <tr>
+                  <tr data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>">
                       <?php if (!FM_READONLY): ?>
                           <td class="custom-checkbox-td">
                               <div class="custom-control custom-checkbox">
@@ -2943,7 +2943,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $is_link = is_link($path . '/' . $f);
               $full_path = '?p=' . urlencode(trim(FM_PATH . '/' . $f, '/'));
               ?>
-              <div class="grid-item" onclick="window.location.href='<?=$full_path?>'">
+              <div class="grid-item" onclick="window.location.href='<?=$full_path?>'" data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
@@ -2960,7 +2960,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
               $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
               ?>
-              <div class="grid-item" onclick="window.location.href='<?=$view_link?>'">
+              <div class="grid-item" onclick="window.location.href='<?=$view_link?>'" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
@@ -5370,6 +5370,51 @@ function fm_foldersize($path) {
               .grid-view-container .grid-item .grid-check { position: absolute; top: 5px; left: 5px; }
               .grid-view-show { display: block !important; }
               .list-view-hide { display: none !important; }
+              
+              /* CONTEXT MENU */
+              .context-menu {
+                  display: none;
+                  position: absolute;
+                  z-index: 10000;
+                  background: var(--bg-card);
+                  border: 1px solid var(--border-color);
+                  border-radius: 6px;
+                  box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+                  min-width: 180px;
+                  overflow: hidden;
+              }
+              .context-menu ul {
+                  list-style: none;
+                  padding: 0;
+                  margin: 0;
+              }
+              .context-menu ul li {
+                  padding: 0;
+                  margin: 0;
+              }
+              .context-menu ul li a {
+                  display: flex;
+                  padding: 10px 15px;
+                  text-decoration: none;
+                  color: var(--text-primary);
+                  font-size: 14px;
+                  align-items: center;
+                  gap: 10px;
+                  transition: background 0.2s;
+              }
+              .context-menu ul li a:hover {
+                  background: var(--bg-hover);
+                  color: var(--accent);
+              }
+              .context-menu i {
+                  width: 20px;
+                  text-align: center;
+              }
+              .context-menu-separator {
+                  height: 1px;
+                  background: var(--border-color);
+                  margin: 5px 0;
+              }
           </style>
           <?php
           // Force dark theme logic if needed, but primarily style overrides.
@@ -5751,7 +5796,21 @@ function fm_foldersize($path) {
       function fm_show_footer()
       {
           ?>
-          </div>
+          <!-- Context Menu -->
+    <div id="context-menu" class="context-menu">
+        <ul>
+            <li><a href="#" id="cm-open"><i class="fa fa-folder-open"></i> <?php echo lng('Open') ?></a></li>
+            <li><a href="#" id="cm-preview"><i class="fa fa-eye"></i> Preview</a></li>
+            <li class="context-menu-separator"></li>
+            <li><a href="#" id="cm-rename"><i class="fa fa-pencil-square-o"></i> <?php echo lng('Rename') ?></a></li>
+            <li><a href="#" id="cm-copy"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?></a></li>
+            <li><a href="#" id="cm-move"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?></a></li>
+            <li><a href="#" id="cm-download"><i class="fa fa-download"></i> <?php echo lng('Download') ?></a></li>
+            <li class="context-menu-separator"></li>
+            <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
+        </ul>
+    </div>
+    </div>
           <?php print_external('js-jquery'); ?>
           <?php print_external('js-bootstrap'); ?>
           <?php print_external('js-jquery-datatables'); ?>
@@ -5781,6 +5840,98 @@ function fm_foldersize($path) {
                   code += 'return r.join("");';
                   return new Function(code.replace(/[\r\t\n]/g, '')).apply(options)
               }
+
+              /* CONTEXT MENU LOGIC */
+              $(document).ready(function() {
+                  // Hide menu on click elsewhere
+                  $(document).on('click', function() {
+                      $('#context-menu').hide();
+                  });
+
+                  // Right click handler
+                  $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
+                      if ($(window).width() < 768) return; // Disable on mobile
+                      e.preventDefault();
+
+                      const type = $(this).data('type');
+                      const path = $(this).data('path');
+                      const name = $(this).data('name');
+                      const ext = $(this).data('ext');
+                      const fullPath = (path ? path + '/' : '') + name;
+                      
+                      // Open
+                      if (type === 'folder') {
+                          $('#cm-open').attr('href', '?p=' + encodeURIComponent(fullPath)).parent().show();
+                          $('#cm-preview').parent().hide();
+                      } else {
+                          $('#cm-open').parent().hide();
+                          $('#cm-preview').parent().show();
+                          
+                          $('#cm-preview').off('click').on('click', function(evt) {
+                              evt.preventDefault();
+                              // Try to find the preview button in the row and click it
+                              // Required because preview_file needs full URL which is complex to construct here without PHP variables
+                              // In List View
+                              const row = $('tr[data-name="'+name.replace(/"/g, '\\"')+'"]');
+                              const eyeBtn = row.find('.fa-eye').parent();
+                              if(eyeBtn.length) { 
+                                  eyeBtn.click(); 
+                              } else {
+                                  // In Grid View - Preview is not always directly available via click, 
+                                  // but we can try to construct it or trigger the item click if it's an image
+                                  if(['jpg','jpeg','png','gif','webp','svg'].includes(ext)) {
+                                       // Trigger click on grid item? No that opens it.
+                                       // Let's just fallback to simple logic or ignore for now as preview logic is complex
+                                       // Better: use the existing preview_file function if we can reconstruct URL
+                                       // var fileUrl = window.location.origin + window.location.pathname.replace('filemanager.php', '') + ...
+                                  }
+                              }
+                          });
+                      }
+
+                      // Rename
+                      $('#cm-rename').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           rename(path, name);
+                      });
+
+                      // Copy
+                      const copyLink = '?p=' + encodeURIComponent(path) + '&duplicate=' + encodeURIComponent(name) + '&token=' + window.csrf;
+                      $('#cm-copy').attr('href', copyLink);
+                      $('#cm-copy').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1029, '<?php echo lng("Copy"); ?>', name, copyLink);
+                      });
+
+                      // Move
+                      $('#cm-move').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           move(path, name);
+                      });
+
+                      // Download
+                      const dlLink = '?p=' + encodeURIComponent(path) + '&dl=' + encodeURIComponent(name);
+                      $('#cm-download').attr('href', dlLink);
+                      $('#cm-download').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1211, '<?php echo lng("Download"); ?>', name, dlLink);
+                      });
+
+                      // Delete
+                      const delLink = '?p=' + encodeURIComponent(path) + '&del=' + encodeURIComponent(name);
+                      $('#cm-delete').attr('href', delLink);
+                      $('#cm-delete').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1028, '<?php echo lng("Delete"); ?>', name, delLink);
+                      });
+                      
+                      // Show menu
+                      $('#context-menu').css({
+                          top: e.pageY + 'px',
+                          left: e.pageX + 'px'
+                      }).fadeIn(100);
+                  });
+              });
 
               function rename(e, t) {
                   if (t) {
