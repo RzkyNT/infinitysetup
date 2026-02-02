@@ -1090,6 +1090,70 @@ if (isset($_POST['move_from'], $_POST['move_to'], $_POST['token']) && !FM_READON
     fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
 }
 
+// Duplicate (Copy in same folder with prefix)
+if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
+    if (!verifyToken($_GET['token'])) {
+        fm_set_msg(lng('Invalid Token.'), 'error');
+        fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+    }
+    
+    $file = urldecode($_GET['duplicate']);
+    $file = fm_clean_path($file);
+    $file = str_replace('/', '', $file);
+    
+    if ($file == '') {
+        fm_set_msg(lng('Invalid file or folder name'), 'error');
+        fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+    }
+    
+    // Get current path
+    $path = FM_ROOT_PATH;
+    if (FM_PATH != '') {
+        $path .= '/' . FM_PATH;
+    }
+    
+    $src = $path . '/' . $file;
+    
+    // Check if source exists
+    if (!file_exists($src)) {
+        fm_set_msg(lng('File not found'), 'error');
+        fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+    }
+    
+    // Generate new name with "copy_" prefix
+    $pathinfo = pathinfo($file);
+    $extension = isset($pathinfo['extension']) ? '.' . $pathinfo['extension'] : '';
+    $basename = isset($pathinfo['extension']) ? $pathinfo['filename'] : $pathinfo['basename'];
+    
+    // Find available name
+    $counter = 1;
+    $new_name = 'copy_' . $basename . $extension;
+    $dest = $path . '/' . $new_name;
+    
+    while (file_exists($dest)) {
+        $new_name = 'copy_' . $counter . '_' . $basename . $extension;
+        $dest = $path . '/' . $new_name;
+        $counter++;
+    }
+    
+    // Copy file or folder
+    if (is_dir($src)) {
+        if (fm_rcopy($src, $dest)) {
+            fm_set_msg(sprintf(lng('Copied from') . ' <b>%s</b> ' . lng('to') . ' <b>%s</b>', fm_enc($file), fm_enc($new_name)));
+        } else {
+            fm_set_msg(sprintf(lng('Error while copying from') . ' <b>%s</b>', fm_enc($file)), 'error');
+        }
+    } else {
+        if (copy($src, $dest)) {
+            fm_set_msg(sprintf(lng('Copied from') . ' <b>%s</b> ' . lng('to') . ' <b>%s</b>', fm_enc($file), fm_enc($new_name)));
+        } else {
+            fm_set_msg(sprintf(lng('Error while copying from') . ' <b>%s</b>', fm_enc($file)), 'error');
+        }
+    }
+    
+    fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+}
+
   // Download
   if (isset($_GET['dl'], $_POST['token'])) {
       // Verify the token to ensure it's valid
@@ -2737,7 +2801,7 @@ if (isset($_POST['move_from'], $_POST['move_to'], $_POST['token']) && !FM_READON
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, '1028','<?php echo lng('Delete') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"> <i class="fa fa-trash-o" aria-hidden="true"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o" aria-hidden="true"></i></a>
                             <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right" aria-hidden="true"></i></a>
-                              <a title="<?php echo lng('CopyTo') ?>..." href="?p=&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o" aria-hidden="true"></i></a>
+                              <a title="<?php echo lng('Copy') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&duplicate=<?php echo urlencode($f) ?>&token=<?php echo $_SESSION['token']; ?>" onclick="confirmDailog(event, '1029','<?php echo lng('Copy') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"><i class="fa fa-files-o" aria-hidden="true"></i></a>
                           <?php endif; ?>
                           <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f . '/') ?>" target="_blank"><i class="fa fa-link" aria-hidden="true"></i></a>
                             <a title="<?php echo lng('Download') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1211, '<?php echo lng('Download'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-download"></i></a>
@@ -2817,8 +2881,7 @@ if (isset($_POST['move_from'], $_POST['move_to'], $_POST['token']) && !FM_READON
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
                               <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right"></i></a>
-                              <a title="<?php echo lng('CopyTo') ?>..."
-                                  href="?p=<?php echo urlencode(FM_PATH) ?>&amp;copy=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>"><i class="fa fa-files-o"></i></a>
+                              <a title="<?php echo lng('Copy') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&duplicate=<?php echo urlencode($f) ?>&token=<?php echo $_SESSION['token']; ?>" onclick="confirmDailog(event, 1210, '<?php echo lng('Copy') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-files-o"></i></a>
                           <?php endif; ?>
                           <a title="Preview" href="#" onclick="preview_file('<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>', '<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>'); return false;"><i class="fa fa-eye"></i></a>
                           <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>" target="_blank"><i class="fa fa-link"></i></a>
