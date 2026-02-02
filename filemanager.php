@@ -2797,7 +2797,9 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                               <?php echo $owner['name'] . ':' . $group['name'] ?>
                           </td>
                       <?php endif; ?>
-                      <td class="inline-actions"><?php if (!FM_READONLY): ?>
+                      <td class="inline-actions">
+                          <a href="#" class="context-menu-trigger" onclick="return false;" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
+                          <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, '1028','<?php echo lng('Delete') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"> <i class="fa fa-trash-o" aria-hidden="true"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o" aria-hidden="true"></i></a>
                             <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right" aria-hidden="true"></i></a>
@@ -2821,6 +2823,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   $filesize_raw = fm_get_size($path . '/' . $f);
                   $filesize = fm_get_filesize($filesize_raw);
                   $filelink = '?p=' . urlencode(FM_PATH) . '&amp;view=' . urlencode($f);
+                  $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
                   $all_files_size += $filesize_raw;
                   $perms = substr(decoct(fileperms($path . '/' . $f)), -4);
                   $owner = array('name' => '?'); 
@@ -2855,11 +2858,12 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       <td data-sort=<?php echo fm_enc($f) ?>>
                           <div class="filename">
                               <?php
-                              if (in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'ico', 'svg', 'webp', 'avif'))): ?>
+                              $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+                              if (in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'ico', 'svg', 'webp', 'avif'))): ?>
                                   <?php $imagePreview = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f); ?>
-                                  <a href="<?php echo $filelink ?>" data-preview-image="<?php echo $imagePreview ?>" title="<?php echo fm_enc($f) ?>">
+                                  <a href="#" onclick="preview_file('<?php echo $http_url ?>', '<?php echo $ext ?>', '<?php echo fm_enc($f) ?>');return false;" data-preview-image="<?php echo $imagePreview ?>" title="<?php echo fm_enc($f) ?>">
                                   <?php else: ?>
-                                      <a href="<?php echo $filelink ?>" title="<?php echo $f ?>">
+                                      <a href="#" onclick="preview_file('<?php echo $http_url ?>', '<?php echo $ext ?>', '<?php echo fm_enc($f) ?>');return false;" title="<?php echo $f ?>">
                                       <?php endif; ?>
                                       <i class="<?php echo $img ?>"></i> <?php echo fm_convert_win(fm_enc($f)) ?>
                                       </a>
@@ -2876,6 +2880,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           <td><?php echo fm_enc($owner['name'] . ':' . $group['name']) ?></td>
                       <?php endif; ?>
                       <td class="inline-actions">
+                          <a href="#" class="context-menu-trigger" onclick="return false;" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
@@ -2947,6 +2952,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
+                  <div class="grid-item-menu context-menu-trigger" onclick="event.stopPropagation(); return false;"><i class="fa fa-ellipsis-v"></i></div>
                   <div class="grid-icon"><i class="fa fa-folder-o"></i></div>
                   <div class="grid-name" title="<?=fm_enc($f)?>"><?=fm_convert_win(fm_enc($f))?></div>
               </div>
@@ -2959,11 +2965,14 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $icon_class = fm_get_file_icon_class($file_path);
               $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
               $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
+              $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
+              $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
               ?>
-              <div class="grid-item" onclick="window.location.href='<?=$view_link?>'" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>">
+              <div class="grid-item" onclick="preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
+                  <div class="grid-item-menu context-menu-trigger" onclick="event.stopPropagation(); return false;"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
                       <img src="<?=$img_src?>" loading="lazy">
                   <?php else: ?>
@@ -5371,6 +5380,20 @@ function fm_foldersize($path) {
               .grid-view-show { display: block !important; }
               .list-view-hide { display: none !important; }
               
+              .grid-item-menu {
+                  position: absolute;
+                  top: 5px;
+                  right: 5px;
+                  color: var(--text-secondary);
+                  padding: 5px;
+                  z-index: 5;
+              }
+              .grid-item-menu:hover {
+                  color: var(--accent);
+                  background: rgba(0,0,0,0.1);
+                  border-radius: 50%;
+              }
+              
               /* CONTEXT MENU */
               .context-menu {
                   display: none;
@@ -5755,19 +5778,25 @@ function fm_foldersize($path) {
             </div>
 
             <!-- Preview Modal -->
-              <div class="modal fade" id="previewModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
-                  <div class="modal-dialog modal-lg" role="document">
-                      <div class="modal-content">
-                          <div class="modal-header">
-                              <h5 class="modal-title">Preview</h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                          </div>
-                          <div class="modal-body text-center" id="preview-content">
-                              <!-- Content populated by JS -->
-                          </div>
-                      </div>
-                  </div>
-              </div>
+            <div class="modal fade" id="previewModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog modal-lg" role="document">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="preview-title">Preview</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body text-center" id="preview-content">
+                            <!-- Content populated by JS -->
+                        </div>
+                        <div class="modal-footer" id="preview-footer">
+                            <a href="#" id="preview-btn-open" class="btn btn-primary" target="_blank"><i class="fa fa-external-link"></i> <?php echo lng('Open'); ?></a>
+                            <a href="#" id="preview-btn-edit" class="btn btn-info"><i class="fa fa-pencil-square-o"></i> <?php echo lng('Edit'); ?></a>
+                            <!-- Download handled by logic -->
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><?php echo lng('Cancel'); ?></button>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
               <!-- Confirm Modal -->
               <script type="text/html" id="js-tpl-confirm">
@@ -5843,22 +5872,21 @@ function fm_foldersize($path) {
 
               /* CONTEXT MENU LOGIC */
               $(document).ready(function() {
-                  // Hide menu on click elsewhere
-                  $(document).on('click', function() {
-                      $('#context-menu').hide();
-                  });
-
-                  // Right click handler
-                  $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
-                      if ($(window).width() < 768) return; // Disable on mobile
-                      e.preventDefault();
-
-                      const type = $(this).data('type');
-                      const path = $(this).data('path');
-                      const name = $(this).data('name');
-                      const ext = $(this).data('ext');
-                      const fullPath = (path ? path + '/' : '') + name;
+                  function showContextMenu(e, element) {
+                      if(e) e.preventDefault();
                       
+                      let target = $(element);
+                      // If triggered by ellipsis inside, find parent
+                      if(!target.attr('data-type')) {
+                         target = target.closest('[data-type]');
+                      }
+                      
+                      const type = target.data('type');
+                      const path = target.data('path');
+                      const name = target.data('name');
+                      const ext = target.data('ext');
+                      const fullPath = (path ? path + '/' : '') + name;
+
                       // Open
                       if (type === 'folder') {
                           $('#cm-open').attr('href', '?p=' + encodeURIComponent(fullPath)).parent().show();
@@ -5869,22 +5897,15 @@ function fm_foldersize($path) {
                           
                           $('#cm-preview').off('click').on('click', function(evt) {
                               evt.preventDefault();
-                              // Try to find the preview button in the row and click it
-                              // Required because preview_file needs full URL which is complex to construct here without PHP variables
-                              // In List View
+                              // Try to find the preview button/action
                               const row = $('tr[data-name="'+name.replace(/"/g, '\\"')+'"]');
                               const eyeBtn = row.find('.fa-eye').parent();
+                              const gridItem = $('.grid-item[data-name="'+name.replace(/"/g, '\\"')+'"]');
+
                               if(eyeBtn.length) { 
                                   eyeBtn.click(); 
-                              } else {
-                                  // In Grid View - Preview is not always directly available via click, 
-                                  // but we can try to construct it or trigger the item click if it's an image
-                                  if(['jpg','jpeg','png','gif','webp','svg'].includes(ext)) {
-                                       // Trigger click on grid item? No that opens it.
-                                       // Let's just fallback to simple logic or ignore for now as preview logic is complex
-                                       // Better: use the existing preview_file function if we can reconstruct URL
-                                       // var fileUrl = window.location.origin + window.location.pathname.replace('filemanager.php', '') + ...
-                                  }
+                              } else if (gridItem.length) {
+                                  gridItem.click();
                               }
                           });
                       }
@@ -5924,12 +5945,48 @@ function fm_foldersize($path) {
                            evt.preventDefault();
                            confirmDailog(evt, 1028, '<?php echo lng("Delete"); ?>', name, delLink);
                       });
+
+                      // Position
+                      let top, left;
+                      if (e && e.type === 'contextmenu') {
+                          top = e.pageY;
+                          left = e.pageX;
+                      } else {
+                          // Triggered by click on ellipsis (element is the trigger button or icon)
+                          const btn = $(element).closest('.context-menu-trigger');
+                          if (btn.length) {
+                              const rect = btn.offset();
+                              top = rect.top + 25;
+                              left = rect.left - 150;
+                          } else {
+                              top = 100; left = 100;
+                          }
+                      }
                       
-                      // Show menu
+                      // Boundary check
+                      if(left < 0) left = 10;
+                      
                       $('#context-menu').css({
-                          top: e.pageY + 'px',
-                          left: e.pageX + 'px'
+                          top: top + 'px',
+                          left: left + 'px'
                       }).fadeIn(100);
+                  }
+
+                  // Hide menu on click elsewhere
+                  $(document).on('click', function() {
+                      $('#context-menu').hide();
+                  });
+
+                  // Right click handler
+                  $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
+                      e.preventDefault();
+                      showContextMenu(e, this);
+                  });
+                  
+                  // Ellipsis click handler
+                  $(document).on('click', '.context-menu-trigger', function(e) {
+                      e.stopPropagation();
+                      showContextMenu(null, this);
                   });
               });
 
@@ -6192,27 +6249,57 @@ function fm_foldersize($path) {
                 $("#js-bulk-copy-to").val(path);
             }
 
-            function preview_file(url, ext) {
+            function preview_file(url, ext, name) {
                   var content = $('#preview-content');
+                  var title = $('#preview-title');
+                  var openBtn = $('#preview-btn-open');
+                  var editBtn = $('#preview-btn-edit');
+                  
+                  // Set Title
+                  title.text(name || 'Preview');
+                  
+                  // Setup Open Button
+                  openBtn.attr('href', url);
+                  
+                  // Setup Edit Button
+                  // Parse 'p' param from URL for current path
+                  const urlParams = new URLSearchParams(window.location.search);
+                  const p = urlParams.get('p') || '';
+                  const editLink = '?p=' + encodeURIComponent(p) + '&edit=' + encodeURIComponent(name);
+                  editBtn.attr('href', editLink);
+                  
+                  // Show/Hide Edit Button based on extension
+                  if (['txt', 'css', 'js', 'php', 'html', 'sql', 'json', 'xml', 'md', 'env', 'htaccess', 'ini', 'log', 'sh', 'yaml', 'yml'].includes(ext)) {
+                      editBtn.show();
+                  } else {
+                      editBtn.hide();
+                  }
+
                   content.html('<div class="spinner-border text-primary" role="status"></div>');
                   $("#previewModal").modal('show');
                   
-                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
-                      content.html('<img src="'+url+'" style="max-width:100%; max-height:80vh;">');
+                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
+                      content.html('<img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;">');
                   } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
-                      content.html('<video controls style="max-width:100%;"><source src="'+url+'"></video>');
+                      content.html('<video controls style="max-width:100%; max-height:70vh;"><source src="'+url+'"></video>');
                   } else if (['mp3', 'wav'].includes(ext)) {
-                      content.html('<audio controls><source src="'+url+'"></audio>');
-                  } else if (['txt', 'css', 'js', 'php', 'html', 'sql', 'json', 'xml', 'md'].includes(ext)) {
+                      content.html('<audio controls style="width:100%; margin-top:20px;"><source src="'+url+'"></audio>');
+                  } else if (['pdf'].includes(ext)) {
+                      content.html('<iframe src="'+url+'" style="width:100%; height:70vh; border:none;"></iframe>');
+                  } else if (['txt', 'css', 'js', 'php', 'html', 'sql', 'json', 'xml', 'md', 'env', 'htaccess', 'ini', 'log', 'sh', 'yaml', 'yml'].includes(ext)) {
                       $.get(url, function(data) {
-                          content.html('<pre style="text-align:left; max-height:80vh; overflow:auto;">'+
-                              $('<div>').text(data).html() + 
+                          // Basic HTML escaping
+                          var encodedStr = data.replace(/[\u00A0-\u9999<>\&]/g, function(i) {
+                             return '&#'+i.charCodeAt(0)+';';
+                          });
+                          content.html('<pre style="text-align:left; max-height:70vh; overflow:auto; background:#1e1e1e; color:#dcdcdc; padding:10px; border-radius:4px; font-family:monospace;">'+
+                              encodedStr + 
                           '</pre>');
                       }).fail(function() {
-                          content.html('Error loading file content.');
+                          content.html('<p class="text-danger">Error loading file content. <br>Authentication might be required or file is not accessible directly.</p>');
                       });
                   } else {
-                      content.html('<p>Preview not available for this file type.</p><a href="'+url+'" target="_blank" class="btn btn-primary">Download/View</a>');
+                      content.html('<div class="py-5"><i class="fa fa-file-o fa-5x mb-3 text-muted"></i><p>Preview not available for this file type.</p></div>');
                   }
               }
 
