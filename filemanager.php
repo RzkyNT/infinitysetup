@@ -2798,7 +2798,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           </td>
                       <?php endif; ?>
                       <td class="inline-actions">
-                          <a href="#" class="context-menu-trigger" onclick="return false;" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
+                          <a href="#" class="context-menu-trigger" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, '1028','<?php echo lng('Delete') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"> <i class="fa fa-trash-o" aria-hidden="true"></i></a>
                               <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o" aria-hidden="true"></i></a>
@@ -2880,7 +2880,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           <td><?php echo fm_enc($owner['name'] . ':' . $group['name']) ?></td>
                       <?php endif; ?>
                       <td class="inline-actions">
-                          <a href="#" class="context-menu-trigger" onclick="return false;" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
+                          <a href="#" class="context-menu-trigger" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
                           <?php if (!FM_READONLY): ?>
                               <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
                               <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
@@ -2910,14 +2910,18 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                     <?php
             // Check if show_disk_usage is true before getting disk size
                 if ($show_disk_usage) {
-                // Get total and free space
-                $total = disk_total_space(FM_ROOT_PATH.'/'.FM_PATH);
-                $free = disk_free_space(FM_ROOT_PATH.'/'.FM_PATH);
+                    if (function_exists('disk_total_space') && function_exists('disk_free_space')) {
+                        // Get total and free space
+                        $total = disk_total_space(FM_ROOT_PATH.'/'.FM_PATH);
+                        $free = disk_free_space(FM_ROOT_PATH.'/'.FM_PATH);
 
-                // Format sizes
-                $total_size = fm_get_filesize($total);
-                $free_size = fm_get_filesize($free);
-                $total_used_size = fm_get_filesize($total - $free);
+                        // Format sizes
+                        $total_size = fm_get_filesize($total);
+                        $free_size = fm_get_filesize($free);
+                        $total_used_size = fm_get_filesize($total - $free);
+                    } else {
+                        $show_disk_usage = false;
+                    }
                 }
             ?>
                   <tfoot>
@@ -2952,7 +2956,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
-                  <div class="grid-item-menu context-menu-trigger" onclick="event.stopPropagation(); return false;"><i class="fa fa-ellipsis-v"></i></div>
+                  <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <div class="grid-icon"><i class="fa fa-folder-o"></i></div>
                   <div class="grid-name" title="<?=fm_enc($f)?>"><?=fm_convert_win(fm_enc($f))?></div>
               </div>
@@ -2972,7 +2976,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
-                  <div class="grid-item-menu context-menu-trigger" onclick="event.stopPropagation(); return false;"><i class="fa fa-ellipsis-v"></i></div>
+                  <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
                       <img src="<?=$img_src?>" loading="lazy">
                   <?php else: ?>
@@ -4743,6 +4747,7 @@ function fm_foldersize($path) {
           <?php endif; ?>
           <script type="text/javascript">
               window.csrf = '<?php echo $_SESSION['token']; ?>';
+              window.fm_root_url = '<?php echo fm_enc(FM_ROOT_URL); ?>';
           </script>
           <style>
               html {
@@ -5835,6 +5840,7 @@ function fm_foldersize($path) {
             <li><a href="#" id="cm-copy"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?></a></li>
             <li><a href="#" id="cm-move"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?></a></li>
             <li><a href="#" id="cm-download"><i class="fa fa-download"></i> <?php echo lng('Download') ?></a></li>
+            <li><a href="#" id="cm-link"><i class="fa fa-link"></i> <?php echo lng('DirectLink') ?></a></li>
             <li class="context-menu-separator"></li>
             <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
         </ul>
@@ -5909,6 +5915,10 @@ function fm_foldersize($path) {
                               }
                           });
                       }
+
+                      // Direct Link
+                      const directUrl = window.fm_root_url + (path ? '/' + path : '') + '/' + name + (type === 'folder' ? '/' : '');
+                      $('#cm-link').attr('href', directUrl).attr('target', '_blank');
 
                       // Rename
                       $('#cm-rename').off('click').on('click', function(evt) {
@@ -5985,6 +5995,7 @@ function fm_foldersize($path) {
                   
                   // Ellipsis click handler
                   $(document).on('click', '.context-menu-trigger', function(e) {
+                      e.preventDefault();
                       e.stopPropagation();
                       showContextMenu(null, this);
                   });
