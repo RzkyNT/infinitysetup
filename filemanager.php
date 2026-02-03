@@ -2702,7 +2702,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       <?php if (!FM_IS_WIN && !$hide_Cols): ?>
                           <th><?php echo lng('Perms') ?></th>
                           <th><?php echo lng('Owner') ?></th><?php endif; ?>
-                      <th><?php echo lng('Actions') ?></th>
+                      <th style="width: 10px;"><?php echo lng('Act') ?></th>
                   </tr>
               </thead>
               <?php
@@ -2797,16 +2797,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                               <?php echo $owner['name'] . ':' . $group['name'] ?>
                           </td>
                       <?php endif; ?>
-                      <td class="inline-actions">
+                      <td class="inline-actions" style="display: flex;justify-content: center;">
                           <a href="#" class="context-menu-trigger" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
-                          <?php if (!FM_READONLY): ?>
-                              <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, '1028','<?php echo lng('Delete') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"> <i class="fa fa-trash-o" aria-hidden="true"></i></a>
-                              <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o" aria-hidden="true"></i></a>
-                            <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right" aria-hidden="true"></i></a>
-                              <a title="<?php echo lng('Copy') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&duplicate=<?php echo urlencode($f) ?>&token=<?php echo $_SESSION['token']; ?>" onclick="confirmDailog(event, '1029','<?php echo lng('Copy') . ' ' . lng('Folder'); ?>','<?php echo urlencode($f) ?>', this.href);"><i class="fa fa-files-o" aria-hidden="true"></i></a>
-                          <?php endif; ?>
-                          <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f . '/') ?>" target="_blank"><i class="fa fa-link" aria-hidden="true"></i></a>
-                            <a title="<?php echo lng('Download') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1211, '<?php echo lng('Download'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-download"></i></a>
                       </td>
                   </tr>
               <?php
@@ -2879,18 +2871,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           </td>
                           <td><?php echo fm_enc($owner['name'] . ':' . $group['name']) ?></td>
                       <?php endif; ?>
-                      <td class="inline-actions">
+                      <td class="inline-actions" style="display: flex;justify-content: center;">
                           <a href="#" class="context-menu-trigger" title="More Actions"><i class="fa fa-ellipsis-v fa-fw"></i></a>
-                          <?php if (!FM_READONLY): ?>
-                              <a title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"> <i class="fa fa-trash-o"></i></a>
-                              <a title="<?php echo lng('Edit') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;edit=<?php echo urlencode($f) ?>"><i class="fa fa-pencil-square"></i></a>
-                              <a title="<?php echo lng('Rename') ?>" href="#" onclick="rename('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-pencil-square-o"></i></a>
-                              <a title="<?php echo lng('Move') ?>" href="#" onclick="move('<?php echo fm_enc(addslashes(FM_PATH)) ?>', '<?php echo fm_enc(addslashes($f)) ?>');return false;"><i class="fa fa-arrow-right"></i></a>
-                              <a title="<?php echo lng('Copy') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&duplicate=<?php echo urlencode($f) ?>&token=<?php echo $_SESSION['token']; ?>" onclick="confirmDailog(event, 1210, '<?php echo lng('Copy') . ' ' . lng('File'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-files-o"></i></a>
-                          <?php endif; ?>
-                          <a title="Preview" href="#" onclick="preview_file('<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>', '<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>'); return false;"><i class="fa fa-eye"></i></a>
-                          <a title="<?php echo lng('DirectLink') ?>" href="<?php echo fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) ?>" target="_blank"><i class="fa fa-link"></i></a>
-                          <a title="<?php echo lng('Download') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($f) ?>" onclick="confirmDailog(event, 1211, '<?php echo lng('Download'); ?>','<?php echo urlencode($f); ?>', this.href);"><i class="fa fa-download"></i></a>
                       </td>
                   </tr>
               <?php
@@ -2952,7 +2934,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $is_link = is_link($path . '/' . $f);
               $full_path = '?p=' . urlencode(trim(FM_PATH . '/' . $f, '/'));
               ?>
-              <div class="grid-item" onclick="window.location.href='<?=$full_path?>'" data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>">
+              <div class="grid-item" onclick="if(!event.target.closest('.context-menu-trigger, .grid-check')) window.location.href='<?=$full_path?>'" data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
@@ -2972,7 +2954,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
               $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
               ?>
-              <div class="grid-item" onclick="preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>">
+              <div class="grid-item" onclick="if(!event.target.closest('.context-menu-trigger, .grid-check')) preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
@@ -4745,10 +4727,7 @@ function fm_foldersize($path) {
           <?php if (FM_USE_HIGHLIGHTJS && isset($_GET['view'])): ?>
               <?php print_external('css-highlightjs'); ?>
           <?php endif; ?>
-          <script type="text/javascript">
-              window.csrf = '<?php echo $_SESSION['token']; ?>';
-              window.fm_root_url = '<?php echo fm_enc(FM_ROOT_URL); ?>';
-          </script>
+
           <style>
               html {
                   -moz-osx-font-smoothing: grayscale;
@@ -5846,6 +5825,10 @@ function fm_foldersize($path) {
         </ul>
     </div>
     </div>
+    <script type="text/javascript">
+        window.csrf = '<?php echo $_SESSION['token']; ?>';
+        window.fm_root_url = '<?php echo fm_enc(FM_ROOT_URL); ?>';
+    </script>
           <?php print_external('js-jquery'); ?>
           <?php print_external('js-bootstrap'); ?>
           <?php print_external('js-jquery-datatables'); ?>
