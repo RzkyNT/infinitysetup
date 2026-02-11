@@ -1006,6 +1006,75 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
     }
+    // --- CREATE TABLE ---
+    elseif ($action === 'create_table') {
+        $name = trim($_POST['name'] ?? '');
+        $engine = $_POST['engine'] ?? 'InnoDB';
+        $collation = $_POST['collation'] ?? 'utf8mb4_general_ci';
+        $cols = $_POST['fields'] ?? [];
+        $comments = $_POST['comments'] ?? '';
+
+        if (!$name || empty($cols)) {
+            $error = "Table name and at least one column are required.";
+        } else {
+            $defs = [];
+            $primary = [];
+            
+            foreach ($cols as $c) {
+                $cName = trim($c['name']);
+                if (!$cName) continue;
+                
+                $cType = $c['type'];
+                $cLen = trim($c['length']);
+                $cDefault = $c['default'];
+                $cDefaultVal = $c['default_val'] ?? '';
+                $cNull = isset($c['null']) ? 'NULL' : 'NOT NULL';
+                $cAi = isset($c['ai']) ? 'AUTO_INCREMENT' : '';
+                $cIndex = $c['index'] ?? ''; 
+                
+                $def = "`$cName` $cType";
+                if ($cLen !== '') $def .= "($cLen)";
+                
+                $def .= " $cNull";
+                
+                if ($cDefault === 'NULL') {
+                    $def .= " DEFAULT NULL";
+                } elseif ($cDefault === 'CURRENT_TIMESTAMP') {
+                    $def .= " DEFAULT CURRENT_TIMESTAMP";
+                } elseif ($cDefault === 'USER_DEFINED') {
+                    $def .= " DEFAULT " . $pdo->quote($cDefaultVal);
+                }
+                
+                if ($cAi) $def .= " AUTO_INCREMENT";
+                
+                if ($cIndex === 'PRI') {
+                    $primary[] = "`$cName`";
+                } elseif ($cIndex === 'UNI') {
+                    $def .= " UNIQUE";
+                }
+                
+                $defs[] = $def;
+                
+                if ($cIndex === 'IDX') {
+                    $defs[] = "KEY `idx_$cName` (`$cName`)";
+                }
+            }
+            
+            if ($primary) {
+                $defs[] = "PRIMARY KEY (" . implode(', ', $primary) . ")";
+            }
+            
+            $sql = "CREATE TABLE `$name` (\n" . implode(",\n", $defs) . "\n) ENGINE=$engine DEFAULT COLLATE=$collation";
+            if ($comments) $sql .= " COMMENT=" . $pdo->quote($comments);
+            
+            try {
+                $pdo->exec($sql);
+                redirect("?table=" . urlencode($name) . "&view=structure&msg=" . urlencode("Table $name created."));
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        }
+    }
 }
 
 // ===== GET HANDLERS =====
@@ -3012,6 +3081,68 @@ async function generatePhpHash() {
                     <?php endif; ?>
                 </div>
 
+                <?php if ($hasSelectedDatabase && !$currentTable): ?>
+                <div class="card">
+                    <h3><i class="fas fa-plus-square"></i> Create New Table</h3>
+                    <form method="POST" id="createTableForm" style="margin-top: 20px;">
+                        <input type="hidden" name="action" value="create_table">
+                        
+                        <div class="table-wrapper" style="margin-bottom:20px;">
+                            <table class="table-input">
+                                <thead>
+                                    <tr>
+                                        <th>Table Name</th>
+                                        <th style="width:150px">Engine</th>
+                                        <th style="width:200px">Collation</th>
+                                        <th>Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><input type="text" name="name" class="form-control" required placeholder="e.g. users"></td>
+                                        <td>
+                                            <select name="engine" class="form-select no-ts">
+                                                <option value="InnoDB">InnoDB</option>
+                                                <option value="MyISAM">MyISAM</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <select name="collation" class="form-select no-ts">
+                                                <option value="utf8mb4_general_ci">utf8mb4_general_ci</option>
+                                                <option value="utf8mb4_unicode_ci">utf8mb4_unicode_ci</option>
+                                                <option value="utf8_general_ci">utf8_general_ci</option>
+                                            </select>
+                                        </td>
+                                        <td><input type="text" name="comments" class="form-control" placeholder="Optional"></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div class="table-wrapper" style="margin-bottom:15px;">
+                            <table class="table-input">
+                                <thead>
+                                    <tr>
+                                        <th>Column Name</th>
+                                        <th style="width:120px">Type</th>
+                                        <th style="width:80px">Length</th>
+                                        <th style="width:120px">Default</th>
+                                        <th style="width:250px">Options</th>
+                                        <th style="width:40px"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="colList">
+                                    <!-- Rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <button type="button" class="btn" onclick="addColRow()"><i class="fas fa-plus"></i> Add Column</button>
+                        <button type="submit" class="btn btn-primary" style="margin-left:10px;">Create Table</button>
+                    </form>
+                </div>
+                <?php endif; ?>
+
                 <div class="dashboard-stats">
                     <div class="stat-card">
                         <div class="stat-label">Total Tables</div>
@@ -3404,12 +3535,73 @@ async function generatePhpHash() {
         });
     }
 
+    // --- CREATE TABLE HELPER ---
+    let colIndex = 0;
+    function addColRow() {
+        const tbody = document.getElementById('colList');
+        if (!tbody) return;
+        const index = colIndex++;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><input type="text" name="fields[${index}][name]" class="form-control" required placeholder="Column Name"></td>
+            <td>
+                <select name="fields[${index}][type]" class="form-select no-ts" style="background:var(--bg-input);">
+                    <option value="INT">INT</option>
+                    <option value="VARCHAR">VARCHAR</option>
+                    <option value="TEXT">TEXT</option>
+                    <option value="DATE">DATE</option>
+                    <option value="DATETIME">DATETIME</option>
+                    <option value="BOOLEAN">BOOLEAN</option>
+                    <option value="DECIMAL">DECIMAL</option>
+                    <option value="FLOAT">FLOAT</option>
+                    <option value="JSON">JSON</option>
+                </select>
+            </td>
+            <td><input type="text" name="fields[${index}][length]" class="form-control" placeholder="Len/Val"></td>
+            <td>
+                <select name="fields[${index}][default]" class="form-select no-ts" style="background:var(--bg-input);" onchange="toggleDefaultVal(this)">
+                    <option value="NONE">None</option>
+                    <option value="NULL">NULL</option>
+                    <option value="CURRENT_TIMESTAMP">Curr Timestamp</option>
+                    <option value="USER_DEFINED">As Defined:</option>
+                </select>
+                <input type="text" name="fields[${index}][default_val]" class="form-control" style="display:none; margin-top:5px;" placeholder="Value">
+            </td>
+            <td>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][null]" value="1"> Null</label>
+                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][ai]" value="1"> AI</label>
+                    <select name="fields[${index}][index]" class="form-select no-ts" style="width:auto; padding:2px; background:var(--bg-input);">
+                        <option value="">- Index -</option>
+                        <option value="PRI">Primary</option>
+                        <option value="UNI">Unique</option>
+                        <option value="IDX">Index</option>
+                    </select>
+                </div>
+            </td>
+            <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()"><i class="fas fa-times"></i></button></td>
+        `;
+        tbody.appendChild(tr);
+    }
+    
+    function toggleDefaultVal(select) {
+        const input = select.nextElementSibling;
+        if(input) input.style.display = select.value === 'USER_DEFINED' ? 'block' : 'none';
+    }
+    
+    // Auto-add first row if table is empty on load
+    document.addEventListener('DOMContentLoaded', () => {
+        if(document.getElementById('colList') && document.getElementById('colList').children.length === 0) {
+            addColRow();
+        }
+    });
+
     // Initialize TomSelect for Searchable Dropdowns
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('form select.form-select').forEach((el) => {
             // Apply only if not in the export form or bulk action form (optional check, but safe to apply generally in edit forms)
             // We specifically want this for the Row Editor
-            if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
+            if (el.closest('.card') && !el.closest('#bulkTablesForm') && !el.classList.contains('no-ts')) {
                 new TomSelect(el, {
                     plugins: ['clear_button'],
                     maxOptions: 50,
