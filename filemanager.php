@@ -6288,21 +6288,24 @@ function fm_foldersize($path) {
                   position: absolute;
                   left: 0;
                   top: 0;
-                  width: 20px;
-                  height: 100%;
+                  width: 45px;
+                  min-height: 100%;
                   background: var(--bg-sidebar);
                   border-right: 1px solid var(--border-color);
-                  padding: 10px 5px;
+                  padding: 10px 8px 10px 5px;
                   font-family: 'Courier New', monospace;
                   font-size: 13px;
                   line-height: 1.4;
                   color: var(--text-secondary);
                   user-select: none;
                   overflow: hidden;
+                  white-space: pre;
+                  text-align: right;
+                  pointer-events: none;
               }
               
               .editor-textarea.with-line-numbers {
-                  padding-left: 60px;
+                  padding-left: 75px;
               }
               
               .search-highlight {
@@ -7477,8 +7480,9 @@ function fm_foldersize($path) {
                   // Set content
                   textarea.val(data);
                   
-                  // Generate line numbers
-                  updateLineNumbers();
+                      // Generate line numbers
+                      updateLineNumbers();
+                      syncLineNumbersScroll(0);
                   
                   // Update cursor position
                   updateCursorPosition();
@@ -7498,6 +7502,7 @@ function fm_foldersize($path) {
                   }
                   
                   lineNumbers.text(lineNumbersHtml);
+                  syncLineNumbersScroll(0);
               }
               
               function updateCursorPosition() {
@@ -7512,6 +7517,16 @@ function fm_foldersize($path) {
                       const column = lines[lines.length - 1].length + 1;
                       
                       cursorPos.text(`Line ${line}, Column ${column}`);
+                  }
+              }
+              
+              function syncLineNumbersScroll(scrollTop = null) {
+                  const textarea = $('#editor-textarea');
+                  const lineNumbers = $('#editor-line-numbers');
+                  
+                  if (textarea.length && lineNumbers.length) {
+                      const currentScroll = scrollTop !== null ? scrollTop : textarea.scrollTop();
+                      lineNumbers.css('top', `-${currentScroll}px`);
                   }
               }
               
@@ -7652,9 +7667,15 @@ function fm_foldersize($path) {
                       updateLineNumbers();
                       clearSearch();
                   });
-                  
+                   
                   $(document).on('keyup click', '#editor-textarea', function() {
                       updateCursorPosition();
+                      syncLineNumbersScroll();
+                  });
+                   
+                   
+                  $('#editor-textarea').off('scroll.preview').on('scroll.preview', function() {
+                      syncLineNumbersScroll($(this).scrollTop());
                   });
                   
                   // Keyboard shortcuts for search

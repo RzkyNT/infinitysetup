@@ -31,6 +31,28 @@ if (isset($_GET['api']) && $_GET['api'] === 'generate_php_hash') {
     exit;
 }
 
+if (isset($_GET['api']) && $_GET['api'] === 'generate_md5') {
+    header('Content-Type: application/json');
+    
+    // Cek apakah user sudah login
+    if (!isset($_SESSION['db_user'])) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
+
+    $input = $_POST['input'] ?? '';
+    
+    // MD5 logic
+    $hash = md5($input);
+
+    echo json_encode([
+        'success' => true, 
+        'hash' => $hash,
+        'algo' => 'MD5'
+    ]);
+    exit;
+}
+
 // ... kode function get_asset_url dan seterusnya tetap ada di bawah sini ...
 $configFile = __DIR__ . '/adminer.config.json';
 function get_asset_url($localPath, $cdnUrl) {
@@ -775,6 +797,52 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- UPDATE CELL (INLINE EDIT) ---
+    elseif ($action === 'update_cell') {
+        header('Content-Type: application/json');
+        $tableName = $_POST['table'] ?? '';
+        $col = $_POST['column'] ?? '';
+        $id = $_POST['id'] ?? '';
+        $val = $_POST['value'] ?? '';
+        
+        if (!$tableName || !$col || !$id) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+        
+        $pkCol = getPrimaryKey($pdo, $tableName);
+        if (!$pkCol) {
+            echo json_encode(['success' => false, 'message' => 'No Primary Key found']);
+            exit;
+        }
+        
+        try {
+            $stmt = $pdo->prepare("UPDATE `$tableName` SET `$col` = ? WHERE `$pkCol` = ?");
+            $stmt->execute([$val, $id]);
+            echo json_encode(['success' => true]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- DUPLICATE TABLE ---
+    elseif ($action === 'duplicate_table') {
+        $source = $_POST['source'] ?? '';
+        $target = trim($_POST['target'] ?? '');
+        $copyData = isset($_POST['copy_data']);
+        
+        if ($source && $target) {
+            try {
+                $pdo->exec("CREATE TABLE `$target` LIKE `$source`");
+                if ($copyData) {
+                    $pdo->exec("INSERT INTO `$target` SELECT * FROM `$source`");
+                }
+                redirect("?table=$target&view=structure&msg=" . urlencode("Table duplicated as $target"));
+            } catch (Exception $e) {
+                $error = $e->getMessage();
+            }
+        }
+    }
     // --- BULK TABLE OPERATIONS ---
     elseif ($action === 'bulk_tables') {
         $operation = $_POST['bulk_operation'] ?? '';
@@ -793,21 +861,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = 'No valid tables selected.';
             } else {
                 try {
+                    $tablesStr = implode('`, `', $cleanTables);
                     if ($operation === 'drop') {
-                        foreach ($cleanTables as $tbl) {
-                            $pdo->exec("DROP TABLE `$tbl`");
-                        }
+                        foreach ($cleanTables as $tbl) $pdo->exec("DROP TABLE `$tbl`");
                         redirect("?msg=" . urlencode(count($cleanTables) . " table(s) dropped."));
                     } elseif ($operation === 'truncate') {
-                        foreach ($cleanTables as $tbl) {
-                            $pdo->exec("TRUNCATE TABLE `$tbl`");
-                        }
+                        foreach ($cleanTables as $tbl) $pdo->exec("TRUNCATE TABLE `$tbl`");
                         redirect("?msg=" . urlencode(count($cleanTables) . " table(s) truncated."));
-                    } elseif ($operation === 'optimize') {
-                        foreach ($cleanTables as $tbl) {
-                            $pdo->exec("OPTIMIZE TABLE `$tbl`");
-                        }
-                        redirect("?msg=" . urlencode(count($cleanTables) . " table(s) optimized."));
+                    } elseif (in_array($operation, ['optimize', 'analyze', 'check', 'repair'])) {
+                        $sql = strtoupper($operation) . " TABLE `$tablesStr`";
+                        $stmt = $pdo->query($sql);
+                        $_SESSION['maintenance_data'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                        redirect("?view=maintenance&msg=" . urlencode(ucfirst($operation) . " complete."));
                     } elseif ($operation === 'export') {
                         $filename = "tables_" . date("Y-m-d_H-i-s") . ".sql";
                         header('Content-Type: application/octet-stream');
@@ -1836,7 +1901,8 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=sql" class="tab <?=$view==='sql'?'active':''?>">SQL</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
                     <div style="flex:1;"></div>
-                    <!-- Export Button -->
+                    <!-- Actions -->
+                    <button type="button" class="btn" onclick="duplicateTablePrompt('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-clone"></i> Duplicate</button>
                      <form method="POST" style="margin:0; display:flex;">
                         <input type="hidden" name="action" value="export">
                         <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
@@ -1848,6 +1914,41 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <button type="submit" class="btn" style="border-radius:0 4px 4px 0;"><i class="fas fa-download"></i> Export</button>
                     </form>
                 </div>
+
+                <script>
+                function duplicateTablePrompt(sourceTable) {
+                    Swal.fire({
+                        title: 'Duplicate Table',
+                        html: `
+                            <input type="text" id="targetTable" class="swal2-input" placeholder="New Table Name" value="${sourceTable}_copy">
+                            <div style="margin-top:10px; display:flex; align-items:center; justify-content:center;">
+                                <input type="checkbox" id="copyData" class="swal2-checkbox" checked style="display:inline; width:auto; margin:0 5px 0 0;">
+                                <label for="copyData" style="margin:0;">Copy Data</label>
+                            </div>
+                        `,
+                        showCancelButton: true,
+                        confirmButtonText: 'Duplicate',
+                        preConfirm: () => {
+                            const target = document.getElementById('targetTable').value;
+                            if (!target) return Swal.showValidationMessage('Name required');
+                            return { target: target, copy: document.getElementById('copyData').checked };
+                        }
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const form = document.createElement('form');
+                            form.method = 'POST';
+                            form.innerHTML = `
+                                <input type="hidden" name="action" value="duplicate_table">
+                                <input type="hidden" name="source" value="${sourceTable}">
+                                <input type="hidden" name="target" value="${result.value.target}">
+                                ${result.value.copy ? '<input type="hidden" name="copy_data" value="1">' : ''}
+                            `;
+                            document.body.appendChild(form);
+                            form.submit();
+                        }
+                    });
+                }
+                </script>
 
                 <?php if ($view === 'data'): 
                     ?>
@@ -1909,7 +2010,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                         <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
                         
                         <div class="table-wrapper">
-                            <table>
+                            <table data-table="<?=htmlspecialchars($currentTable)?>">
                                 <thead>
                                     <tr>
                                         <th style="width: 40px; text-align:center;"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
@@ -1957,7 +2058,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                                 // Check if table exists (optional, skipping for speed)
                                                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
                                             }
-                                            ?><td data-col="<?=htmlspecialchars($key)?>" title="<?=htmlspecialchars((string)$val)?>"><?=$displayVal?></td><?php 
+                                            ?><td data-col="<?=htmlspecialchars($key)?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
                                         endforeach; ?>
                                     </tr>
                                 <?php endforeach; ?>
@@ -2771,6 +2872,42 @@ async function generatePhpHash() {
 
                     </script>
 
+                <?php elseif ($view === 'maintenance'): ?>
+                    <div class="card">
+                        <h3><i class="fas fa-tools"></i> Maintenance Results</h3>
+                        <?php 
+                        $mRows = $_SESSION['maintenance_data'] ?? [];
+                        unset($_SESSION['maintenance_data']);
+                        if ($mRows): 
+                        ?>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <?php foreach (array_keys($mRows[0]) as $k): ?>
+                                            <th><?=htmlspecialchars($k)?></th>
+                                        <?php endforeach; ?>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($mRows as $row): ?>
+                                        <tr>
+                                            <?php foreach ($row as $val): ?>
+                                                <td><?=htmlspecialchars((string)$val)?></td>
+                                            <?php endforeach; ?>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <?php else: ?>
+                            <div class="alert alert-info">No results available.</div>
+                        <?php endif; ?>
+                        <div style="margin-top:15px;">
+                            <a href="?" class="btn btn-primary"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+                        </div>
+                    </div>
+
                 <?php elseif ($view === 'form'): 
                     ?>
                     <!-- EDIT/INSERT FORM -->
@@ -3277,10 +3414,13 @@ async function generatePhpHash() {
                         <div style="display:flex; gap:10px; margin-bottom:10px; flex-wrap:wrap; align-items:center;">
                             <select name="bulk_operation" class="form-select" style="width:200px;">
                                 <option value="">Bulk Action</option>
-                                <option value="drop">Drop Tables</option>
-                                <option value="truncate">Truncate Tables</option>
-                                <option value="optimize">Optimize Tables</option>
-                                <option value="export">Export Tables</option>
+                                <option value="drop">Drop</option>
+                                <option value="truncate">Truncate</option>
+                                <option value="optimize">Optimize</option>
+                                <option value="analyze">Analyze</option>
+                                <option value="check">Check</option>
+                                <option value="repair">Repair</option>
+                                <option value="export">Export</option>
                             </select>
                             <button type="button" class="btn btn-danger" onclick="confirmBulkTables()" style="display:flex; align-items:center; gap:6px;"><i class="fas fa-check"></i> Apply</button>
                             <span style="font-size:0.8rem; color:var(--text-secondary);">Select tables below to run bulk action.</span>
@@ -3563,7 +3703,7 @@ async function generatePhpHash() {
         tr.innerHTML = `
             <td><input type="text" name="fields[${index}][name]" class="form-control" required placeholder="Column Name"></td>
             <td>
-                <select name="fields[${index}][type]" class="form-select no-ts" style="background:var(--bg-input);">
+                <select name="fields[${index}][type]" class="form-select" style="background:var(--bg-input);">
                     <option value="INT">INT</option>
                     <option value="VARCHAR">VARCHAR</option>
                     <option value="TEXT">TEXT</option>
@@ -3577,7 +3717,7 @@ async function generatePhpHash() {
             </td>
             <td><input type="text" name="fields[${index}][length]" class="form-control" placeholder="Len/Val"></td>
             <td>
-                <select name="fields[${index}][default]" class="form-select no-ts" style="background:var(--bg-input);" onchange="toggleDefaultVal(this)">
+                <select name="fields[${index}][default]" class="form-select" style="background:var(--bg-input);" onchange="toggleDefaultVal(this)">
                     <option value="NONE">None</option>
                     <option value="NULL">NULL</option>
                     <option value="CURRENT_TIMESTAMP">Curr Timestamp</option>
@@ -3589,7 +3729,7 @@ async function generatePhpHash() {
                 <div style="display:flex; gap:10px; align-items:center;">
                     <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][null]" value="1"> Null</label>
                     <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][ai]" value="1"> AI</label>
-                    <select name="fields[${index}][index]" class="form-select no-ts" style="width:auto; padding:2px; background:var(--bg-input);">
+                    <select name="fields[${index}][index]" class="form-select" style="width:auto; padding:2px; background:var(--bg-input);">
                         <option value="">- Index -</option>
                         <option value="PRI">Primary</option>
                         <option value="UNI">Unique</option>
@@ -3600,6 +3740,9 @@ async function generatePhpHash() {
             <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()"><i class="fas fa-times"></i></button></td>
         `;
         tbody.appendChild(tr);
+        
+        // Initialize TomSelect on new selects
+        tr.querySelectorAll('select.form-select').forEach(el => initTomSelect(el));
     }
     
     function toggleDefaultVal(select) {
@@ -3614,23 +3757,89 @@ async function generatePhpHash() {
         }
     });
 
-    // Initialize TomSelect for Searchable Dropdowns
+    // Helper to init TomSelect with correct settings
+    function initTomSelect(el) {
+        if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
+            new TomSelect(el, {
+                plugins: ['clear_button'],
+                maxOptions: 50,
+                sortField: { field: "text", direction: "asc" },
+                dropdownParent: 'body', // Fixes overflow/clipping issues
+                onDropdownOpen: function() {
+                    // Ensure z-index is higher than anything else
+                    const wrapper = this.dropdown;
+                    if(wrapper) wrapper.style.zIndex = "99999";
+                }
+            });
+        }
+    }
+
+    // Initialize TomSelect for Searchable Dropdowns (Global)
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('form select.form-select').forEach((el) => {
-            // Apply only if not in the export form or bulk action form (optional check, but safe to apply generally in edit forms)
-            // We specifically want this for the Row Editor
-            if (el.closest('.card') && !el.closest('#bulkTablesForm') && !el.classList.contains('no-ts')) {
-                new TomSelect(el, {
-                    plugins: ['clear_button'],
-                    maxOptions: 50,
-                    sortField: {
-                        field: "text",
-                        direction: "asc"
-                    }
-                });
-            }
+            initTomSelect(el);
         });
     });
+
+    // --- INLINE EDITING ---
+    function makeCellEditable(td) {
+        if (td.querySelector('input')) return; // Already editing
+        
+        const originalContent = td.innerText;
+        const originalHtml = td.innerHTML;
+        const pk = td.getAttribute('data-pk');
+        const col = td.getAttribute('data-col');
+        const table = td.closest('table').getAttribute('data-table');
+        
+        if(!pk || !col) return;
+
+        td.classList.add('editing');
+        td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
+        td.querySelector('input').focus();
+    }
+
+    function saveCellData(input, table, col, pk, original) {
+        const newVal = input.value;
+        const td = input.parentElement;
+        
+        if (newVal === original) {
+            td.innerText = original;
+            td.classList.remove('editing');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('action', 'update_cell');
+        formData.append('table', table);
+        formData.append('column', col);
+        formData.append('id', pk);
+        formData.append('value', newVal);
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                td.innerText = newVal;
+                td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
+                setTimeout(() => td.style.backgroundColor = '', 1000);
+                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                toast.fire({ icon: 'success', title: 'Saved' });
+            } else {
+                td.innerHTML = original; // Revert
+                Swal.fire('Error', data.message || 'Update failed', 'error');
+            }
+        })
+        .catch(err => {
+            td.innerHTML = original;
+            Swal.fire('Error', 'Network error', 'error');
+        })
+        .finally(() => {
+            td.classList.remove('editing');
+        });
+    }
 
     // ===== GENERATOR TOOLS LOGIC =====
     function openToolsModal() {
@@ -3639,6 +3848,7 @@ async function generatePhpHash() {
             html: `
                 <div class="swal2-tabs">
                     <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
+                    <button onclick="switchToolTab(this, 'tool-md5')">MD5</button>
                     <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
                     <button onclick="switchToolTab(this, 'tool-uuid')">UUID</button>
                     <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
@@ -3661,6 +3871,27 @@ async function generatePhpHash() {
                     <div style="margin-top:15px; text-align:right;">
                         <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
                         <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- MD5 GENERATOR -->
+                <div id="tool-md5" class="swal2-tab-content">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
+                        Generate <b>MD5</b> Hash. (Not recommended for passwords).
+                    </p>
+                    
+                    <div class="tool-row">
+                        <input type="text" id="md5Input" class="swal2-input" placeholder="Enter text..." autocomplete="off">
+                    </div>
+                    
+                    <div class="tool-row">
+                        <span class="tool-label">Result:</span>
+                        <div id="md5Result" class="tool-result" style="flex:1;">Hash will appear here...</div>
+                    </div>
+
+                    <div style="margin-top:15px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateMd5()">Generate MD5</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('md5Result').innerText)">Copy</button>
                     </div>
                 </div>
 
@@ -3749,6 +3980,23 @@ async function generatePhpHash() {
         })
         .catch(err => {
             document.getElementById('phpHashResult').innerText = 'Request Failed';
+        });
+    }
+
+    function generateMd5() {
+        const input = document.getElementById('md5Input').value;
+        if(!input) return;
+        
+        fetch('?api=generate_md5', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'input=' + encodeURIComponent(input)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                document.getElementById('md5Result').innerText = data.hash;
+            }
         });
     }
 
