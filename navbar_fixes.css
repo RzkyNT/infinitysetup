@@ -1,0 +1,129 @@
+/* Perbaikan untuk masalah z-index navbar dan path input */
+
+/* Path input styling dan positioning yang diperbaiki */
+#path-input {
+    position: absolute !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: 0 !important;
+    z-index: 1070 !important; /* Lebih tinggi dari navbar dan modal */
+    width: 100% !important;
+    height: 100% !important;
+    padding: 4px 8px !important;
+    border-radius: 4px !important;
+    background: rgba(255, 255, 255, 0.98) !important;
+    color: #333 !important;
+    border: 2px solid #007bff !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3) !important;
+    font-family: inherit !important;
+    font-size: inherit !important;
+    backdrop-filter: blur(5px) !important;
+}
+
+#path-input:focus {
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25), 0 4px 20px rgba(0, 0, 0, 0.4) !important;
+    z-index: 1071 !important; /* Bahkan lebih tinggi saat fokus */
+    border-color: #0056b3 !important;
+    outline: none !important;
+    background: rgba(255, 255, 255, 0.99) !important;
+}
+
+/* Pastikan breadcrumb container memiliki positioning yang benar */
+.breadcrumb-container {
+    position: relative !important;
+    z-index: 1 !important;
+    min-height: 31px !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+/* Perbaikan z-index navbar */
+.main-nav {
+    z-index: 1040 !important;
+}
+
+.navbar-fixed .main-nav {
+    z-index: 1040 !important;
+}
+
+.navbar.fixed-top {
+    z-index: 1040 !important;
+}
+
+/* Pastikan navbar tidak mengganggu path input */
+.navbar {
+    position: relative !important;
+}
+
+.navbar.fixed-top {
+    position: fixed !important;
+}
+
+/* Perbaikan untuk container parent */
+.breadcrumb-container-wrapper {
+    position: relative !important;
+}
+
+/* Perbaikan untuk mobile */
+@media (max-width: 768px) {
+    #path-input {
+        display: none !important; /* Paksa gunakan modal di mobile */
+    }
+    
+    .breadcrumb-container {
+        cursor: pointer !important;
+    }
+}
+
+/* Perbaikan untuk dark theme */
+.theme-dark #path-input {
+    background: rgba(33, 37, 41, 0.98) !important;
+    color: #fff !important;
+    border-color: #0d6efd !important;
+}
+
+.theme-dark #path-input:focus {
+    background: rgba(33, 37, 41, 0.99) !important;
+    border-color: #0a58ca !important;
+}
+
+/* Animasi transisi yang halus */
+#path-input {
+    transition: all 0.2s ease-in-out !important;
+}
+
+.breadcrumb-container {
+    transition: all 0.2s ease-in-out !important;
+}
+
+/* Perbaikan untuk editor search */
+.editor-search-controls {
+    z-index: 1050 !important;
+}
+
+.editor-search-controls .form-control {
+    z-index: 1051 !important;
+}
+
+/* Pastikan modal tetap di atas segalanya */
+.modal {
+    z-index: 1080 !important;
+}
+
+.modal-backdrop {
+    z-index: 1079 !important;
+}
+
+/* Perbaikan untuk dropdown */
+.dropdown-menu {
+    z-index: 1060 !important;
+}
+
+/* Perbaikan untuk tooltip dan popover */
+.tooltip {
+    z-index: 1070 !important;
+}
+
+.popover {
+    z-index: 1070 !important;
+}

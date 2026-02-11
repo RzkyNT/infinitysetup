@@ -1,0 +1,7 @@
+
+buatkan lebih mirip file explorer lagi, misalnya pada bagian path bisa di ketik, dan sarankan improveisasi, Toast Notifications (SweetAlert2):
+Saat ini setelah Copy/Move, halaman akan reload/redirect.
+Kita bisa ubah menjadi AJAX Action (tanpa reload) dan menampilkan notifikasi sukses yang cantik di pojok kanan atas (Toast), sehingga workflow tidak terputus.
+Drag & Drop Upload:
+Memastikan area upload mendukung drag & drop file langsung dari komputer, dengan progress bar yang jelas.
+
