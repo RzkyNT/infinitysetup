@@ -639,6 +639,66 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           }
       }
 
+      // Handle Extract Archive
+      if (isset($_POST['type']) && $_POST['type'] == "extract" && !empty($_POST['file'])) {
+          header('Content-Type: application/json');
+          $fileName = fm_clean_path($_POST['file']);
+          $fullPath = FM_ROOT_PATH . '/';
+          if (!empty($_POST['path'])) {
+              $relativeDirPath = fm_clean_path($_POST['path']);
+              $fullPath .= "{$relativeDirPath}/";
+          }
+          $fullFilePath = $fullPath . $fileName;
+          
+          try {
+              if (!file_exists($fullFilePath)) {
+                  throw new Exception("Archive file not found");
+              }
+              
+              // Get file extension
+              $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+              
+              // Initialize result
+              $result = false;
+              $message = "";
+              
+              // Handle different archive types
+              if ($ext === 'zip') {
+                  $zip = new ZipArchive;
+                  $result = $zip->open($fullFilePath);
+                  if ($result === true) {
+                      $zip->extractTo($fullPath);
+                      $zip->close();
+                      $message = "ZIP archive extracted successfully";
+                  } else {
+                      throw new Exception("Failed to extract ZIP file. Error code: $result");
+                  }
+              } elseif (in_array($ext, ['tar', 'gz', 'bz2'])) {
+                  // Use PharData for tar archives
+                  try {
+                      $phar = new PharData($fullFilePath);
+                      $phar->extractTo($fullPath);
+                      $message = ucfirst($ext) . " archive extracted successfully";
+                  } catch (Exception $e) {
+                      throw new Exception("Failed to extract archive: " . $e->getMessage());
+                  }
+              } else {
+                  throw new Exception("Unsupported archive format: .$ext");
+              }
+              
+              echo json_encode([
+                  'success' => true,
+                  'message' => $message
+              ]);
+          } catch (Exception $e) {
+              echo json_encode([
+                  'success' => false,
+                  'message' => $e->getMessage()
+              ]);
+          }
+          exit;
+      }
+
       // Save Config
       if (isset($_POST['type']) && $_POST['type'] == "settings") {
           global $cfg, $lang, $report_errors, $show_hidden_files, $lang_list, $hide_Cols, $theme;
@@ -2974,27 +3034,50 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
 
       <div class="row">
           <?php if (!FM_READONLY): ?>
-              <div class="col-xs-15 col-sm-12">
-                  <div class="btn-group flex-wrap" data-toggle="buttons" role="toolbar">
-                      <a href="#" class="btn btn-small btn-outline-primary btn-2" onclick="toggleView();return false;" title="Toggle View"><i class="fa fa-th-large" id="view-icon"></i></a>
-                      <a href="#/select-all" class="btn btn-small btn-outline-primary btn-2" onclick="select_all();return false;"><i class="fa fa-check-square"></i> <?php echo lng('SelectAll') ?> </a>
-                      <a href="#/unselect-all" class="btn btn-small btn-outline-primary btn-2" onclick="unselect_all();return false;"><i class="fa fa-window-close"></i> <?php echo lng('UnSelectAll') ?> </a>
-                      <a href="#/invert-all" class="btn btn-small btn-outline-primary btn-2" onclick="invert_all();return false;"><i class="fa fa-th-list"></i> <?php echo lng('InvertSelection') ?> </a>
-                      <input type="submit" class="hidden" name="delete" id="a-delete" value="Delete">
-                      <a href="#" onclick="confirmMassAction(event, 'a-delete', 'Delete Selection?', '<?php echo lng('Delete selected files and folders?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-trash"></i> <?php echo lng('Delete') ?> </a>
-                      <input type="submit" class="hidden" name="zip" id="a-zip" value="zip">
-                      <a href="#" onclick="confirmMassAction(event, 'a-zip', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Zip') ?> </a>
-                      <input type="submit" class="hidden" name="tar" id="a-tar" value="tar">
-                      <a href="#" onclick="confirmMassAction(event, 'a-tar', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-file-archive-o"></i> <?php echo lng('Tar') ?> </a>
-                      <a href="#" onclick="showBulkCopyModal(event);" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?> </a>
-                      <a href="#" onclick="showBulkMoveModal(event);" class="btn btn-small btn-outline-primary btn-2"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?> </a>
-                      <li class="list-inline-item"><input type="submit" class="hidden" name="foldersize" id="a-foldersize" value="Foldersize">
-                      <a href="javascript:document.getElementById('a-foldersize').click();" class="btn btn-small btn-outline-primary btn-2 <?php echo $_SESSION[FM_SESSION_ID]['foldersize']??false ? 'btn-active':''; ?>"><i class="fa fa-pie-chart"></i> <?php echo lng('Foldersize') ?> </a></li>
+              <div class="col-12">
+                  <div class="btn-toolbar flex-wrap gap-2 mb-3" role="toolbar">
+                      <!-- View Toggle -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <a href="#" class="btn btn-outline-primary" onclick="toggleView();return false;" title="Toggle View"><i class="fa fa-th-large" id="view-icon"></i></a>
+                      </div>
+                      
+                      <!-- Selection Actions -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <a href="#/select-all" class="btn btn-outline-primary" onclick="select_all();return false;" title="Select All"><i class="fa fa-check-square"></i></a>
+                          <a href="#/unselect-all" class="btn btn-outline-primary" onclick="unselect_all();return false;" title="Unselect All"><i class="fa fa-window-close"></i></a>
+                          <a href="#/invert-all" class="btn btn-outline-primary" onclick="invert_all();return false;" title="Invert Selection"><i class="fa fa-th-list"></i></a>
+                      </div>
+                      
+                      <!-- File Operations -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <a href="#" onclick="confirmMassAction(event, 'a-delete', 'Delete Selection?', '<?php echo lng('Delete selected files and folders?'); ?>')" class="btn btn-outline-danger" title="Delete"><i class="fa fa-trash"></i></a>
+                          <input type="submit" class="hidden" name="delete" id="a-delete" value="Delete">
+                      </div>
+                      
+                      <!-- Archive Operations -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <a href="#" onclick="confirmMassAction(event, 'a-zip', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-outline-primary" title="Create ZIP"><i class="fa fa-file-archive-o"></i> ZIP</a>
+                          <input type="submit" class="hidden" name="zip" id="a-zip" value="zip">
+                          <a href="#" onclick="confirmMassAction(event, 'a-tar', 'Create Archive?', '<?php echo lng('Create archive?'); ?>')" class="btn btn-outline-primary" title="Create TAR"><i class="fa fa-file-archive-o"></i> TAR</a>
+                          <input type="submit" class="hidden" name="tar" id="a-tar" value="tar">
+                      </div>
+                      
+                      <!-- Bulk Actions -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <a href="#" onclick="showBulkCopyModal(event);" class="btn btn-outline-primary" title="Copy"><i class="fa fa-files-o"></i></a>
+                          <a href="#" onclick="showBulkMoveModal(event);" class="btn btn-outline-primary" title="Move"><i class="fa fa-arrow-right"></i></a>
+                      </div>
+                      
+                      <!-- Utilities -->
+                      <div class="btn-group btn-group-sm" role="group">
+                          <input type="submit" class="hidden" name="foldersize" id="a-foldersize" value="Foldersize">
+                          <a href="javascript:document.getElementById('a-foldersize').click();" class="btn btn-outline-primary <?php echo $_SESSION[FM_SESSION_ID]['foldersize']??false ? 'active':''; ?>" title="Folder Size"><i class="fa fa-pie-chart"></i></a>
+                      </div>
                   </div>
               </div>
-              <div class="col-3 d-none d-sm-block"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">RFILE Manager <?php echo VERSION; ?></a></div>
+              <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="text-muted small">RFILE Manager <?php echo VERSION; ?></a></div>
           <?php else: ?>
-              <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="float-right text-muted">RFILE Manager <?php echo VERSION; ?></a></div>
+              <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="text-muted small">RFILE Manager <?php echo VERSION; ?></a></div>
           <?php endif; ?>
       </div>
   </form>
@@ -4436,6 +4519,8 @@ function fm_foldersize($path) {
               ?>
 
               <script>
+              let breadcrumbFolders = []; // Cache for autocomplete
+
               function enablePathEdit() {
                   const breadcrumbs = $('#path-breadcrumbs');
                   const pathInput = $('#path-input');
@@ -4455,13 +4540,119 @@ function fm_foldersize($path) {
                       'top': '0px',
                       'left': '0px'
                   });
+
+                  // Initialize breadcrumb autocomplete
+                  initBreadcrumbAutocomplete();
               }
               
               function disablePathEdit() {
                   setTimeout(function() {
                      $('#path-input').addClass('d-none');
                      $('#path-breadcrumbs').removeClass('d-none');
+                     $('#breadcrumb-suggestions').remove();
                   }, 200);
+              }
+
+              function initBreadcrumbAutocomplete() {
+                  const pathInput = $('#path-input');
+                  
+                  // Load available folders on focus
+                  pathInput.on('focus', function() {
+                      if (breadcrumbFolders.length === 0) {
+                          loadBreadcrumbFolders('');
+                      }
+                  });
+
+                  // Filter folders as user types
+                  pathInput.on('input', function() {
+                      const searchTerm = $(this).val().toLowerCase();
+                      const parentDiv = pathInput.parent();
+                      
+                      if (searchTerm.length === 0) {
+                          $('#breadcrumb-suggestions').remove();
+                          return;
+                      }
+
+                      // Filter folders
+                      const filtered = breadcrumbFolders.filter(folder => 
+                          folder.path.toLowerCase().includes(searchTerm) || 
+                          folder.name.toLowerCase().includes(searchTerm)
+                      );
+
+                      // Display suggestions
+                      let suggestionsHtml = '<div id="breadcrumb-suggestions" class="position-absolute mt-1 bg-white border rounded shadow-sm" style="top: 100%; left: 0; right: 0; z-index: 1061; max-height: 250px; overflow-y: auto; width: 100%; min-width: 300px;">';
+                      
+                      if (filtered.length > 0) {
+                          filtered.slice(0, 10).forEach(folder => {
+                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer hover-highlight" style="cursor: pointer;" onclick="selectBreadcrumbPath('${folder.path}')">
+                                  <i class="fa fa-folder text-primary"></i> <strong>${folder.path}</strong>
+                                  ${folder.name !== folder.path ? '<br><small class="text-muted">' + folder.name + '</small>' : ''}
+                              </div>`;
+                          });
+                      } else {
+                          suggestionsHtml += '<div class="p-2 text-muted"><small>No matching folders</small></div>';
+                      }
+                      suggestionsHtml += '</div>';
+
+                      // Remove existing suggestions
+                      $('#breadcrumb-suggestions').remove();
+                      // Add new suggestions
+                      pathInput.parent().css('position', 'relative');
+                      pathInput.after(suggestionsHtml);
+
+                      // Add hover highlight effect
+                      $(document).on('mouseenter', '#breadcrumb-suggestions .hover-highlight', function() {
+                          $(this).css('background-color', '#f0f0f0');
+                      }).on('mouseleave', '#breadcrumb-suggestions .hover-highlight', function() {
+                          $(this).css('background-color', 'white');
+                      });
+                  });
+
+                  // Handle keyboard navigation
+                  pathInput.on('keydown', function(e) {
+                      if (e.key === 'Enter') {
+                          e.preventDefault();
+                          var newPath = $(this).val().trim();
+                          if (newPath !== '') {
+                              window.location.href = '?p=' + encodeURIComponent(newPath);
+                          }
+                      } else if (e.key === 'Escape') {
+                          disablePathEdit();
+                      }
+                  });
+              }
+
+              function selectBreadcrumbPath(path) {
+                  $('#path-input').val(path);
+                  $('#breadcrumb-suggestions').remove();
+                  // Auto-navigate after selection
+                  window.location.href = '?p=' + encodeURIComponent(path);
+              }
+
+              function loadBreadcrumbFolders(path) {
+                  $.ajax({
+                      type: "POST",
+                      url: window.location.href,
+                      data: {
+                          ajax: true,
+                          type: 'get_folders',
+                          path: path,
+                          token: window.csrf
+                      },
+                      success: function(data) {
+                          try {
+                              data = JSON.parse(data);
+                              if (Array.isArray(data)) {
+                                  breadcrumbFolders = data;
+                              }
+                          } catch(e) { 
+                              console.error('Error parsing breadcrumb folders:', e); 
+                          }
+                      },
+                      error: function(e) {
+                          console.error('Error loading breadcrumb folders:', e);
+                      }
+                  });
               }
               
               function handlePathKey(e) {
@@ -4795,7 +4986,14 @@ function fm_foldersize($path) {
               .h-100vh {
                   min-height: 100vh;
               }
-              </style>
+              #breadcrumb-suggestions {
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    border: 1px solid #e0e0e0;
+                }
+                #breadcrumb-suggestions > div:hover {
+                    background-color: #f8f9fa;
+                }
+            </style>
       </head>
 
       <body class="fm-login-page <?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?>">
@@ -4910,6 +5108,19 @@ function fm_foldersize($path) {
                   
                   .breadcrumb-container {
                       font-size: 12px;
+                  }
+                  
+                  #breadcrumb-suggestions {
+                      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                      border: 1px solid #e0e0e0;
+                  }
+
+                  #breadcrumb-suggestions > div {
+                      transition: background-color 0.15s ease;
+                  }
+
+                  #breadcrumb-suggestions > div:hover {
+                      background-color: #f8f9fa;
                   }
                   
                   .grid-view-container .grid-item {
@@ -6363,23 +6574,29 @@ function fm_foldersize($path) {
             <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="moveDailog" data-bs-theme="<?php echo FM_THEME; ?>">
                 <div class="modal-dialog" role="document">
                     <form class="modal-content rounded-3 shadow" method="post" autocomplete="off">
-                        <div class="modal-body p-4 text-center">
-                            <h5 class="mb-3"><?php echo lng('Move') ?></h5>
-                            <p class="mb-1">
-                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
-                                <input type="text" name="move_to" id="js-move-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" list="folderList" required>
-                                <datalist id="folderList">
-                                    <option value=".">
-                                    <option value="..">
-                                </datalist>
-                                <div id="js-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
-                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                                <input type="hidden" name="move_from" id="js-move-from">
-                            </p>
+                        <div class="modal-header border-bottom">
+                            <h5 class="modal-title"><i class="fa fa-arrow-right me-2"></i><?php echo lng('Move') ?></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-footer flex-nowrap p-0">
-                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
-                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Move') ?></strong></button>
+                        <div class="modal-body p-4">
+                            <p class="text-muted small mb-3"><i class="fa fa-info-circle"></i> Select destination folder or type path</p>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold"><?php echo lng('DestinationFolder') ?></label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fa fa-folder"></i></span>
+                                    <input type="text" name="move_to" id="js-move-to" class="form-control" placeholder="e.g. folder/subfolder" autocomplete="off" required>
+                                </div>
+                                <small class="text-muted d-block mt-2">
+                                    <i class="fa fa-lightbulb-o"></i> Type to search folders or click below to browse
+                                </small>
+                            </div>
+                            <div id="js-folder-tree" class="mt-3" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-input); padding: 8px;"></div>
+                            <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                            <input type="hidden" name="move_from" id="js-move-from">
+                        </div>
+                        <div class="modal-footer border-top">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fa fa-times-circle me-2"></i><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-primary"><i class="fa fa-check-circle me-2"></i><strong><?php echo lng('Move') ?></strong></button>
                         </div>
                     </form>
                 </div>
@@ -6389,21 +6606,28 @@ function fm_foldersize($path) {
             <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="bulkMoveDailog" data-bs-theme="<?php echo FM_THEME; ?>">
                 <div class="modal-dialog" role="document">
                     <form class="modal-content rounded-3 shadow" method="post" autocomplete="off" id="bulkMoveForm">
-                        <div class="modal-body p-4 text-center">
-                            <h5 class="mb-3"><?php echo lng('Move') ?> <span id="bulk-move-count"></span> <?php echo lng('Items') ?></h5>
-                            <p class="mb-1">
-                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
-                                <input type="text" name="copy_to" id="js-bulk-move-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" required>
-                                <div id="js-bulk-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
-                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                                <input type="hidden" name="move" value="1">
-                                <input type="hidden" name="finish" value="1">
-                                <div id="bulk-move-files"></div>
-                            </p>
+                        <div class="modal-header border-bottom">
+                            <h5 class="modal-title"><i class="fa fa-arrow-right me-2"></i><?php echo lng('Move') ?> <span id="bulk-move-count" class="badge bg-primary"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-footer flex-nowrap p-0">
-                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
-                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Move') ?></strong></button>
+                        <div class="modal-body p-4">
+                            <p class="text-muted small mb-3"><i class="fa fa-info-circle"></i> Select destination folder for bulk move</p>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold"><?php echo lng('DestinationFolder') ?></label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fa fa-folder"></i></span>
+                                    <input type="text" name="copy_to" id="js-bulk-move-to" class="form-control" placeholder="e.g. folder/subfolder" autocomplete="off" required>
+                                </div>
+                            </div>
+                            <div id="js-bulk-folder-tree" class="mt-3" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-input); padding: 8px;"></div>
+                            <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                            <input type="hidden" name="move" value="1">
+                            <input type="hidden" name="finish" value="1">
+                            <div id="bulk-move-files"></div>
+                        </div>
+                        <div class="modal-footer border-top">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fa fa-times-circle me-2"></i><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-primary"><i class="fa fa-check-circle me-2"></i><strong><?php echo lng('Move') ?></strong></button>
                         </div>
                     </form>
                 </div>
@@ -6413,20 +6637,27 @@ function fm_foldersize($path) {
             <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="bulkCopyDailog" data-bs-theme="<?php echo FM_THEME; ?>">
                 <div class="modal-dialog" role="document">
                     <form class="modal-content rounded-3 shadow" method="post" autocomplete="off" id="bulkCopyForm">
-                        <div class="modal-body p-4 text-center">
-                            <h5 class="mb-3"><?php echo lng('Copy') ?> <span id="bulk-copy-count"></span> <?php echo lng('Items') ?></h5>
-                            <p class="mb-1">
-                                <label class="mb-2 text-muted text-left w-100"><?php echo lng('DestinationFolder') ?></label>
-                                <input type="text" name="copy_to" id="js-bulk-copy-to" class="form-control" placeholder="<?php echo lng('DestinationFolder') ?>" required>
-                                <div id="js-bulk-copy-folder-tree" class="mt-2 text-start" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px;"></div>
-                                <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                                <input type="hidden" name="finish" value="1">
-                                <div id="bulk-copy-files"></div>
-                            </p>
+                        <div class="modal-header border-bottom">
+                            <h5 class="modal-title"><i class="fa fa-copy me-2"></i><?php echo lng('Copy') ?> <span id="bulk-copy-count" class="badge bg-primary"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-footer flex-nowrap p-0">
-                            <button type="button" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0 border-end" data-bs-dismiss="modal"><?php echo lng('Cancel') ?></button>
-                            <button type="submit" class="btn btn-lg btn-link fs-6 text-decoration-none col-6 m-0 rounded-0"><strong><?php echo lng('Copy') ?></strong></button>
+                        <div class="modal-body p-4">
+                            <p class="text-muted small mb-3"><i class="fa fa-info-circle"></i> Select destination folder for bulk copy</p>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold"><?php echo lng('DestinationFolder') ?></label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="fa fa-folder"></i></span>
+                                    <input type="text" name="copy_to" id="js-bulk-copy-to" class="form-control" placeholder="e.g. folder/subfolder" autocomplete="off" required>
+                                </div>
+                            </div>
+                            <div id="js-bulk-copy-folder-tree" class="mt-3" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-input); padding: 8px;"></div>
+                            <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                            <input type="hidden" name="finish" value="1">
+                            <div id="bulk-copy-files"></div>
+                        </div>
+                        <div class="modal-footer border-top">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i class="fa fa-times-circle me-2"></i><?php echo lng('Cancel') ?></button>
+                            <button type="submit" class="btn btn-primary"><i class="fa fa-check-circle me-2"></i><strong><?php echo lng('Copy') ?></strong></button>
                         </div>
                     </form>
                 </div>
@@ -6529,6 +6760,7 @@ function fm_foldersize($path) {
             <li><a href="#" id="cm-move"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?></a></li>
             <li><a href="#" id="cm-download"><i class="fa fa-download"></i> <?php echo lng('Download') ?></a></li>
             <li><a href="#" id="cm-link"><i class="fa fa-link"></i> <?php echo lng('DirectLink') ?></a></li>
+            <li><a href="#" id="cm-extract"><i class="fa fa-folder-open"></i> Extract Archive</a></li>
             <li class="context-menu-separator"></li>
             <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
         </ul>
@@ -6648,6 +6880,12 @@ function fm_foldersize($path) {
                            confirmDailog(evt, 1028, '<?php echo lng("Delete"); ?>', name, delLink);
                       });
 
+                      // Extract Archive
+                      $('#cm-extract').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           extract(path, name);
+                      });
+
                       // Position
                       let top, left;
                       if (e && e.type === 'contextmenu') {
@@ -6709,6 +6947,92 @@ function fm_foldersize($path) {
                     $("#js-move-to").val(currentPath); // Auto-fill with current path
                     $("#moveDailog").modal('show');
                     loadFolders(currentPath); // Start from current folder
+                }
+            }
+
+            function extract(path, filename) {
+                if (filename) {
+                    // Check if file is an archive
+                    const ext = filename.split('.').pop().toLowerCase();
+                    const archiveExts = ['zip', 'tar', 'gz', 'rar', '7z', 'bz2'];
+                    
+                    if (!archiveExts.includes(ext)) {
+                        Swal.fire({
+                            title: 'Invalid File',
+                            text: 'Please select an archive file (zip, tar, gz, etc.)',
+                            icon: 'warning'
+                        });
+                        return;
+                    }
+                    
+                    // Confirm extraction
+                    Swal.fire({
+                        title: 'Extract Archive?',
+                        text: 'Extract "' + filename + '" in the current directory?',
+                        icon: 'question',
+                        showCancelButton: true,
+                        confirmButtonColor: '#3085d6',
+                        cancelButtonColor: '#d33',
+                        confirmButtonText: 'Yes, Extract!'
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            // Show loading
+                            Swal.fire({
+                                title: 'Extracting...',
+                                html: '<div class="spinner-border text-primary" role="status"></div><p style="margin-top:10px;">Please wait while the archive is being extracted</p>',
+                                icon: undefined,
+                                allowOutsideClick: false,
+                                showConfirmButton: false
+                            });
+                            
+                            // Send AJAX request to extract
+                            $.ajax({
+                                type: "POST",
+                                url: window.location.href,
+                                data: {
+                                    ajax: true,
+                                    type: 'extract',
+                                    path: path,
+                                    file: filename,
+                                    token: window.csrf
+                                },
+                                success: function(response) {
+                                    try {
+                                        // Check if response is already an object or string
+                                        const data = typeof response === 'string' ? JSON.parse(response) : response;
+                                        if (data.success) {
+                                            Swal.fire({
+                                                title: 'Success!',
+                                                text: 'Archive extracted successfully',
+                                                icon: 'success'
+                                            }).then(() => {
+                                                window.location.reload();
+                                            });
+                                        } else {
+                                            Swal.fire({
+                                                title: 'Error',
+                                                text: data.message || 'Failed to extract archive',
+                                                icon: 'error'
+                                            });
+                                        }
+                                    } catch(e) {
+                                        Swal.fire({
+                                            title: 'Error',
+                                            text: 'Server response error: ' + (typeof response === 'object' ? JSON.stringify(response) : response),
+                                            icon: 'error'
+                                        });
+                                    }
+                                },
+                                error: function(xhr) {
+                                    Swal.fire({
+                                        title: 'Error',
+                                        text: 'Error extracting archive: ' + (xhr.responseText || xhr.statusText),
+                                        icon: 'error'
+                                    });
+                                }
+                            });
+                        }
+                    });
                 }
             }
 
