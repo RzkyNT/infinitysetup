@@ -2607,28 +2607,34 @@ async function generatePhpHash() {
                 <?php elseif ($view === 'sql'): 
                     ?>
                     <div class="card">
+                        <h3><i class="fas fa-terminal"></i> SQL Command</h3>
                         <form method="POST" id="sqlForm">
                             <input type="hidden" name="action" value="sql_query">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                            <div style="display:flex; gap:10px;">
-                                <div style="flex:1;">
-                                    <textarea name="query" id="queryInput" class="form-control" rows="10" style="font-family:monospace; background: #000; border:1px solid #444;max-width: 100%; color:#0f0;" placeholder="SELECT * FROM..."><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : "SELECT * FROM `$currentTable` LIMIT 100"?></textarea>
+                            
+                            <div style="display:flex; gap:15px; flex-wrap:wrap;">
+                                <div style="flex:1; min-width:300px;">
+                                    <textarea name="query" id="queryInput" class="form-control" rows="12" style="font-family: 'Fira Code', monospace; background: #080808; border:1px solid #333; color:#a5d6ff; line-height:1.5; padding:15px; font-size:14px;" placeholder="SELECT * FROM `<?=htmlspecialchars($currentTable ?: 'table')?>` WHERE 1"><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : ($currentTable ? "SELECT * FROM `$currentTable` LIMIT 50" : "SHOW TABLES")?></textarea>
+                                    <div style="margin-top: 10px; display:flex; gap:10px; justify-content:flex-end;">
+                                        <button type="button" class="btn" onclick="document.getElementById('queryInput').value=''">Clear</button>
+                                        <button type="submit" class="btn btn-primary" style="padding-left:20px; padding-right:20px;"><i class="fas fa-play"></i> Execute</button>
+                                    </div>
                                 </div>
-                                <div style="width: 250px; display: flex; flex-direction: column;">
-                                    <div style="font-weight:bold; margin-bottom:5px; color:var(--text-secondary);">History</div>
-                                    <div id="queryHistory" style="flex:1; border:1px solid var(--border-color); background:var(--bg-input); border-radius:4px; overflow-y:auto; font-size:0.8rem;">
+                                
+                                <div style="width: 280px; display: flex; flex-direction: column; border-left:1px solid var(--border-color); padding-left:15px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                        <span style="font-weight:bold; color:var(--text-secondary); text-transform:uppercase; font-size:0.75rem;">Query History</span>
+                                        <button type="button" class="btn btn-danger" onclick="clearHistory()" style="padding:2px 6px; font-size:0.7rem;" title="Clear History"><i class="fas fa-trash"></i></button>
+                                    </div>
+                                    <div id="queryHistory" style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; overflow-y:auto; font-size:0.8rem; max-height:300px;">
                                         <!-- JS populates this -->
                                     </div>
-                                    <button type="button" class="btn" onclick="clearHistory()" style="margin-top:5px; font-size:0.75rem;">Clear History</button>
                                 </div>
-                            </div>
-                            <div style="margin-top: 15px; text-align: right;">
-                                <button type="submit" class="btn btn-primary"><i class="fas fa-play"></i> Execute</button>
                             </div>
                         </form>
                         
                         <script>
-                            const historyKey = 'adminer_query_history';
+                            const historyKey = 'adminer_query_history_<?=md5($_SESSION['db_host'].$_SESSION['db_user'])?>';
                             const input = document.getElementById('queryInput');
                             const list = document.getElementById('queryHistory');
                             
@@ -2637,38 +2643,35 @@ async function generatePhpHash() {
                                 list.innerHTML = '';
                                 history.forEach(q => {
                                     let item = document.createElement('div');
-                                    item.style.padding = '8px';
+                                    item.style.padding = '10px';
                                     item.style.borderBottom = '1px solid #333';
                                     item.style.cursor = 'pointer';
-                                    item.style.whiteSpace = 'nowrap';
+                                    item.style.whiteSpace = 'pre-wrap'; // Allow wrap for long queries
+                                    item.style.maxHeight = '60px'; // Limit height
                                     item.style.overflow = 'hidden';
                                     item.style.textOverflow = 'ellipsis';
+                                    item.style.fontFamily = 'monospace';
+                                    item.style.color = '#ccc';
+                                    item.style.transition = '0.2s';
                                     item.title = q;
                                     item.textContent = q;
-                                    item.onmouseover = () => item.style.background = '#333';
-                                    item.onmouseout = () => item.style.background = 'transparent';
-                                    item.onclick = () => { input.value = q; };
+                                    item.onmouseover = () => { item.style.background = '#333'; item.style.color = '#fff'; };
+                                    item.onmouseout = () => { item.style.background = 'transparent'; item.style.color = '#ccc'; };
+                                    item.onclick = () => { 
+                                        input.value = q; 
+                                        // Scroll to top of textarea
+                                        input.scrollTop = 0;
+                                    };
                                     list.appendChild(item);
                                 });
-                                if(history.length === 0) list.innerHTML = '<div style="padding:10px; color:#666;">No history</div>';
+                                if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history yet.<br>Execute a query to save it.</div>';
                             }
                             
                             function clearHistory() {
-                                Swal.fire({
-                                    title: 'Clear History?',
-                                    text: "This will remove all saved queries from this browser.",
-                                    icon: 'warning',
-                                    showCancelButton: true,
-                                    confirmButtonColor: '#3085d6',
-                                    cancelButtonColor: '#d33',
-                                    confirmButtonText: 'Yes, clear it!'
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        localStorage.removeItem(historyKey);
-                                        renderHistory();
-                                        Swal.fire('Cleared!', 'Your history has been deleted.', 'success');
-                                    }
-                                });
+                                if(confirm('Clear all query history?')) {
+                                    localStorage.removeItem(historyKey);
+                                    renderHistory();
+                                }
                             }
 
                             document.getElementById('sqlForm').addEventListener('submit', function() {
@@ -2686,30 +2689,45 @@ async function generatePhpHash() {
                             renderHistory();
                         </script>
 
-                        <?php if(isset($sqlStmt) && $sqlStmt && $action === 'sql_query'): 
-                            ?><h4 style="margin: 20px 0 10px;">Results:</h4>
-                            <div class="table-wrapper">
-                                <table>
-                                    <?php 
-                                    $results = $sqlStmt->fetchAll();
-                                    if ($results):
-                                        $keys = array_keys($results[0]);
-                                    ?><?php 
-                                    ?><?= "<thead><tr>" ?><?php foreach ($keys as $k):
-                                        ?><?= "<th>" ?><?=htmlspecialchars($k)?><?= "</th>" ?><?php 
-                                    endforeach; ?><?= "</tr></thead>" ?><?php 
-                                    ?><tbody>
-                                        <?php foreach ($results as $r):
-                                            ?>
-                                            <tr><?php foreach ($r as $v):
-                                                ?><td><?=htmlspecialchars((string)$v)?></td><?php 
-                                            endforeach; ?></tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                <?php else:
-                                    ?><tbody><tr><td style="padding: 20px;">Empty result set.</td></tr></tbody><?php 
-                                endif; ?>
-                                </table>
+                        <?php if(!empty($sqlResults)): ?>
+                            <div style="margin-top:30px;">
+                                <?php foreach($sqlResults as $i => $res): ?>
+                                    <div style="margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; overflow:hidden;">
+                                        <div style="background:#222; padding:10px 15px; border-bottom:1px solid #333; font-family:monospace; font-size:0.9rem; color:#a5d6ff;">
+                                            <?=htmlspecialchars($res['query'])?>
+                                        </div>
+                                        <div class="table-wrapper" style="border:none; border-radius:0; max-height:400px;">
+                                            <table>
+                                                <thead>
+                                                    <tr>
+                                                        <?php if(!empty($res['columns'])): foreach($res['columns'] as $col): ?>
+                                                            <th><?=htmlspecialchars($col)?></th>
+                                                        <?php endforeach; else: ?>
+                                                            <th>Result</th>
+                                                        <?php endif; ?>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php if(!empty($res['rows'])): foreach($res['rows'] as $row): ?>
+                                                        <tr>
+                                                            <?php foreach($row as $cell): ?>
+                                                                <td><?= $cell === null ? '<span style="color:#666">NULL</span>' : htmlspecialchars($cell) ?></td>
+                                                            <?php endforeach; ?>
+                                                        </tr>
+                                                    <?php endforeach; else: ?>
+                                                        <tr><td colspan="<?=count($res['columns']?:[1])?>" style="padding:15px; color:#888; text-align:center;">
+                                                            <?php if(stripos($res['query'], 'SELECT') === 0 || stripos($res['query'], 'SHOW') === 0): ?>
+                                                                Empty result set.
+                                                            <?php else: ?>
+                                                                Query executed successfully.
+                                                            <?php endif; ?>
+                                                        </td></tr>
+                                                    <?php endif; ?>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
                             </div>
                         <?php endif; ?>
                     </div>
@@ -3613,6 +3631,167 @@ async function generatePhpHash() {
             }
         });
     });
+
+    // ===== GENERATOR TOOLS LOGIC =====
+    function openToolsModal() {
+        Swal.fire({
+            title: '<span style="color:var(--text-primary)">Generator Tools</span>',
+            html: `
+                <div class="swal2-tabs">
+                    <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
+                    <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
+                    <button onclick="switchToolTab(this, 'tool-uuid')">UUID</button>
+                    <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
+                </div>
+
+                <div id="tool-php-hash" class="swal2-tab-content active">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
+                        Generate hash PHP (<b>Bcrypt</b>) sesuai format <code>$2y$10$...</code>. Cocok untuk database MySQL Native PHP atau Laravel.
+                    </p>
+                    
+                    <div class="tool-row">
+                        <input type="text" id="phpHashInput" class="swal2-input" placeholder="Masukkan password plain text..." autocomplete="off">
+                    </div>
+                    
+                    <div class="tool-row">
+                        <span class="tool-label">Result:</span>
+                        <div id="phpHashResult" class="tool-result" style="flex:1;">Hash will appear here...</div>
+                    </div>
+
+                    <div style="margin-top:15px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- HASH GENERATOR -->
+                <div id="tool-hash" class="swal2-tab-content">
+                    <div class="tool-row">
+                        <select id="hashAlgo" class="swal2-select">
+                            <option value="SHA-1">SHA-1</option>
+                            <option value="SHA-256" selected>SHA-256</option>
+                            <option value="SHA-384">SHA-384</option>
+                            <option value="SHA-512">SHA-512</option>
+                        </select>
+                    </div>
+                    <textarea id="hashInput" class="swal2-textarea" placeholder="Enter text to hash..." rows="3"></textarea>
+                    <div class="tool-result" id="hashResult">Hash will appear here...</div>
+                    <div style="margin-top:10px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateHash()">Hash It</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('hashResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- UUID GENERATOR -->
+                <div id="tool-uuid" class="swal2-tab-content">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">Generate v4 Random UUIDs.</p>
+                    <div class="tool-result" id="uuidResult">Click Generate</div>
+                    <div style="margin-top:10px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateUUID()">Generate</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('uuidResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- BASE64 ENCODER -->
+                <div id="tool-base64" class="swal2-tab-content">
+                    <textarea id="b64Input" class="swal2-textarea" placeholder="Enter string to encode/decode..." rows="3"></textarea>
+                    <div class="tool-row" style="margin-top:10px;">
+                        <button class="swal2-styled" style="background-color:#444; margin-right:5px;" onclick="doBase64('encode')">Encode</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="doBase64('decode')">Decode</button>
+                    </div>
+                    <div class="tool-result" id="b64Result" style="margin-top:10px;">Result...</div>
+                    <div style="text-align:right; margin-top:5px;">
+                         <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('b64Result').innerText)">Copy</button>
+                    </div>
+                </div>
+            `,
+            showConfirmButton: false,
+            showCloseButton: true,
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal'
+            }
+        });
+    }
+
+    // --- Helper Functions for Tools ---
+    function switchToolTab(btn, targetId) {
+        // Update Buttons
+        const buttons = btn.parentElement.querySelectorAll('button');
+        buttons.forEach(b => b.classList.remove('active', 'active-tab'));
+        btn.classList.add('active');
+        btn.style.color = '#0d6efd';
+        buttons.forEach(b => { if(b !== btn) b.style.color = 'var(--text-secondary)'; });
+
+        // Update Content
+        const contents = document.querySelectorAll('.swal2-tab-content');
+        contents.forEach(c => c.style.display = 'none');
+        document.getElementById(targetId).style.display = 'block';
+    }
+
+    function generatePhpHash() {
+        const pass = document.getElementById('phpHashInput').value;
+        if(!pass) return Swal.showValidationMessage('Password empty');
+        
+        // Use the API endpoint defined at the top of adminer.php
+        fetch('?api=generate_php_hash', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'password=' + encodeURIComponent(pass)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                document.getElementById('phpHashResult').innerText = data.hash;
+            } else {
+                document.getElementById('phpHashResult').innerText = 'Error: ' + data.message;
+            }
+        })
+        .catch(err => {
+            document.getElementById('phpHashResult').innerText = 'Request Failed';
+        });
+    }
+
+    async function generateHash() {
+        const algo = document.getElementById('hashAlgo').value;
+        const text = document.getElementById('hashInput').value;
+        if(!text) return;
+        
+        const msgUint8 = new TextEncoder().encode(text);
+        const hashBuffer = await crypto.subtle.digest(algo, msgUint8);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        document.getElementById('hashResult').innerText = hashHex;
+    }
+
+    function generateUUID() {
+        const uuid = crypto.randomUUID();
+        document.getElementById('uuidResult').innerText = uuid;
+    }
+
+    function doBase64(action) {
+        const input = document.getElementById('b64Input').value;
+        const resEl = document.getElementById('b64Result');
+        try {
+            if(action === 'encode') resEl.innerText = btoa(input);
+            else resEl.innerText = atob(input);
+        } catch(e) {
+            resEl.innerText = 'Invalid Input';
+        }
+    }
+
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            const toast = Swal.mixin({
+                toast: true,
+                position: 'top-end',
+                showConfirmButton: false,
+                timer: 1500,
+                timerProgressBar: true,
+            });
+            toast.fire({ icon: 'success', title: 'Copied!' });
+        });
+    }
 </script>
 </body>
 </html>

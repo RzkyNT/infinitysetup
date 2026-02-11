@@ -451,6 +451,50 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
 
   /*************************** ACTIONS ***************************/
 
+  // Handle Get Raw File Content via AJAX (BEFORE auth check for compatibility)
+  if (isset($_POST['ajax']) && $_POST['type'] === 'get_file_content' && isset($_POST['file'], $_POST['token'])) {
+      if (!verifyToken($_POST['token'])) {
+          header('HTTP/1.0 401 Unauthorized');
+          header('Content-Type: application/json');
+          echo json_encode(['success' => false, 'message' => 'Invalid token']);
+          exit;
+      }
+      
+      header('Content-Type: application/json');
+      $fileName = fm_clean_path($_POST['file']);
+      $fullPath = FM_ROOT_PATH . '/';
+      if (!empty($_POST['path'])) {
+          $relativeDirPath = fm_clean_path($_POST['path']);
+          $fullPath .= "{$relativeDirPath}/";
+      }
+      $fullFilePath = $fullPath . $fileName;
+      
+      try {
+          if (!file_exists($fullFilePath)) {
+              throw new Exception("File not found");
+          }
+          if (!is_file($fullFilePath)) {
+              throw new Exception("Path is not a file");
+          }
+          
+          $content = @file_get_contents($fullFilePath);
+          if ($content === false) {
+              throw new Exception("Failed to read file");
+          }
+          
+          echo json_encode([
+              'success' => true,
+              'content' => $content
+          ]);
+      } catch (Exception $e) {
+          echo json_encode([
+              'success' => false,
+              'message' => $e->getMessage()
+          ]);
+      }
+      exit;
+  }
+
   // Handle all AJAX Request
   if ((isset($_SESSION[FM_SESSION_ID]['logged'], $auth_users[$_SESSION[FM_SESSION_ID]['logged']]) || !FM_USE_AUTH) && isset($_POST['ajax'], $_POST['token']) && !FM_READONLY) {
       if (!verifyToken($_POST['token'])) {
@@ -2554,10 +2598,11 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           if (empty($ext) || in_array(strtolower($file), fm_get_text_names()) || preg_match('#\.min\.(css|js)$#i', $file)) {
                               $hljs_class = 'nohighlight';
                           }
+                          // PHP files should use syntax highlighting
+                          if (in_array($ext, array('php', 'php4', 'php5', 'phtml', 'phps'))) {
+                              $hljs_class = 'lang-php';
+                          }
                           $content = '<pre class="with-hljs"><code class="' . $hljs_class . '">' . fm_enc($content) . '</code></pre>';
-                      } elseif (in_array($ext, array('php', 'php4', 'php5', 'phtml', 'phps'))) {
-                          // php highlight
-                          $content = highlight_string($content, true);
                       } else {
                           $content = '<pre>' . fm_enc($content) . '</pre>';
                       }
@@ -4512,64 +4557,87 @@ function fm_foldersize($path) {
                   $root_url .= $sep . implode($sep, $array);
               }
               echo '<div class="col-12 col-md-6 d-flex align-items-center mb-2 mb-md-0 position-relative">';
-              echo '<div id="path-breadcrumbs" class="breadcrumb-container flex-grow-1" onclick="enablePathEdit()" style="cursor: text; padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; transition: all 0.2s;">' . $root_url . '</div>';
-              echo '<input type="text" id="path-input" class="form-control form-control-sm d-none position-absolute" value="'.fm_enc($path).'" onblur="disablePathEdit()" onkeyup="handlePathKey(event)" style="height: 31px; left: 0; right: 0; z-index: 1060; top: 0;">';
+              echo '<div id="path-breadcrumbs" class="breadcrumb-container flex-grow-1" onclick="showPathEditor()" style="cursor: pointer; padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; transition: all 0.2s;">' . $root_url . '</div>';
               echo $editFile;
               echo '</div>';
               ?>
 
-              <script>
-              let breadcrumbFolders = []; // Cache for autocomplete
-
-              function enablePathEdit() {
-                  const breadcrumbs = $('#path-breadcrumbs');
-                  const pathInput = $('#path-input');
-                  
-                  // Get breadcrumb dimensions and position
-                  const breadcrumbRect = breadcrumbs[0].getBoundingClientRect();
-                  const containerRect = breadcrumbs.parent()[0].getBoundingClientRect();
-                  
-                  // Hide breadcrumbs and show input
-                  breadcrumbs.addClass('d-none');
-                  pathInput.removeClass('d-none').focus().select();
-                  
-                  // Position input exactly over breadcrumbs
-                  pathInput.css({
-                      'width': breadcrumbs.outerWidth() + 'px',
-                      'height': breadcrumbs.outerHeight() + 'px',
-                      'top': '0px',
-                      'left': '0px'
-                  });
-
-                  // Initialize breadcrumb autocomplete
-                  initBreadcrumbAutocomplete();
+              <script defer>
+              if (typeof breadcrumbFolders === 'undefined') {
+                  var breadcrumbFolders = []; // Cache for autocomplete
               }
-              
-              function disablePathEdit() {
-                  setTimeout(function() {
-                     $('#path-input').addClass('d-none');
-                     $('#path-breadcrumbs').removeClass('d-none');
-                     $('#breadcrumb-suggestions').remove();
+              var isSidebarOpen = false;
+
+              function isMobileDevice() {
+                  return window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+              }
+
+              // Show path editor - sidebar for desktop, modal for mobile
+              function showPathEditor() {
+                  var isDesktop = !isMobileDevice();
+                  console.log('showPathEditor called, isMobileDevice:', isMobileDevice(), 'isDesktop:', isDesktop);
+                  
+                  if (isMobileDevice()) {
+                      // Use modal on mobile
+                      console.log('Opening modal for mobile');
+                      const currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                      $('#modal-path-input').val(currentPath);
+                      $('#pathEditorModal').modal('show');
+                      setTimeout(() => {
+                          $('#modal-path-input').focus().select();
+                          initModalPathAutocomplete();
+                      }, 300);
+                  } else {
+                      // Use sidebar on desktop
+                      console.log('Opening sidebar for desktop');
+                      openPathSidebar();
+                  }
+              }
+
+              // Sidebar functions for desktop
+              function openPathSidebar() {
+                  console.log('openPathSidebar called');
+                  const currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                  $('#sidebar-path-input').val(currentPath);
+                  
+                  // Show sidebar and overlay
+                  document.getElementById('path-sidebar').style.right = '0';
+                  document.getElementById('sidebar-overlay').style.display = 'block';
+                  isSidebarOpen = true;
+                  
+                  // Load folders and initialize autocomplete
+                  loadBreadcrumbFolders('');
+                  setTimeout(() => {
+                      $('#sidebar-path-input').focus().select();
+                      initSidebarPathAutocomplete();
                   }, 200);
               }
 
-              function initBreadcrumbAutocomplete() {
-                  const pathInput = $('#path-input');
-                  
-                  // Load available folders on focus
-                  pathInput.on('focus', function() {
-                      if (breadcrumbFolders.length === 0) {
-                          loadBreadcrumbFolders('');
-                      }
-                  });
+              function closePathSidebar() {
+                  console.log('closePathSidebar called');
+                  document.getElementById('path-sidebar').style.right = '-350px';
+                  document.getElementById('sidebar-overlay').style.display = 'none';
+                  $('#sidebar-suggestions').remove();
+                  isSidebarOpen = false;
+              }
 
-                  // Filter folders as user types
-                  pathInput.on('input', function() {
+              function navigateSidebarPath() {
+                  const newPath = $('#sidebar-path-input').val().trim();
+                  console.log('navigateSidebarPath:', newPath);
+                  if (newPath !== '') {
+                      window.location.href = '?p=' + encodeURIComponent(newPath);
+                  }
+              }
+
+              // Autocomplete for sidebar
+              function initSidebarPathAutocomplete() {
+                  const pathInput = $('#sidebar-path-input');
+                  
+                  pathInput.off('input').on('input', function() {
                       const searchTerm = $(this).val().toLowerCase();
-                      const parentDiv = pathInput.parent();
                       
                       if (searchTerm.length === 0) {
-                          $('#breadcrumb-suggestions').remove();
+                          $('#sidebar-suggestions').remove();
                           return;
                       }
 
@@ -4580,11 +4648,11 @@ function fm_foldersize($path) {
                       );
 
                       // Display suggestions
-                      let suggestionsHtml = '<div id="breadcrumb-suggestions" class="position-absolute mt-1 bg-white border rounded shadow-sm" style="top: 100%; left: 0; right: 0; z-index: 1061; max-height: 250px; overflow-y: auto; width: 100%; min-width: 300px;">';
+                      let suggestionsHtml = '<div id="sidebar-suggestions" class="mt-2" style="max-height: 250px; overflow-y: auto;">';
                       
                       if (filtered.length > 0) {
-                          filtered.slice(0, 10).forEach(folder => {
-                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer hover-highlight" style="cursor: pointer;" onclick="selectBreadcrumbPath('${folder.path}')">
+                          filtered.slice(0, 15).forEach(folder => {
+                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer" style="cursor: pointer; border-radius: 4px; transition: background-color 0.15s;" onclick="selectSidebarPath('${folder.path}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor='white'">
                                   <i class="fa fa-folder text-primary"></i> <strong>${folder.path}</strong>
                                   ${folder.name !== folder.path ? '<br><small class="text-muted">' + folder.name + '</small>' : ''}
                               </div>`;
@@ -4594,39 +4662,68 @@ function fm_foldersize($path) {
                       }
                       suggestionsHtml += '</div>';
 
-                      // Remove existing suggestions
-                      $('#breadcrumb-suggestions').remove();
-                      // Add new suggestions
-                      pathInput.parent().css('position', 'relative');
+                      $('#sidebar-suggestions').remove();
                       pathInput.after(suggestionsHtml);
-
-                      // Add hover highlight effect
-                      $(document).on('mouseenter', '#breadcrumb-suggestions .hover-highlight', function() {
-                          $(this).css('background-color', '#f0f0f0');
-                      }).on('mouseleave', '#breadcrumb-suggestions .hover-highlight', function() {
-                          $(this).css('background-color', 'white');
-                      });
                   });
 
-                  // Handle keyboard navigation
-                  pathInput.on('keydown', function(e) {
+                  pathInput.off('keydown').on('keydown', function(e) {
                       if (e.key === 'Enter') {
                           e.preventDefault();
-                          var newPath = $(this).val().trim();
-                          if (newPath !== '') {
-                              window.location.href = '?p=' + encodeURIComponent(newPath);
-                          }
+                          navigateSidebarPath();
                       } else if (e.key === 'Escape') {
-                          disablePathEdit();
+                          closePathSidebar();
                       }
                   });
               }
 
-              function selectBreadcrumbPath(path) {
-                  $('#path-input').val(path);
-                  $('#breadcrumb-suggestions').remove();
-                  // Auto-navigate after selection
-                  window.location.href = '?p=' + encodeURIComponent(path);
+              function selectSidebarPath(path) {
+                  $('#sidebar-path-input').val(path);
+                  navigateSidebarPath();
+              }
+
+              // Autocomplete for modal
+              function initModalPathAutocomplete() {
+                  const pathInput = $('#modal-path-input');
+                  
+                  // Load folders first
+                  loadBreadcrumbFolders('');
+                  
+                  pathInput.off('input').on('input', function() {
+                      const searchTerm = $(this).val().toLowerCase();
+                      
+                      if (searchTerm.length === 0 || breadcrumbFolders.length === 0) {
+                          $('#modal-suggestions').remove();
+                          return;
+                      }
+
+                      // Filter folders
+                      const filtered = breadcrumbFolders.filter(folder => 
+                          folder.path.toLowerCase().includes(searchTerm) || 
+                          folder.name.toLowerCase().includes(searchTerm)
+                      );
+
+                      // Display suggestions
+                      let suggestionsHtml = '<div id="modal-suggestions" class="mt-2" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: white;">';
+                      
+                      if (filtered.length > 0) {
+                          filtered.slice(0, 10).forEach(folder => {
+                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer" style="cursor: pointer; transition: background-color 0.15s;" onclick="selectModalPath('${folder.path}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor='white'">
+                                  <i class="fa fa-folder text-primary"></i> <strong>${folder.path}</strong>
+                                  ${folder.name !== folder.path ? '<br><small class="text-muted">' + folder.name + '</small>' : ''}
+                              </div>`;
+                          });
+                      } else {
+                          suggestionsHtml += '<div class="p-2 text-muted"><small>No matching folders</small></div>';
+                      }
+                      suggestionsHtml += '</div>';
+
+                      $('#modal-suggestions').remove();
+                      $(this).after(suggestionsHtml);
+                  });
+              }
+
+              function selectModalPath(path) {
+                  $('#modal-path-input').val(path);
               }
 
               function loadBreadcrumbFolders(path) {
@@ -4655,81 +4752,65 @@ function fm_foldersize($path) {
                   });
               }
               
-              function handlePathKey(e) {
-                  if (e.key === 'Enter') {
-                      var newPath = $('#path-input').val().trim();
+              // Modal path editor function
+              window.navigateToModalPath = function() {
+                  const newPath = $('#modal-path-input').val().trim();
+                  if (newPath !== '') {
                       window.location.href = '?p=' + encodeURIComponent(newPath);
-                  } else if (e.key === 'Escape') {
-                      disablePathEdit();
                   }
-              }
+                  $('#pathEditorModal').modal('hide');
+              };
               
-              // Enhanced breadcrumb editing for mobile
-              $(document).ready(function() {
-                  // Check if we're on mobile
-                  function isMobileDevice() {
-                      return window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+              // Enhanced breadcrumb editing for mobile - wrapped in function to handle jQuery loading
+              function initPathEditorEvents() {
+                  if (typeof $ === 'undefined') {
+                      setTimeout(initPathEditorEvents, 100);
+                      return;
                   }
-                  
-                  // Modal path editor function
-                  window.navigateToModalPath = function() {
-                      const newPath = $('#modal-path-input').val().trim();
-                      if (newPath !== '') {
-                          window.location.href = '?p=' + encodeURIComponent(newPath);
-                      }
-                      $('#pathEditorModal').modal('hide');
-                  };
-                  
-                  // Enhanced path editing
-                  function showPathEditor() {
-                      if (isMobileDevice()) {
-                          // Use modal on mobile for better UX
-                          const currentPath = '<?php echo addslashes(FM_PATH); ?>';
-                          $('#modal-path-input').val(currentPath);
-                          $('#pathEditorModal').modal('show');
-                          setTimeout(() => {
-                              $('#modal-path-input').focus().select();
-                          }, 500);
-                      } else {
-                          // Use inline editing on desktop
-                          enablePathEdit();
-                      }
-                  }
-                  
-                  // Double tap to edit on mobile
-                  let tapCount = 0;
-                  $('#path-breadcrumbs').on('touchend', function(e) {
-                      e.preventDefault();
-                      tapCount++;
-                      if (tapCount === 1) {
-                          setTimeout(function() {
-                              if (tapCount === 1) {
-                                  // Single tap - do nothing special
-                              } else if (tapCount === 2) {
-                                  // Double tap - show path editor
-                                  showPathEditor();
-                              }
-                              tapCount = 0;
-                          }, 300);
-                      }
+                  $(document).ready(function() {
+                      // Close sidebar on outside click
+                      $(document).on('click', function(e) {
+                          if (isSidebarOpen && !$(e.target).closest('#path-sidebar').length && !$(e.target).closest('#path-breadcrumbs').length) {
+                              closePathSidebar();
+                          }
+                      });
+                      
+                      // Double tap to edit on mobile
+                      let tapCount = 0;
+                      $('#path-breadcrumbs').on('touchend', function(e) {
+                          e.preventDefault();
+                          tapCount++;
+                          if (tapCount === 1) {
+                              setTimeout(function() {
+                                  if (tapCount === 1) {
+                                      // Single tap - do nothing special
+                                  } else if (tapCount === 2) {
+                                      // Double tap - show path editor
+                                      showPathEditor();
+                                  }
+                                  tapCount = 0;
+                              }, 300);
+                          }
+                      });
+                      
+                      // Click to edit on desktop
+                      $('#path-breadcrumbs').on('click', function(e) {
+                          if (!('ontouchstart' in window)) {
+                              showPathEditor();
+                          }
+                      });
+                      
+                      // Handle Enter key in modal
+                      $('#modal-path-input').on('keyup', function(e) {
+                          if (e.key === 'Enter') {
+                              navigateToModalPath();
+                          } else if (e.key === 'Escape') {
+                              $('#pathEditorModal').modal('hide');
+                          }
+                      });
                   });
-                  
-                  // Click to edit on desktop
-                  $('#path-breadcrumbs').on('click', function(e) {
-                      if (!('ontouchstart' in window)) {
-                          showPathEditor();
-                      }
-                  });
-                  
-                  // Handle Enter key in modal
-                  $('#modal-path-input').on('keyup', function(e) {
-                      if (e.key === 'Enter') {
-                          navigateToModalPath();
-                      } else if (e.key === 'Escape') {
-                          $('#pathEditorModal').modal('hide');
-                      }
-                  });
-              });
+              }
+              initPathEditorEvents();
               </script>
 
               <div class="col-12 col-md-6">
@@ -5009,7 +5090,6 @@ function fm_foldersize($path) {
       {
           ?>
           </div>
-          <?php print_external('js-jquery'); ?>
           <?php print_external('js-bootstrap'); ?>
       </body>
 
@@ -6208,7 +6288,7 @@ function fm_foldersize($path) {
                   position: absolute;
                   left: 0;
                   top: 0;
-                  width: 50px;
+                  width: 20px;
                   height: 100%;
                   background: var(--bg-sidebar);
                   border-right: 1px solid var(--border-color);
@@ -6419,6 +6499,26 @@ function fm_foldersize($path) {
       </head>
 
       <body class="<?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?> <?php echo $isStickyNavBar; ?>">
+          <!-- Sidebar Overlay -->
+          <div id="sidebar-overlay" style="position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; background: rgba(0,0,0,0.5) !important; z-index: 1060 !important; display: none !important;" onclick="closePathSidebar()"></div>
+          
+          <!-- Path Editor Sidebar for Desktop -->
+          <div id="path-sidebar" style="position: fixed !important; top: 0 !important; right: -350px !important; width: 350px !important; height: 100vh !important; background: white !important; border-left: 1px solid #e0e0e0 !important; box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15) !important; z-index: 1070 !important; transition: right 0.3s ease !important; display: flex !important; flex-direction: column !important; overflow: hidden !important;">
+              <div style="padding: 15px !important; border-bottom: 1px solid #e0e0e0 !important; display: flex !important; justify-content: space-between !important; align-items: center !important; background: var(--bg-sidebar);">
+                  <h5 style="margin: 0 !important; font-size: 16px !important; color: var(--text-primary) !important;"><i class="fa fa-folder-open"></i> Navigate to Path</h5>
+                  <button type="button" class="btn-close" onclick="closePathSidebar()" style="margin: 0 !important;"></button>
+              </div>
+              <div style="flex: 1 !important; padding: 15px !important; overflow-y: auto !important; background: var(--bg-sidebar);">
+                  <label style="color: var(--text-primary) !important; font-weight: 600 !important; margin-bottom: 8px !important; display: block !important;">Path:</label>
+                  <input type="text" id="sidebar-path-input" class="form-control form-control-sm mb-3" placeholder="e.g. folder/subfolder" autocomplete="off" style="background: var(--bg-sidebar) !important; border: 1px solid #ddd !important; color: var(--primary-text) !important;">
+                  <div id="sidebar-suggestions"></div>
+              </div>
+              <div style="padding: 15px !important; border-top: 1px solid #e0e0e0 !important; display: flex !important; gap: 10px !important; background: var(--bg-sidebar);">
+                  <button type="button" class="btn btn-sm btn-secondary" onclick="closePathSidebar()" style="flex: 1 !important;">Cancel</button>
+                  <button type="button" class="btn btn-sm btn-primary" onclick="navigateSidebarPath()" style="flex: 1 !important;">Navigate</button>
+              </div>
+          </div>
+
           <div id="wrapper" class="container-fluid">
               <!-- New Item creation -->
               <div class="modal fade" id="createNewItem" tabindex="-1" role="dialog" data-bs-backdrop="static" data-bs-keyboard="false" aria-labelledby="newItemModalLabel" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
@@ -7325,27 +7425,47 @@ function fm_foldersize($path) {
                   } else if (['pdf'].includes(ext)) {
                       content.html('<iframe src="'+url+'" style="width:100%; height:70vh; border:none;"></iframe>');
                   } else if (textExtensions.includes(ext)) {
-                      $.get(url, function(data) {
-                          if (typeof data !== 'string') {
-                              data = JSON.stringify(data, null, 2);
+                      // Use AJAX to get raw file content (important for PHP files)
+                      const urlParams = new URLSearchParams(window.location.search);
+                      const currentPath = urlParams.get('p') || '';
+                      
+                      const ajaxUrl = window.location.pathname + window.location.search; // keep ?p=… so PHP skips redirect
+                      $.ajax({
+                          type: 'POST',
+                          url: ajaxUrl,
+                          data: {
+                              ajax: true,
+                              type: 'get_file_content',
+                              file: name,
+                              path: currentPath,
+                              token: window.csrf
+                          },
+                          dataType: 'json',
+                          success: function(response) {
+                              if (response.success) {
+                                  var data = response.content;
+                                  
+                                  // Store original data for editor
+                                  window.previewFileData = data;
+                                  window.previewFileUrl = url;
+                                  window.previewFileName = name;
+                                  
+                                  var encodedStr = data.replace(/[\u00A0-\u9999<>\&]/g, function(i) {
+                                     return '&#'+i.charCodeAt(0)+';';
+                                  });
+                                  content.html('<pre style="text-align:left; max-height:70vh; overflow:auto; background:#1e1e1e; color:#dcdcdc; padding:10px; border-radius:4px; font-family:monospace; white-space: pre-wrap; word-wrap: break-word;">'+
+                                      encodedStr + 
+                                  '</pre>');
+                                  
+                                  // Initialize editor
+                                  initializeTextEditor(data, url, name);
+                              } else {
+                                  content.html('<p class="text-danger">Error: ' + (response.message || 'Unknown error') + '</p>');
+                              }
+                          },
+                          error: function(xhr, status, error) {
+                              content.html('<p class="text-danger">Error loading file content: ' + error + '</p>');
                           }
-                          
-                          // Store original data for editor
-                          window.previewFileData = data;
-                          window.previewFileUrl = url;
-                          window.previewFileName = name;
-                          
-                          var encodedStr = data.replace(/[\u00A0-\u9999<>\&]/g, function(i) {
-                             return '&#'+i.charCodeAt(0)+';';
-                          });
-                          content.html('<pre style="text-align:left; max-height:70vh; overflow:auto; background:#1e1e1e; color:#dcdcdc; padding:10px; border-radius:4px; font-family:monospace; white-space: pre-wrap; word-wrap: break-word;">'+
-                              encodedStr + 
-                          '</pre>');
-                          
-                          // Initialize editor
-                          initializeTextEditor(data, url, name);
-                      }, "text").fail(function() {
-                          content.html('<p class="text-danger">Error loading file content. <br>Authentication might be required or file is not accessible directly.</p>');
                       });
                   } else {
                       content.html('<div class="py-5 text-center"><i class="fa fa-file-o fa-5x mb-3 text-muted"></i><p>Preview not available for this file type.</p></div>');
@@ -7367,18 +7487,18 @@ function fm_foldersize($path) {
                   clearSearch();
               }
               
-            //   function updateLineNumbers() {
-            //       const textarea = $('#editor-textarea');
-            //       const lineNumbers = $('#editor-line-numbers');
-            //       const lines = textarea.val().split('\n');
-            //       let lineNumbersHtml = '';
+              function updateLineNumbers() {
+                  const textarea = $('#editor-textarea');
+                  const lineNumbers = $('#editor-line-numbers');
+                  const lines = textarea.val().split('\n');
+                  let lineNumbersHtml = '';
                   
-            //       for (let i = 1; i <= lines.length; i++) {
-            //           lineNumbersHtml += i + '\n';
-            //       }
+                  for (let i = 1; i <= lines.length; i++) {
+                      lineNumbersHtml += i + '\n';
+                  }
                   
-            //       lineNumbers.text(lineNumbersHtml);
-            //   }
+                  lineNumbers.text(lineNumbersHtml);
+              }
               
               function updateCursorPosition() {
                   const textarea = $('#editor-textarea')[0];
