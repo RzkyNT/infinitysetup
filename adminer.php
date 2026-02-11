@@ -2,9 +2,37 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
+// ===== API HASH PHP (Bcrypt) =====
+// Paste tepat di sini, setelah session_start
+if (isset($_GET['api']) && $_GET['api'] === 'generate_php_hash') {
+    header('Content-Type: application/json');
+    
+    // Cek apakah user sudah login
+    if (!isset($_SESSION['db_user'])) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
 
+    $password = $_POST['password'] ?? '';
+    
+    if (empty($password)) {
+        echo json_encode(['success' => false, 'message' => 'Password cannot be empty']);
+        exit;
+    }
+
+    // Menggunakan PASSWORD_BCRYPT agar format sesuai ($2y$10$)
+    $hash = password_hash($password, PASSWORD_BCRYPT);
+
+    echo json_encode([
+        'success' => true, 
+        'hash' => $hash,
+        'algo' => 'Bcrypt ($2y$)'
+    ]);
+    exit;
+}
+
+// ... kode function get_asset_url dan seterusnya tetap ada di bawah sini ...
 $configFile = __DIR__ . '/adminer.config.json';
-
 function get_asset_url($localPath, $cdnUrl) {
     if (file_exists(__DIR__ . '/' . $localPath)) {
         return $localPath;
@@ -1475,6 +1503,65 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                 flex-direction: row; /* Ensure sidebar and main content stay side-by-side */
             }
         }
+        /* --- TOOL MODAL STYLES --- */
+.swal2-tabs {
+    display: flex;
+    border-bottom: 1px solid #333;
+    margin-bottom: 15px;
+}
+.swal2-tabs button {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 10px 15px;
+    cursor: pointer;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+    transition: 0.2s;
+}
+.swal2-tabs button:hover { color: var(--text-primary); }
+.swal2-tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+.swal2-tab-content { display: none; }
+.swal2-tab-content.active { display: block; }
+
+/* Custom Inputs inside SweetAlert */
+.swal2-input, .swal2-textarea, .swal2-select, .swal2-range {
+    background-color: var(--bg-input) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-primary) !important;
+    border-radius: 4px !important;
+    font-size: 14px;
+}
+.swal2-checkbox label {
+    color: var(--text-primary) !important;
+    font-size: 14px;
+    margin-left: 5px;
+    cursor: pointer;
+}
+.tool-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    justify-content: center;
+}
+.tool-label {
+    width: 100px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.tool-result {
+    background: #000;
+    border: 1px solid #333;
+    padding: 10px;
+    color: var(--accent);
+    font-family: monospace;
+    font-size: 13px;
+    word-break: break-all;
+    position: relative;
+}
     </style>
 </head>
 <body>
@@ -1529,6 +1616,9 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             </div>
             <div style="display:flex; align-items:center; gap:15px;">
                 <div style="display:flex; gap:10px; margin-right:10px; border-right:1px solid #333; padding-right:15px;">
+                    <a href="#" onclick="openToolsModal()" title="Generator Tools" style="color:var(--text-secondary); font-size:1.1rem;">
+                       <i class="fas fa-key"></i>
+                   </a>
                     <a href="index.php" title="Dashboard"><i class="fas fa-th"></i></a>
                     <a href="filemanager.php" title="File Manager"><i class="fas fa-folder"></i></a>
                 </div>
@@ -1826,6 +1916,250 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     </form>
 
                     <script>
+                        // ===== GENERATOR TOOLS LOGIC =====
+function openToolsModal() {
+    Swal.fire({
+        title: '<span style="color:var(--text-primary)">Generator Tools</span>',
+        html: `
+            <div class="swal2-tabs">
+                <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
+                <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
+                <button onclick="switchToolTab(this, 'tool-uuid')">UUID</button>
+                <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
+            </div>
+
+            <div id="tool-php-hash" class="swal2-tab-content">
+                <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
+                    Generate hash PHP (<b>Bcrypt</b>) sesuai format <code>$2y$10$...</code>. Cocok untuk database MySQL Native PHP atau Laravel.
+                </p>
+                
+                <div class="tool-row">
+                    <input type="text" id="phpHashInput" class="swal2-input" placeholder="Masukkan password plain text..." autocomplete="off">
+                </div>
+                
+                <div class="tool-row">
+                    <span class="tool-label">Result:</span>
+                    <div id="phpHashResult" class="tool-result" style="flex:1;">Hash will appear here...</div>
+                </div>
+
+                <div style="margin-top:15px; text-align:right;">
+                    <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
+                </div>
+            </div>
+
+            <!-- HASH GENERATOR -->
+            <div id="tool-hash" class="swal2-tab-content">
+                <div class="tool-row">
+                    <select id="hashAlgo" class="swal2-select">
+                        <option value="SHA-1">SHA-1</option>
+                        <option value="SHA-256" selected>SHA-256</option>
+                        <option value="SHA-384">SHA-384</option>
+                        <option value="SHA-512">SHA-512</option>
+                    </select>
+                </div>
+                <textarea id="hashInput" class="swal2-textarea" placeholder="Enter text to hash..." rows="3"></textarea>
+                <div class="tool-result" id="hashResult">Hash will appear here...</div>
+                <div style="margin-top:10px; text-align:right;">
+                    <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateHash()">Hash It</button>
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('hashResult').innerText)">Copy</button>
+                </div>
+            </div>
+
+            <!-- UUID GENERATOR -->
+            <div id="tool-uuid" class="swal2-tab-content">
+                <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">Generate v4 Random UUIDs.</p>
+                <div class="tool-result" id="uuidResult">Click Generate</div>
+                <div style="margin-top:10px; text-align:right;">
+                    <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateUUID()">Generate</button>
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('uuidResult').innerText)">Copy</button>
+                </div>
+            </div>
+
+            <!-- BASE64 ENCODER -->
+            <div id="tool-base64" class="swal2-tab-content">
+                <textarea id="b64Input" class="swal2-textarea" placeholder="Enter string to encode/decode..." rows="3"></textarea>
+                <div class="tool-row" style="margin-top:10px;">
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="doBase64('encode')">Encode</button>
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="doBase64('decode')">Decode</button>
+                </div>
+                <div class="tool-result" id="b64Result" style="margin-top:10px;">Result...</div>
+                <div style="text-align:right; margin-top:5px;">
+                     <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('b64Result').innerText)">Copy</button>
+                </div>
+            </div>
+        `,
+        showConfirmButton: false,
+        showCloseButton: true,
+        background: 'var(--bg-card)',
+        customClass: {
+            popup: 'dark-modal'
+        }
+    });
+}
+
+// Tab Switching Logic
+function switchToolTab(btn, tabId) {
+    // Remove active class from buttons
+    document.querySelectorAll('.swal2-tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    // Hide all contents
+    document.querySelectorAll('.swal2-tab-content').forEach(c => c.classList.remove('active'));
+    // Show target
+    document.getElementById(tabId).classList.add('active');
+}
+
+// Password Logic
+function generatePassword() {
+    const length = document.getElementById('passLen').value;
+    const useUpper = document.getElementById('chkUpper').checked;
+    const useLower = document.getElementById('chkLower').checked;
+    const useNumbers = document.getElementById('chkNumbers').checked;
+    const useSymbols = document.getElementById('chkSymbols').checked;
+
+    const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lower = "abcdefghijklmnopqrstuvwxyz";
+    const numbers = "0123456789";
+    const symbols = "!@#$%^&*()_+~`|}{[]:;?><,./-=";
+
+    let chars = "";
+    if (useUpper) chars += upper;
+    if (useLower) chars += lower;
+    if (useNumbers) chars += numbers;
+    if (useSymbols) chars += symbols;
+
+    if (chars === "") {
+        Swal.fire('Error', 'Please select at least one character type.', 'error');
+        return;
+    }
+
+    let password = "";
+    for (let i = 0; i < length; i++) {
+        password += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    document.getElementById('genPassResult').value = password;
+}
+
+// Hash Logic (Async Web Crypto API)
+async function generateHash() {
+    const text = document.getElementById('hashInput').value;
+    const algo = document.getElementById('hashAlgo').value;
+    
+    if(!text) {
+        document.getElementById('hashResult').innerText = "Please enter text.";
+        return;
+    }
+
+    try {
+        const msgBuffer = new TextEncoder().encode(text);
+        const hashBuffer = await crypto.subtle.digest(algo, msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        document.getElementById('hashResult').innerText = hashHex;
+    } catch (e) {
+        document.getElementById('hashResult').innerText = "Error: " + e.message;
+    }
+}
+
+// UUID Logic
+function generateUUID() {
+    // RFC4122 version 4 UUID
+    const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+    document.getElementById('uuidResult').innerText = uuid;
+}
+
+// Base64 Logic
+function doBase64(action) {
+    const input = document.getElementById('b64Input').value;
+    const resultBox = document.getElementById('b64Result');
+    try {
+        if (action === 'encode') {
+            // Handle UTF-8 strings correctly
+            resultBox.innerText = btoa(encodeURIComponent(input).replace(/%([0-9A-F]{2})/g,
+                function toSolidBytes(match, p1) {
+                    return String.fromCharCode('0x' + p1);
+            }));
+        } else {
+            resultBox.innerText = decodeURIComponent(atob(input).split('').map(function(c) {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
+        }
+    } catch (e) {
+        resultBox.innerText = "Error: Invalid Input for " + action;
+    }
+}
+
+// Clipboard Utility
+function copyToClipboard(text) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+        const Toast = Swal.mixin({
+            toast: true,
+            position: 'top-end',
+            showConfirmButton: false,
+            timer: 1500,
+            background: '#28a745',
+            color: '#fff'
+        });
+        Toast.fire({
+            icon: 'success',
+            title: 'Copied to clipboard'
+        });
+    }, (err) => {
+        console.error('Async: Could not copy text: ', err);
+    });
+}
+// Fungsi untuk mengambil hash dari API PHP
+async function generatePhpHash() {
+    const pass = document.getElementById('phpHashInput').value;
+    const resultBox = document.getElementById('phpHashResult');
+    const btn = document.getElementById('btnGenPhpHash');
+
+    if(!pass) {
+        resultBox.innerText = "Please enter a password.";
+        return;
+    }
+
+    // Loading state
+    const originalText = btn.innerText;
+    btn.innerText = "Processing...";
+    btn.disabled = true;
+    resultBox.innerText = "Generating via PHP...";
+
+    try {
+        const response = await fetch('?api=generate_php_hash', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: 'password=' + encodeURIComponent(pass)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            resultBox.innerText = data.hash;
+            resultBox.style.color = "var(--success)";
+        } else {
+            resultBox.innerText = "Error: " + (data.message || "Unknown error");
+            resultBox.style.color = "var(--danger)";
+        }
+
+    } catch (error) {
+        console.error(error);
+        resultBox.innerText = "Connection Error: Check PHP configuration.";
+        resultBox.style.color = "var(--danger)";
+    } finally {
+        // Restore button state
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}
                         function toggleSelectAll(source) {
                             const checkboxes = document.querySelectorAll('.row-checkbox');
                             for(let i=0; i<checkboxes.length; i++) {
