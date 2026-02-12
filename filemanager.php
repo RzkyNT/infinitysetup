@@ -6882,6 +6882,13 @@ function fm_foldersize($path) {
             <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
         </ul>
     </div>
+
+    <div id="body-context-menu" class="context-menu">
+        <ul>
+            <li><a href="#" id="body-context-new-file"><i class="fa fa-file-o"></i> <?php echo lng('File') ?></a></li>
+            <li><a href="#" id="body-context-new-folder"><i class="fa fa-folder"></i> <?php echo lng('Folder') ?></a></li>
+        </ul>
+    </div>
     </div>
     <script type="text/javascript">
         window.csrf = '<?php echo $_SESSION['token']; ?>';
@@ -6919,7 +6926,17 @@ function fm_foldersize($path) {
 
               /* CONTEXT MENU LOGIC */
               $(document).ready(function() {
+                  const $contextMenu = $('#context-menu');
+                  const $bodyContextMenu = $('#body-context-menu');
+                  const $wrapper = $('#wrapper');
+
+                  function hideAllContextMenus() {
+                      $contextMenu.hide();
+                      $bodyContextMenu.hide();
+                  }
+
                   function showContextMenu(e, element) {
+                      hideAllContextMenus();
                       if(e) e.preventDefault();
                       
                       let target = $(element);
@@ -7023,16 +7040,59 @@ function fm_foldersize($path) {
                       // Boundary check
                       if(left < 0) left = 10;
                       
-                      $('#context-menu').css({
+                      $contextMenu.css({
                           top: top + 'px',
                           left: left + 'px'
                       }).fadeIn(100);
                   }
 
+                  function showBodyContextMenu(e) {
+                      hideAllContextMenus();
+                      const target = $(e.target);
+
+                      // allow native menu inside inputs, editor areas, modals, and context menus themselves
+                      if (
+                          target.closest('input, textarea, select, [contenteditable="true"], .editor-textarea, .modal, .swal2-container, #context-menu, #body-context-menu').length
+                      ) {
+                          return;
+                      }
+
+                      // only trigger within main wrapper area
+                      if (!$wrapper.length || (!target.closest('#wrapper').length && !$wrapper.is(target))) {
+                          return;
+                      }
+
+                      e.preventDefault();
+
+                      const viewportWidth = $(window).width();
+                      const viewportHeight = $(window).height();
+                      let left = e.pageX;
+                      let top = e.pageY;
+
+                      const menuWidth = $bodyContextMenu.outerWidth();
+                      const menuHeight = $bodyContextMenu.outerHeight();
+
+                      if (left + menuWidth > viewportWidth) {
+                          left = viewportWidth - menuWidth - 10;
+                      }
+                      if (top + menuHeight > viewportHeight + $(window).scrollTop()) {
+                          top = viewportHeight + $(window).scrollTop() - menuHeight - 10;
+                      }
+
+                      $bodyContextMenu.css({
+                          top: top + 'px',
+                          left: Math.max(left, 10) + 'px'
+                      }).fadeIn(100);
+                  }
+
                   // Hide menu on click elsewhere
-                  $(document).on('click', function() {
-                      $('#context-menu').hide();
+                  $(document).on('click', function(e) {
+                      if (!$(e.target).closest('.context-menu').length) {
+                          hideAllContextMenus();
+                      }
                   });
+
+                  $(window).on('scroll resize', hideAllContextMenus);
 
                   // Right click handler
                   $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
@@ -7045,6 +7105,37 @@ function fm_foldersize($path) {
                       e.preventDefault();
                       e.stopPropagation();
                       showContextMenu(null, this);
+                  });
+
+                  // Body/background context menu
+                  $(document).on('contextmenu', function(e) {
+                      if (
+                          $(e.target).closest('tr[data-type], .grid-item[data-type], .context-menu-trigger').length
+                      ) {
+                          return;
+                      }
+                      showBodyContextMenu(e);
+                  });
+
+                  function openCreateModal(type) {
+                      const selector = '#createNewItem input[name="newfile"][value="' + type + '"]';
+                      $(selector).prop('checked', true);
+                      $('#createNewItem').modal('show');
+                      setTimeout(function() {
+                          $('#newfilename').trigger('focus');
+                      }, 200);
+                  }
+
+                  $('#body-context-new-file').on('click', function(e) {
+                      e.preventDefault();
+                      hideAllContextMenus();
+                      openCreateModal('file');
+                  });
+
+                  $('#body-context-new-folder').on('click', function(e) {
+                      e.preventDefault();
+                      hideAllContextMenus();
+                      openCreateModal('folder');
                   });
               });
 
