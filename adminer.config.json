@@ -2,7 +2,5 @@
     "host": "localhost",
     "user": "root",
     "pass": "",
-    "databases": [
-        "perpustakaan1"
-    ]
+    "databases": []
 }

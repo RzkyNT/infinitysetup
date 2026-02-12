@@ -1284,7 +1284,7 @@ if ($is_logged_in && $hasSelectedDatabase && !$currentTable && isset($pdo)) {
                 "skinparam defaultFontColor #f5f5f5",
                 "skinparam Shadowing false",
                 "skinparam entity {",
-                "  BackgroundColor #1a1a1a",
+                "  BackgroundColor color: var(--text-primary)",
                 "  BorderColor #555555",
                 "  FontColor #f5f5f5",
                 "}",
@@ -1366,7 +1366,7 @@ if ($is_logged_in && $hasSelectedDatabase && !$currentTable && isset($pdo)) {
                 "skinparam defaultFontColor #f5f5f5",
                 "skinparam Shadowing false",
                 "skinparam entity {",
-                "  BackgroundColor #1a1a1a",
+                "  BackgroundColor color: var(--text-primary)",
                 "  BorderColor #555555",
                 "  FontColor #f5f5f5",
                 "}",
@@ -1511,7 +1511,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         .ts-control input { color: var(--text-primary) !important; }
         .ts-dropdown { background-color: var(--bg-card) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
         .ts-dropdown .option { color: var(--text-primary) !important; }
-        .ts-dropdown .active { background-color: var(--accent) !important; color: white !important; }
+        .ts-dropdown .active { background-color: var(--accent) !important; color: var(--text-primary) !important; }
         .ts-wrapper.single .ts-control:after { border-color: #888 transparent transparent transparent !important; }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1536,7 +1536,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         .login-wrapper { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--bg-body); z-index: 1000; }
         .login-box { width: 100%; max-width: 400px; padding: 40px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         .login-header { text-align: center; margin-bottom: 30px; font-size: 1.5rem; font-weight: bold; }
-        .login-btn { width: 100%; padding: 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px; }
+        .login-btn { width: 100%; padding: 12px; background: var(--accent); color: var(--text-primary); border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px; }
         .login-btn:hover { opacity: 0.9; }
 
         /* LAYOUT */
@@ -1620,10 +1620,10 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 20px; margin-bottom: 20px; }
         .btn { padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-hover); color: var(--text-primary); cursor: pointer; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 6px; }
         .btn:hover { background: #333; border-color: #555; }
-        .btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--text-primary); }
         .btn-primary:hover { background: #2563eb; }
         .btn-danger { background: rgba(239, 68, 68, 0.1); border-color: var(--danger); color: var(--danger); }
-        .btn-danger:hover { background: var(--danger); color: white; }
+        .btn-danger:hover { background: var(--danger); color: var(--text-primary); }
         
         .form-control, .form-select { width: 100%; padding: 8px 10px; background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; font-size: 0.9rem; }
         .form-control:focus, .form-select:focus { outline: none; border-color: var(--accent); }
@@ -1636,7 +1636,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         .table-wrapper { border: 1px solid var(--border-color); border-radius: 6px; overflow-x: auto; background: var(--bg-card); max-height: 80vh; }
         table { width: 100%; border-collapse: collapse; min-width: 600px; }
         th, td { padding: 10px 15px; text-align: left; border-bottom: 1px solid var(--border-color); }
-        th { background: #1a1a1a; font-weight: 600; color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; white-space: nowrap; position: sticky; top: 0; z-index: 5; box-shadow: 0 2px 5px rgba(0,0,0,0.5); }
+        th { background: var(--bg-input);color: var(--text-primary); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; white-space: nowrap; position: sticky; top: 0; z-index: 5; box-shadow: 0 2px 5px rgba(0,0,0,0.5); }
         tr:hover td { background: var(--bg-hover); }
         td { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1744,7 +1744,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         </div>
         <div class="db-info">
             <form method="GET" style="margin-bottom: 5px;">
-                <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: #222; color: white; border: 1px solid #444; width: 100%;">
+                <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--bg-222); color: var(--text-primary); border: 1px solid #444; width: 100%;">
                     <option value="">-- Pilih Database --</option>
                     <?php foreach ($databases as $db): ?>
                         <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
@@ -2841,7 +2841,7 @@ async function generatePhpHash() {
                             <div style="margin-top:30px;">
                                 <?php foreach($sqlResults as $i => $res): ?>
                                     <div style="margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; overflow:hidden;">
-                                        <div style="background:#222; padding:10px 15px; border-bottom:1px solid #333; font-family:monospace; font-size:0.9rem; color:#a5d6ff;">
+                                        <div style="background:var(--bg-222); padding:10px 15px; border-bottom:1px solid #333; font-family:monospace; font-size:0.9rem; color:#a5d6ff;">
                                             <?=htmlspecialchars($res['query'])?>
                                         </div>
                                         <div class="table-wrapper" style="border:none; border-radius:0; max-height:400px;">
@@ -3414,7 +3414,7 @@ async function generatePhpHash() {
                         <h3 style="margin:0;">Relationship Map</h3>
                         <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid diagram of foreign keys</span>
                     </div>
-                    <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
+                    <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid var(--bg-222); border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
                 </div>
                 <?php endif; ?>
 
@@ -3425,17 +3425,17 @@ async function generatePhpHash() {
                         <span style="font-size:0.85rem; color:var(--text-secondary);">PlantUML (primary) with Mermaid fallback</span>
                     </div>
                     <?php if ($plantumlDiagramEncoded): ?>
-                        <div style="background:#080808; border:1px solid #222; border-radius:6px; padding:10px; text-align:center;">
+                        <div style="background:#080808; border:1px solid var(--bg-222); border-radius:6px; padding:10px; text-align:center;">
                             <img src="https://www.plantuml.com/plantuml/svg/<?= htmlspecialchars($plantumlDiagramEncoded) ?>" alt="PlantUML ERD" style="width:100%; max-height:600px; object-fit:contain; background:#fff;">
                         </div>
                         <?php if ($erdDiagram): ?>
                             <details style="margin-top:10px;">
                                 <summary style="cursor:pointer; color:#0d6efd;">Show Mermaid fallback</summary>
-                                <pre class="mermaid" style="margin-top:10px; background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                                <pre class="mermaid" style="margin-top:10px; background:#080808; border:1px solid var(--bg-222); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
                             </details>
                         <?php endif; ?>
                     <?php elseif ($erdDiagram): ?>
-                        <pre class="mermaid" style="background:#080808; border:1px solid #222; border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                        <pre class="mermaid" style="background:#080808; border:1px solid var(--bg-222); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
                     <?php endif; ?>
                 </div>
                 <?php endif; ?>
@@ -3569,6 +3569,8 @@ async function generatePhpHash() {
             root.style.setProperty('--border-color', '#dddddd');
             root.style.setProperty('--text-primary', '#333333');
             root.style.setProperty('--text-secondary', '#666666');
+            root.style.setProperty('--text-primary', '#333333');
+            root.style.setProperty('--bg-222', '#ccc');
         } else {
             // Revert to dark defaults
             root.style.setProperty('--bg-body', '#050505');
@@ -3579,6 +3581,7 @@ async function generatePhpHash() {
             root.style.setProperty('--border-color', '#333333');
             root.style.setProperty('--text-primary', '#e0e0e0');
             root.style.setProperty('--text-secondary', '#888888');
+            root.style.setProperty('--bg-222', '#222');
         }
     }
     
