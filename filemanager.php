@@ -6236,9 +6236,17 @@ function fm_foldersize($path) {
               }
               
               .editor-content {
-                position: relative;
-                height: 55vh;
-                overflow: hidden;
+                  height: 55vh;
+                  background: var(--bg-body);
+                  border-top: 1px solid var(--border-color);
+              }
+              
+              .editor-scroll {
+                  display: flex;
+                  height: 100%;
+                  overflow: auto;
+                  background: var(--bg-input);
+                  border-left: 1px solid var(--border-color);
               }
               
               @media (max-width: 768px) {
@@ -6267,45 +6275,49 @@ function fm_foldersize($path) {
                   }
               }
               
-              .editor-textarea {
-                  width: 100%;
-                  height: 100%;
-                  border: none;
-                  outline: none;
-                  padding: 10px;
-                  font-family: 'Courier New', monospace;
-                  font-size: 13px;
-                  line-height: 1.4;
-                  background: var(--bg-input);
-                  color: var(--text-primary);
-                  resize: none;
-                  white-space: pre;
-                  overflow-wrap: normal;
-                  overflow-x: auto;
-              }
-              
               .editor-line-numbers {
-                  position: absolute;
-                  left: 0;
-                  top: 0;
-                  width: 45px;
-                  min-height: 100%;
-                  background: var(--bg-sidebar);
-                  border-right: 1px solid var(--border-color);
+                  flex: 0 0 60px;
                   padding: 10px 8px 10px 5px;
                   font-family: 'Courier New', monospace;
                   font-size: 13px;
                   line-height: 1.4;
                   color: var(--text-secondary);
-                  user-select: none;
-                  overflow: hidden;
+                  background: var(--bg-sidebar);
+                  border-right: 1px solid var(--border-color);
                   white-space: pre;
                   text-align: right;
-                  pointer-events: none;
+                  user-select: none;
+                  overflow: hidden;
               }
               
-              .editor-textarea.with-line-numbers {
-                  padding-left: 75px;
+              .editor-textarea {
+                  flex: 1;
+                  border: none;
+                  outline: none;
+                  padding: 10px 15px;
+                  font-family: 'Courier New', monospace;
+                  font-size: 13px;
+                  line-height: 1.4;
+                  background: transparent;
+                  color: var(--text-primary);
+                  resize: none;
+                  white-space: pre;
+                  overflow-wrap: normal;
+                  overflow: hidden;
+                  min-height: 100%;
+              }
+              
+              .preview-code-block {
+                  text-align: left;
+                  max-height: 70vh;
+                  overflow: auto;
+                  background: #1e1e1e;
+                  color: #dcdcdc;
+                  padding: 10px;
+                  border-radius: 4px;
+                  font-family: monospace;
+                  white-space: pre;
+                  word-wrap: break-word;
               }
               
               .search-highlight {
@@ -6806,8 +6818,10 @@ function fm_foldersize($path) {
                                     </div>
                                 </div>
                                 <div class="editor-content">
-                                    <div class="editor-line-numbers" id="editor-line-numbers"></div>
-                                    <textarea class="editor-textarea with-line-numbers" id="editor-textarea" readonly></textarea>
+                                    <div class="editor-scroll">
+                                        <div class="editor-line-numbers" id="editor-line-numbers"></div>
+                                        <textarea class="editor-textarea" id="editor-textarea" readonly></textarea>
+                                    </div>
                                 </div>
                                 <div class="editor-status">
                                     <span id="editor-cursor-pos">Line 1, Column 1</span>
