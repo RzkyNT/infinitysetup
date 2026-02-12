@@ -975,21 +975,58 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = $e->getMessage();
         }
     }
-    // --- BULK DELETE ---
-    elseif ($action === 'bulk_delete') {
+    // --- BULK ROW OPERATIONS (DELETE & EXPORT) ---
+    elseif (in_array($action, ['bulk_delete', 'export_sql', 'export_csv', 'export_json'])) {
         $ids = $_POST['ids'] ?? [];
         $pk = $_POST['pk'] ?? null;
         
         if ($table && $pk && !empty($ids)) {
-            try {
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                $sql = "DELETE FROM `$table` WHERE `$pk` IN ($placeholders)";
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            
+            if ($action === 'bulk_delete') {
+                try {
+                    $sql = "DELETE FROM `$table` WHERE `$pk` IN ($placeholders)";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute($ids);
+                    $count = $stmt->rowCount();
+                    redirect("?table=$table&view=data&msg=" . urlencode("$count rows deleted."));
+                } catch (Exception $e) {
+                    $error = $e->getMessage();
+                }
+            } else {
+                // EXPORT SELECTED
+                $sql = "SELECT * FROM `$table` WHERE `$pk` IN ($placeholders)";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute($ids);
-                $count = $stmt->rowCount();
-                redirect("?table=$table&view=data&msg=" . urlencode("$count rows deleted."));
-            } catch (Exception $e) {
-                $error = $e->getMessage();
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                $filename = $table . "_selected_" . date("Y-m-d_H-i-s");
+
+                if ($action === 'export_json') {
+                    header('Content-Type: application/json');
+                    header("Content-disposition: attachment; filename=\"$filename.json\"");
+                    echo json_encode($rows, JSON_PRETTY_PRINT);
+                } elseif ($action === 'export_csv') {
+                    header('Content-Type: text/csv');
+                    header("Content-disposition: attachment; filename=\"$filename.csv\"");
+                    $out = fopen('php://output', 'w');
+                    if ($rows) {
+                        fputcsv($out, array_keys($rows[0]));
+                        foreach ($rows as $r) fputcsv($out, $r);
+                    }
+                    fclose($out);
+                } elseif ($action === 'export_sql') {
+                    header('Content-Type: application/octet-stream');
+                    header("Content-disposition: attachment; filename=\"$filename.sql\"");
+                    echo "-- Export Selected Rows from `$table`\n";
+                    foreach ($rows as $r) {
+                        $keys = array_keys($r);
+                        $vals = array_map(function($v) use ($pdo) {
+                            return $v === null ? "NULL" : $pdo->quote($v);
+                        }, array_values($r));
+                        echo "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+                    }
+                }
+                exit;
             }
         } else {
              $error = "No rows selected or primary key missing.";
@@ -1544,7 +1581,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
         }        
         /* SIDEBAR COMPONENTS */
         .brand { padding: 20px; font-size: 1.1rem; font-weight: 700; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px; color: var(--accent); }
-        .db-info { padding: 15px 20px; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border-color); background: #0a0a0a; }
+        .db-info { padding: 15px 20px; font-size: 0.85rem; color: var(--text-secondary); border-bottom: 1px solid var(--border-color); background: var(--bg-sidebar); }
         .nav-list { flex: 1; overflow-y: auto; padding: 10px 0; }
         .nav-item { padding: 8px 20px; display: flex; align-items: center; gap: 10px; color: var(--text-secondary); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .nav-item:hover, .nav-item.active { background: var(--bg-hover); color: var(--text-primary); border-left: 3px solid var(--accent); }
@@ -1750,6 +1787,9 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
             </div>
             <div style="display:flex; align-items:center; gap:15px;">
                 <div style="display:flex; gap:10px; margin-right:10px; border-right:1px solid #333; padding-right:15px;">
+                    <a href="#" onclick="toggleTheme()" title="Toggle Theme" style="color:var(--text-secondary); font-size:1.1rem;">
+                        <i class="fas fa-adjust"></i>
+                    </a>
                     <a href="#" onclick="openToolsModal()" title="Generator Tools" style="color:var(--text-secondary); font-size:1.1rem;">
                        <i class="fas fa-key"></i>
                    </a>
@@ -1997,15 +2037,22 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                 </div>
                             </div>
 
-                            <div style="margin-left:auto; display:flex; gap:10px;">
-                                <button type="button" onclick="submitBulkDelete()" class="btn btn-danger" id="bulkDeleteBtn" style="display:none;"><i class="fas fa-trash"></i> Delete Selected</button>
+                            <div style="margin-left:auto; display:flex; gap:10px; align-items:center;" id="bulkActionsContainer" style="display:none;">
+                                <select id="bulkActionSelect" class="form-select" style="width:150px; display:none;">
+                                    <option value="">With Selected:</option>
+                                    <option value="delete">Delete</option>
+                                    <option value="export_sql">Export SQL</option>
+                                    <option value="export_csv">Export CSV</option>
+                                    <option value="export_json">Export JSON</option>
+                                </select>
+                                <button type="button" onclick="submitBulkAction()" class="btn btn-primary" id="bulkApplyBtn" style="display:none;">Apply</button>
                                 <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
                             </div>
                         </div>
                     </div>
 
                     <form method="POST" id="bulkForm">
-                        <input type="hidden" name="action" value="bulk_delete">
+                        <input type="hidden" name="action" value="bulk_delete"> <!-- Default, changed by JS -->
                         <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
                         <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
                         
@@ -3499,6 +3546,89 @@ async function generatePhpHash() {
                 form.submit();
             }
         });
+    }
+
+    // --- THEME TOGGLE ---
+    function toggleTheme() {
+        const root = document.documentElement;
+        const current = root.getAttribute('data-theme');
+        const next = current === 'light' ? 'dark' : 'light';
+        root.setAttribute('data-theme', next);
+        localStorage.setItem('adminer_theme', next);
+        updateThemeColors(next);
+    }
+
+    function updateThemeColors(theme) {
+        const root = document.documentElement;
+        if (theme === 'light') {
+            root.style.setProperty('--bg-body', '#f5f5f5');
+            root.style.setProperty('--bg-sidebar', '#ffffff');
+            root.style.setProperty('--bg-card', '#ffffff');
+            root.style.setProperty('--bg-hover', '#f0f0f0');
+            root.style.setProperty('--bg-input', '#ffffff');
+            root.style.setProperty('--border-color', '#dddddd');
+            root.style.setProperty('--text-primary', '#333333');
+            root.style.setProperty('--text-secondary', '#666666');
+        } else {
+            // Revert to dark defaults
+            root.style.setProperty('--bg-body', '#050505');
+            root.style.setProperty('--bg-sidebar', '#0f0f0f');
+            root.style.setProperty('--bg-card', '#141414');
+            root.style.setProperty('--bg-hover', '#1f1f1f');
+            root.style.setProperty('--bg-input', '#1a1a1a');
+            root.style.setProperty('--border-color', '#333333');
+            root.style.setProperty('--text-primary', '#e0e0e0');
+            root.style.setProperty('--text-secondary', '#888888');
+        }
+    }
+    
+    // Init Theme
+    const savedTheme = localStorage.getItem('adminer_theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateThemeColors(savedTheme);
+
+    // --- BULK ACTIONS (DATA VIEW) ---
+    function updateBulkBtn() {
+        const checked = document.querySelectorAll('.row-checkbox:checked').length > 0;
+        const select = document.getElementById('bulkActionSelect');
+        const btn = document.getElementById('bulkApplyBtn');
+        if(select && btn) {
+            select.style.display = checked ? 'block' : 'none';
+            btn.style.display = checked ? 'block' : 'none';
+        }
+    }
+
+    function toggleSelectAll(source) {
+        document.querySelectorAll('.row-checkbox').forEach(cb => {
+            cb.checked = source.checked;
+        });
+        updateBulkBtn();
+    }
+
+    function submitBulkAction() {
+        const select = document.getElementById('bulkActionSelect');
+        const form = document.getElementById('bulkForm');
+        const action = select.value;
+        
+        if (!action) return;
+        
+        if (action === 'delete') {
+            form.querySelector('input[name="action"]').value = 'bulk_delete';
+            Swal.fire({
+                title: 'Delete selected rows?',
+                text: "You won't be able to revert this!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Yes, delete!'
+            }).then((result) => {
+                if (result.isConfirmed) form.submit();
+            });
+        } else {
+            // Export actions
+            form.querySelector('input[name="action"]').value = action;
+            form.submit(); // Direct submit for download
+        }
     }
 
     // --- SIDEBAR TOGGLE & PERSISTENCE ---
