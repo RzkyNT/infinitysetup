@@ -825,6 +825,47 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- GET TABLE STRUCTURE ---
+    elseif ($action === 'get_table_structure') {
+        header('Content-Type: application/json');
+        try {
+            $stmt = $pdo->query("SHOW CREATE TABLE `$table`");
+            $row = $stmt->fetch(PDO::FETCH_NUM);
+            if ($row) {
+                echo json_encode(['success' => true, 'sql' => $row[1] . ";"]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'Table not found']);
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- GET ALL TABLES STRUCTURE ---
+    elseif ($action === 'get_all_tables_structure') {
+        header('Content-Type: application/json');
+        try {
+            $stmt = $pdo->query("SHOW TABLES");
+            $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            $sql = "";
+            foreach ($tables as $t) {
+                $stmt = $pdo->query("SHOW CREATE TABLE `$t`");
+                $row = $stmt->fetch(PDO::FETCH_NUM);
+                if ($row) {
+                    $sql .= "DROP TABLE IF EXISTS `$t`;\n";
+                    $sql .= $row[1] . ";\n\n";
+                }
+            }
+            if ($sql) {
+                echo json_encode(['success' => true, 'sql' => $sql]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'No tables found']);
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- DUPLICATE TABLE ---
     elseif ($action === 'duplicate_table') {
         $source = $_POST['source'] ?? '';
@@ -1942,6 +1983,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
                     <div style="flex:1;"></div>
                     <!-- Actions -->
+                    <button type="button" class="btn" onclick="copyTableStructure('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-copy"></i> Copy Structure</button>
                     <button type="button" class="btn" onclick="duplicateTablePrompt('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-clone"></i> Duplicate</button>
                      <form method="POST" style="margin:0; display:flex;">
                         <input type="hidden" name="action" value="export">
@@ -3444,6 +3486,7 @@ async function generatePhpHash() {
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                         <h3>Database Tables</h3>
                         <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                            <button type="button" class="btn" onclick="copyAllTablesStructure()"><i class="fas fa-copy"></i> Copy All Structure</button>
                             <a href="?view=import" class="btn"><i class="fas fa-upload"></i> Import Database</a>
                             <form method="POST" style="margin:0; display:flex;">
                                 <input type="hidden" name="action" value="export">
@@ -3892,6 +3935,7 @@ async function generatePhpHash() {
 
     // Helper to init TomSelect with correct settings
     function initTomSelect(el) {
+        if (el.tomselect) return; // Prevent double initialization
         if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
             new TomSelect(el, {
                 plugins: ['clear_button'],
@@ -3905,6 +3949,52 @@ async function generatePhpHash() {
                 }
             });
         }
+    }
+
+    // --- COPY STRUCTURE FUNCTIONS ---
+    function copyAllTablesStructure() {
+        const formData = new FormData();
+        formData.append('action', 'get_all_tables_structure');
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                copyToClipboard(data.sql);
+            } else {
+                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            Swal.fire('Error', 'Network error', 'error');
+        });
+    }
+
+    function copyTableStructure(tableName) {
+        const formData = new FormData();
+        formData.append('action', 'get_table_structure');
+        formData.append('table', tableName);
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                copyToClipboard(data.sql);
+            } else {
+                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            Swal.fire('Error', 'Network error', 'error');
+        });
     }
 
     // Initialize TomSelect for Searchable Dropdowns (Global)
