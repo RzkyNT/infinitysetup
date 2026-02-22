@@ -7930,31 +7930,105 @@ function fm_foldersize($path) {
               }
 
               // Handle Upload Files
-              function handleUploadFiles() {
-                  toast("Upload Files feature will be implemented soon", "info");
+              async function handleUploadFiles() {
+                  var fileInput = document.getElementById('fileInput');
+                  var files = fileInput.files;
+                  
+                  if (files.length === 0) {
+                      toast("Please select at least one file", "warning");
+                      return;
+                  }
+                  
                   // Close the modal
-                  var modal = bootstrap.Modal.getInstance(document.getElementById('uploadFiles'));
+                  var modalEl = document.getElementById('uploadFiles');
+                  var modal = bootstrap.Modal.getInstance(modalEl);
                   if (modal) {
                       modal.hide();
+                  }
+
+                  let successCount = 0;
+                  let errorCount = 0;
+                  
+                  toast("Uploading " + files.length + " files...", "info");
+
+                  for (let i = 0; i < files.length; i++) {
+                      let formData = new FormData();
+                      formData.append('file', files[i]);
+                      formData.append('fullpath', files[i].name);
+                      formData.append('token', window.csrf);
+                      
+                      try {
+                          let response = await fetch(window.location.href, {
+                              method: 'POST',
+                              body: formData
+                          });
+                          
+                          let result = await response.json();
+                          if (result.status === 'success') {
+                              successCount++;
+                          } else {
+                              errorCount++;
+                              console.error(result.info);
+                          }
+                      } catch (error) {
+                          errorCount++;
+                          console.error(error);
+                      }
+                  }
+
+                  if (successCount > 0) {
+                      toast("Successfully uploaded " + successCount + " files", "success");
+                      setTimeout(() => window.location.reload(), 1500);
+                  }
+                  if (errorCount > 0) {
+                      toast("Failed to upload " + errorCount + " files", "error");
                   }
               }
 
               // Handle Upload from URL
               function handleUploadFromURL() {
-                  var urlInput = document.getElementById('urlInput').value;
-                  var fileNameInput = document.getElementById('fileName').value;
+                  var urlInput = document.getElementById('urlInput');
+                  var url = urlInput.value;
                   
-                  if (!urlInput) {
+                  if (!url) {
                       toast("Please enter a valid URL", "error");
                       return;
                   }
                   
-                  toast("Upload from URL feature will be implemented soon", "info");
                   // Close the modal
-                  var modal = bootstrap.Modal.getInstance(document.getElementById('uploadFromURL'));
+                  var modalEl = document.getElementById('uploadFromURL');
+                  var modal = bootstrap.Modal.getInstance(modalEl);
                   if (modal) {
                       modal.hide();
                   }
+
+                  toast("Uploading from URL...", "info");
+
+                  var formData = new FormData();
+                  formData.append('type', 'upload');
+                  formData.append('uploadurl', url);
+                  formData.append('token', window.csrf);
+                  formData.append('ajax', true);
+
+                  fetch(window.location.href, {
+                      method: 'POST',
+                      body: formData
+                  })
+                  .then(response => response.json())
+                  .then(data => {
+                      if (data.done) {
+                          toast("File uploaded successfully: " + data.done.name, "success");
+                          setTimeout(() => window.location.reload(), 1500);
+                      } else if (data.fail) {
+                          toast("Upload failed: " + data.fail.message, "error");
+                      } else {
+                          toast("Unknown response from server", "error");
+                      }
+                  })
+                  .catch(error => {
+                      console.error('Error:', error);
+                      toast("An error occurred during upload", "error");
+                  });
               }
 
               // Toast message
