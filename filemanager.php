@@ -702,6 +702,15 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
               // Get file extension
               $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
               
+              // Get filename without extension to create a new folder
+              $baseName = pathinfo($fileName, PATHINFO_FILENAME);
+              $extractPath = $fullPath . $baseName;
+
+              // Create the new directory if it doesn't exist
+              if (!fm_mkdir($extractPath, true)) {
+                  throw new Exception("Failed to create extraction directory: {$extractPath}");
+              }
+              
               // Initialize result
               $result = false;
               $message = "";
@@ -711,9 +720,9 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                   $zip = new ZipArchive;
                   $result = $zip->open($fullFilePath);
                   if ($result === true) {
-                      $zip->extractTo($fullPath);
+                      $zip->extractTo($extractPath); // Extract to new folder
                       $zip->close();
-                      $message = "ZIP archive extracted successfully";
+                      $message = "ZIP archive extracted successfully into '{$baseName}'";
                   } else {
                       throw new Exception("Failed to extract ZIP file. Error code: $result");
                   }
@@ -721,8 +730,8 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                   // Use PharData for tar archives
                   try {
                       $phar = new PharData($fullFilePath);
-                      $phar->extractTo($fullPath);
-                      $message = ucfirst($ext) . " archive extracted successfully";
+                      $phar->extractTo($extractPath); // Extract to new folder
+                      $message = ucfirst($ext) . " archive extracted successfully into '{$baseName}'";
                   } catch (Exception $e) {
                       throw new Exception("Failed to extract archive: " . $e->getMessage());
                   }
@@ -1061,8 +1070,8 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       $files = $_POST['file'];
       if (is_array($files) && count($files)) {
           foreach ($files as $f) {
-              if ($f != '') {
-                  $f = fm_clean_path($f);
+              $f = str_replace('/', '', fm_clean_path($f));
+              if ($f != '' && $f != '..' && $f != '.') {
                   // abs path from
                   $from = $path . '/' . $f;
                   // abs path to
@@ -1471,7 +1480,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       $files = $_POST['file'];
       if (is_array($files) && count($files)) {
           foreach ($files as $f) {
-              if ($f != '') {
+              $f = str_replace('/', '', fm_clean_path($f));
+              if ($f != '' && $f != '..' && $f != '.') {
                   $new_path = $path . '/' . $f;
                   if (!fm_rdelete($new_path)) {
                       $errors++;
@@ -1518,7 +1528,10 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
 
       // clean path
       foreach ($files as $file) {
-          array_push($sanitized_files, fm_clean_path($file));
+          $file = str_replace('/', '', fm_clean_path($file));
+          if ($file != '' && $file != '..' && $file != '.') {
+              array_push($sanitized_files, $file);
+          }
       }
 
       $files = $sanitized_files;
@@ -7899,7 +7912,14 @@ function fm_foldersize($path) {
               }
 
               function get_checkboxes() {
-                  for (var e = document.getElementsByName("file[]"), t = [], n = e.length - 1; n >= 0; n--)(e[n].type = "checkbox") && t.push(e[n]);
+                  // Select only visible checkboxes with name "file[]"
+                  var visibleCheckboxes = $('input[name="file[]"]:visible');
+                  var t = [];
+                  visibleCheckboxes.each(function() {
+                      if (this.type === 'checkbox') { // Ensure it's a checkbox input
+                          t.push(this);
+                      }
+                  });
                   return t;
               }
 
@@ -8359,9 +8379,29 @@ function fm_foldersize($path) {
 
               function confirmMassAction(e, actionId, title, text) {
                   e.preventDefault();
+
+                  const selectedFiles = [];
+                  // Collect values from all *checked* checkboxes with name "file[]"
+                  $('input[name="file[]"]:checked').each(function() {
+                      selectedFiles.push($(this).val());
+                  });
+
+                  // If nothing is selected, show an alert and stop
+                  if (selectedFiles.length === 0) {
+                      Swal.fire({
+                          title: '<?php echo lng('Nothing selected'); ?>',
+                          text: 'Please select files or folders to perform this action.',
+                          icon: 'warning'
+                      });
+                      return false;
+                  }
+                  
+                  // Make the delete operation confirm the number of selected files
+                  const deleteMessage = text + ` (${selectedFiles.length} items)`;
+
                   Swal.fire({
                       title: title,
-                      text: text,
+                      text: deleteMessage, // Use the enhanced message
                       icon: 'warning',
                       showCancelButton: true,
                       confirmButtonColor: '#3085d6',
@@ -8369,7 +8409,34 @@ function fm_foldersize($path) {
                       confirmButtonText: 'Yes, proceed!'
                   }).then((result) => {
                       if (result.isConfirmed) {
-                          document.getElementById(actionId).click();
+                          // Create a temporary form to submit only the selected files
+                          const tempForm = $('<form>', {
+                              'action': '', // Submit to current page
+                              'method': 'POST',
+                              'style': 'display:none;'
+                          });
+                          
+                          // Add hidden fields for path, group, token, and delete action
+                          tempForm.append($('<input>', { 'type': 'hidden', 'name': 'p', 'value': '<?php echo fm_enc(FM_PATH); ?>' }));
+                          tempForm.append($('<input>', { 'type': 'hidden', 'name': 'group', 'value': '1' }));
+                          tempForm.append($('<input>', { 'type': 'hidden', 'name': 'token', 'value': window.csrf }));
+                          
+                          // Dynamically add the specific action from the clicked button
+                          // This handles delete, zip, tar
+                          const actionInput = document.getElementById(actionId);
+                          if (actionInput && actionInput.name) {
+                              tempForm.append($('<input>', { 'type': 'hidden', 'name': actionInput.name, 'value': actionInput.value }));
+                          }
+
+                          // Add each selected file as a hidden input
+                          $.each(selectedFiles, function(index, value) {
+                              tempForm.append($('<input>', { 'type': 'hidden', 'name': 'file[]', 'value': value }));
+                          });
+
+                          // Append to body and submit
+                          $('body').append(tempForm);
+                          tempForm.submit();
+                          tempForm.remove(); // Clean up the temporary form
                       }
                   });
               }
