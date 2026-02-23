@@ -2856,12 +2856,29 @@ async function generatePhpHash() {
                                 });
                                 if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history yet.<br>Execute a query to save it.</div>';
                             }
-                            
+                                                        
                             function clearHistory() {
-                                if(confirm('Clear all query history?')) {
-                                    localStorage.removeItem(historyKey);
-                                    renderHistory();
-                                }
+                                Swal.fire({
+                                    title: 'Clear History?',
+                                    text: "All query history will be permanently deleted!",
+                                    icon: 'warning',
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Yes, Clear It',
+                                    cancelButtonText: 'Cancel',
+                                    confirmButtonColor: '#d33',
+                                    cancelButtonColor: '#3085d6'
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        localStorage.removeItem(historyKey);
+                                        renderHistory();
+
+                                        Swal.fire(
+                                            'Cleared!',
+                                            'Query history has been deleted.',
+                                            'success'
+                                        );
+                                    }
+                                });
                             }
 
                             document.getElementById('sqlForm').addEventListener('submit', function() {
