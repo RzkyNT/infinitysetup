@@ -3140,6 +3140,121 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       </div>
   </form>
 
+  <!-- Drag & Drop enhancements: enable dragging items and dropping onto folders (table/grid) -->
+  <style>
+      .fm-drop-target { outline: 2px dashed #3b82f6; background: rgba(59,130,246,0.06); }
+      .fm-dragging { opacity: 0.6; }
+      #main-grid .grid-item { user-select: none; }
+  </style>
+
+  <script>
+  (function(){
+      document.addEventListener('DOMContentLoaded', function(){
+          const tokenInput = document.querySelector('input[name="token"]');
+          const token = tokenInput ? tokenInput.value : '';
+
+          function moveItemAjax(name, dest, token, cb){
+              const form = new FormData();
+              form.append('move_from', name);
+              form.append('move_to', dest);
+              form.append('token', token);
+              const url = window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>';
+              fetch(url, { method: 'POST', body: form, credentials: 'same-origin' })
+              .then(r => r.text())
+              .then(t => cb(true, t))
+              .catch(e => cb(false, e.message));
+          }
+
+          function uploadFilesToFolder(files, dest, token){
+              Array.from(files).forEach(file=>{
+                  const fd = new FormData();
+                  fd.append('file', file);
+                  fd.append('fullpath', dest + '/' + file.name);
+                  fd.append('token', token);
+                  const url = window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>';
+                  fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
+                  .then(r => r.json().catch(()=>false))
+                  .then(json => {
+                      setTimeout(()=>{ try{ location.reload(); }catch(e){} }, 300);
+                  })
+                  .catch(e=>{ alert('Upload error: '+e.message); });
+              });
+          }
+
+          function enableDragDrop(){
+              const rows = document.querySelectorAll('tr[data-type]');
+              rows.forEach(r=>{
+                  r.setAttribute('draggable', 'true');
+                  r.addEventListener('dragstart', function(ev){
+                      ev.dataTransfer.setData('application/json', JSON.stringify({ name: this.dataset.name, type: this.dataset.type, path: this.dataset.path }));
+                      ev.dataTransfer.effectAllowed = 'move';
+                      this.classList.add('fm-dragging');
+                  });
+                  r.addEventListener('dragend', function(){ this.classList.remove('fm-dragging'); });
+              });
+
+              const folderRows = document.querySelectorAll('tr[data-type="folder"]');
+              folderRows.forEach(fr=>{
+                  fr.addEventListener('dragover', function(ev){ ev.preventDefault(); this.classList.add('fm-drop-target'); ev.dataTransfer.dropEffect='move'; });
+                  fr.addEventListener('dragleave', function(ev){ this.classList.remove('fm-drop-target'); });
+                  fr.addEventListener('drop', function(ev){
+                      ev.preventDefault(); this.classList.remove('fm-drop-target');
+                      let payload = ev.dataTransfer.getData('application/json');
+                      const files = ev.dataTransfer.files;
+                      const targetName = this.dataset.name;
+                      const basePath = this.dataset.path || '';
+                      const dest = basePath ? basePath + '/' + targetName : targetName;
+                      if (files && files.length){
+                          uploadFilesToFolder(files, dest, token);
+                          return;
+                      }
+                      if (payload){
+                          try{ payload = JSON.parse(payload); }catch(e){ payload = null; }
+                      }
+                      if (payload){
+                          moveItemAjax(payload.name, dest, token, function(success, res){ if(success){ try{ location.reload(); }catch(e){} } else { alert('Move failed: '+res); } });
+                      }
+                  });
+              });
+
+              // Grid view
+              const gridItems = document.querySelectorAll('#main-grid .grid-item');
+              gridItems.forEach(item=>{
+                  item.setAttribute('draggable','true');
+                  item.addEventListener('dragstart', function(ev){ ev.dataTransfer.setData('application/json', JSON.stringify({ name: this.dataset.name, type: this.dataset.type, path: this.dataset.path })); this.classList.add('fm-dragging'); });
+                  item.addEventListener('dragend', function(){ this.classList.remove('fm-dragging'); });
+              });
+
+              const gridFolderTargets = document.querySelectorAll('#main-grid .grid-item[data-type="folder"]');
+              gridFolderTargets.forEach(t=>{
+                  t.addEventListener('dragover', function(ev){ ev.preventDefault(); this.classList.add('fm-drop-target'); ev.dataTransfer.dropEffect='move'; });
+                  t.addEventListener('dragleave', function(ev){ this.classList.remove('fm-drop-target'); });
+                  t.addEventListener('drop', function(ev){
+                      ev.preventDefault(); this.classList.remove('fm-drop-target');
+                      let payload = ev.dataTransfer.getData('application/json');
+                      const files = ev.dataTransfer.files;
+                      const targetName = this.dataset.name;
+                      const basePath = this.dataset.path || '';
+                      const dest = basePath ? basePath + '/' + targetName : targetName;
+                      if (files && files.length){
+                          uploadFilesToFolder(files, dest, token);
+                          return;
+                      }
+                      if (payload){
+                          try{ payload = JSON.parse(payload); }catch(e){ payload = null; }
+                      }
+                      if (payload){
+                          moveItemAjax(payload.name, dest, token, function(success,res){ if(success){ try{ location.reload(); }catch(e){} } else { alert('Move failed: '+res); } });
+                      }
+                  });
+              });
+          }
+
+          try{ enableDragDrop(); }catch(e){ console.error('DragDrop init error', e); }
+      });
+  })();
+  </script>
+
   <?php
   fm_show_footer();
 
