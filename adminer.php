@@ -571,6 +571,15 @@ function is_resultset_statement($statement) {
 
 // ===== ACTION HANDLER (POST) =====
 if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Handle JSON payloads (e.g. for Excel Import)
+    $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+    if (stripos($contentType, 'application/json') !== false) {
+        $jsonInput = json_decode(file_get_contents('php://input'), true);
+        if (is_array($jsonInput)) {
+            $_POST = array_merge($_POST, $jsonInput);
+        }
+    }
+
     $action = $_POST['action'] ?? '';
     $table = $_POST['table'] ?? '';
     
@@ -836,6 +845,70 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 echo json_encode(['success' => false, 'message' => 'Table not found']);
             }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- GET TABLE COLUMNS (Detailed with FKs) ---
+    elseif ($action === 'get_table_columns') {
+        header('Content-Type: application/json');
+        try {
+            // 1. Get Columns
+            $stmt = $pdo->query("DESCRIBE `$table`");
+            $rawCols = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // 2. Get Foreign Keys
+            $dbName = $_SESSION['db_name'];
+            $sqlFK = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
+            $stmtFK = $pdo->prepare($sqlFK);
+            $stmtFK->execute([$dbName, $table]);
+            
+            $fks = [];
+            while($row = $stmtFK->fetch(PDO::FETCH_ASSOC)) {
+                $fks[$row['COLUMN_NAME']] = [
+                    'table' => $row['REFERENCED_TABLE_NAME'],
+                    'col' => $row['REFERENCED_COLUMN_NAME']
+                ];
+            }
+
+            $columns = [];
+            foreach ($rawCols as $col) {
+                // Exclude auto_increment columns
+                if (stripos($col['Extra'], 'auto_increment') !== false) {
+                    continue;
+                }
+
+                $colName = $col['Field'];
+                $isNullable = $col['Null'] === 'YES';
+                $fkInfo = $fks[$colName] ?? null;
+                $fkData = [];
+
+                if ($fkInfo) {
+                    // Fetch allowed values (Limit 1000 to prevent overload)
+                    $refTable = $fkInfo['table'];
+                    $refCol = $fkInfo['col'];
+                    try {
+                        // Determine a display column if possible? For now, just use the PK/FK col
+                        $stmtVal = $pdo->query("SELECT DISTINCT `$refCol` FROM `$refTable` ORDER BY `$refCol` LIMIT 1000");
+                        $fkData = $stmtVal->fetchAll(PDO::FETCH_COLUMN);
+                    } catch (Exception $e) { 
+                        // If we can't read the ref table (permissions?), just skip values
+                    }
+                }
+
+                $columns[] = [
+                    'name' => $colName,
+                    'required' => !$isNullable,
+                    'type' => $col['Type'],
+                    'fk' => $fkInfo,
+                    'fk_values' => $fkData
+                ];
+            }
+            
+            echo json_encode(['success' => true, 'columns' => $columns]);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
@@ -1218,6 +1291,160 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     }
+    // --- IMPORT EXCEL ---
+    elseif ($action === 'import_excel') {
+        header('Content-Type: application/json');
+        $input = json_decode(file_get_contents('php://input'), true);
+
+        $tableName = $input['table'] ?? '';
+        $importType = $input['importType'] ?? 'insert';
+        $primaryKeyCol = $input['primaryKeyCol'] ?? '';
+        $truncateTable = $input['truncateTable'] ?? false;
+        $headers = $input['headers'] ?? [];
+        $data = $input['data'] ?? [];
+
+        if (!$tableName || empty($headers) || empty($data)) {
+            echo json_encode(['success' => false, 'message' => 'Missing table name, headers, or data.']);
+            exit;
+        }
+
+        // Validate table name (simple alphanumeric and underscore check)
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $tableName)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid table name.']);
+            exit;
+        }
+
+        if (($importType === 'update' || $importType === 'upsert') && !$primaryKeyCol) {
+            echo json_encode(['success' => false, 'message' => 'Primary Key Column is required for Update/Upsert import types.']);
+            exit;
+        }
+        
+        $pdo->beginTransaction();
+        $insertedRows = 0;
+        $updatedRows = 0;
+
+        try {
+            if ($truncateTable) {
+                $pdo->exec("TRUNCATE TABLE `$tableName`");
+            }
+
+            // Fetch actual column names from the database
+            $stmt = $pdo->query("DESCRIBE `$tableName`");
+            $dbColumns = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            // Map Excel headers to database columns
+            $mappedHeaders = [];
+            foreach ($headers as $excelCol) {
+                // Find a case-insensitive match in dbColumns
+                $found = false;
+                foreach ($dbColumns as $dbCol) {
+                    if (strcasecmp($excelCol, $dbCol) === 0) {
+                        $mappedHeaders[] = $dbCol; // Use the actual DB column name
+                        $found = true;
+                        break;
+                    }
+                }
+                if (!$found) {
+                    $mappedHeaders[] = null; // Mark as unmappable
+                }
+            }
+
+            // Filter out unmappable columns from data rows
+            $filteredData = [];
+            foreach ($data as $row) {
+                $newRow = [];
+                foreach ($mappedHeaders as $index => $dbCol) {
+                    if ($dbCol !== null) {
+                        $newRow[$dbCol] = $row[$index] ?? null;
+                    }
+                }
+                if (!empty($newRow)) {
+                    $filteredData[] = $newRow;
+                }
+            }
+
+            if (empty($filteredData)) {
+                $pdo->rollBack();
+                echo json_encode(['success' => false, 'message' => 'No mappable data rows found after header matching.']);
+                exit;
+            }
+
+            $placeholders = implode(', ', array_fill(0, count($mappedHeaders), '?'));
+            $cols = implode('`, `', array_filter($mappedHeaders)); // Only use valid mapped columns
+
+            if ($importType === 'insert') {
+                $sql = "INSERT INTO `$tableName` (`$cols`) VALUES ($placeholders)";
+                $stmt = $pdo->prepare($sql);
+            } elseif ($importType === 'update') {
+                // This assumes primaryKeyCol is in headers and dbColumns
+                if (!in_array($primaryKeyCol, $mappedHeaders)) {
+                    $pdo->rollBack();
+                    echo json_encode(['success' => false, 'message' => "Primary Key Column '$primaryKeyCol' not found in Excel headers or database table."]);
+                    exit;
+                }
+                $setParts = [];
+                foreach (array_filter($mappedHeaders) as $col) {
+                    if ($col !== $primaryKeyCol) {
+                        $setParts[] = "`$col` = ?";
+                    }
+                }
+                if (empty($setParts)) {
+                    $pdo->rollBack();
+                    echo json_encode(['success' => false, 'message' => 'No non-primary key columns found for update.']);
+                    exit;
+                }
+                $sql = "UPDATE `$tableName` SET " . implode(', ', $setParts) . " WHERE `$primaryKeyCol` = ?";
+                $stmt = $pdo->prepare($sql);
+            } elseif ($importType === 'upsert') {
+                // MySQL's ON DUPLICATE KEY UPDATE is a simple upsert
+                // This requires a PRIMARY KEY or UNIQUE index on the columns being updated for `ON DUPLICATE KEY UPDATE` to work
+                $updateParts = [];
+                foreach (array_filter($mappedHeaders) as $col) {
+                    $updateParts[] = "`$col` = VALUES(`$col`)";
+                }
+                $sql = "INSERT INTO `$tableName` (`$cols`) VALUES ($placeholders) ON DUPLICATE KEY UPDATE " . implode(', ', $updateParts);
+                $stmt = $pdo->prepare($sql);
+            }
+
+            foreach ($filteredData as $row) {
+                $values = array_values($row);
+                
+                if ($importType === 'update') {
+                    // For update, primary key value should be last
+                    $pkVal = $row[$primaryKeyCol];
+                    unset($row[$primaryKeyCol]); // Remove PK from values to be set
+                    $values = array_values($row);
+                    $values[] = $pkVal;
+                }
+                
+                $stmt->execute($values);
+                if ($importType === 'insert') {
+                    $insertedRows++;
+                } elseif ($importType === 'update') {
+                    $updatedRows += $stmt->rowCount(); // rowCount() is 0 if no change, 1 if updated
+                } elseif ($importType === 'upsert') {
+                    // For upsert, rowCount is 1 for insert, 2 for update (affecting 2 rows: old and new)
+                    $affected = $stmt->rowCount();
+                    if ($affected === 1) $insertedRows++;
+                    elseif ($affected === 2) $updatedRows++;
+                }
+            }
+
+            $pdo->commit();
+            echo json_encode([
+                'success' => true,
+                'message' => 'Import completed successfully.',
+                'insertedRows' => $insertedRows,
+                'updatedRows' => $updatedRows
+            ]);
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            error_log("Excel Import Error: " . $e->getMessage());
+            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+        }
+        exit;
+    }
 }
 
 // ===== GET HANDLERS =====
@@ -1529,6 +1756,7 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
     <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2-dark.min.css', 'https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css') ?>"> <!-- SweetAlert2 Dark Theme -->
     <link href="<?= get_asset_url('assets/vendor/tom-select/tom-select.bootstrap5.min.css', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.bootstrap5.min.css') ?>" rel="stylesheet">
     <script src="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2.all.min.js', 'https://cdn.jsdelivr.net/npm/sweetalert2@11') ?>"></script>
+    <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="<?= get_asset_url('assets/vendor/mermaid/mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js') ?>"></script>
     <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
     <style>
@@ -1985,17 +2213,92 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                     <!-- Actions -->
                     <button type="button" class="btn" onclick="copyTableStructure('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-copy"></i> Copy Structure</button>
                     <button type="button" class="btn" onclick="duplicateTablePrompt('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-clone"></i> Duplicate</button>
-                     <form method="POST" style="margin:0; display:flex;">
+                     <form method="POST" style="margin:0; display:flex;" onsubmit="return handleExport(event)">
                         <input type="hidden" name="action" value="export">
                         <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                        <select name="format" class="form-select" style="border-radius:4px 0 0 4px; border-right:none; width:auto; padding:5px 10px; font-size:0.85rem;">
+                        <select id="exportFormat" name="format" class="form-select" style="border-radius:4px 0 0 4px; border-right:none; width:auto; padding:5px 10px; font-size:0.85rem;">
                             <option value="sql">SQL</option>
                             <option value="json">JSON</option>
                             <option value="csv">CSV</option>
+                            <option value="xlsx">XLSX</option>
                         </select>
                         <button type="submit" class="btn" style="border-radius:0 4px 4px 0;"><i class="fas fa-download"></i> Export</button>
                     </form>
                 </div>
+
+                <?php if ($view === 'import'): ?>
+                <div class="card">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
+                        <div>
+                            <h3><i class="fas fa-file-excel"></i> Import Data from Excel (.xlsx)</h3>
+                            <p style="color:var(--text-secondary); margin-bottom:0;">
+                                Upload an Excel file to import data into the table `<?=htmlspecialchars($currentTable)?>`. 
+                                The first row should contain column headers.
+                            </p>
+                        </div>
+                        <button type="button" class="btn" onclick="downloadExcelTemplate()"><i class="fas fa-download"></i> Download Template</button>
+                    </div>
+                    
+                    <form id="excelImportForm">
+                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                        
+                        <div style="margin-bottom:15px;">
+                            <label for="excelFile" class="form-label">Select Excel File:</label>
+                            <input type="file" id="excelFile" class="form-control" accept=".xlsx" required>
+                        </div>
+
+                        <div style="margin-bottom:15px;">
+                            <label class="form-label">Import Type:</label>
+                            <div style="display:flex; gap:15px;">
+                                <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+                                    <input type="radio" name="importType" value="insert" checked> Insert New Rows
+                                </label>
+                                <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+                                    <input type="radio" name="importType" value="update"> Update Existing Rows (requires Primary Key)
+                                </label>
+                                <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+                                    <input type="radio" name="importType" value="upsert"> Upsert (Insert or Update) (requires Primary Key)
+                                </label>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:15px;">
+                            <label for="primaryKeyCol" class="form-label">Primary Key Column (for Update/Upsert):</label>
+                            <input type="text" id="primaryKeyCol" class="form-control" placeholder="e.g. id">
+                        </div>
+                        
+                        <div style="margin-bottom:15px;">
+                            <label style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+                                <input type="checkbox" id="truncateTable" name="truncateTable"> Truncate table before import
+                            </label>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="btnPreviewImport"><i class="fas fa-eye"></i> Preview & Import</button>
+                    </form>
+
+                    <!-- PREVIEW CONTAINER -->
+                    <div id="importPreviewContainer" style="display:none; margin-top:30px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                            <h4 style="margin:0;"><i class="fas fa-table"></i> Data Preview</h4>
+                            <div>
+                                <small style="color:var(--text-secondary); margin-right:10px;">Double-click cells to edit. Headers must match DB columns.</small>
+                                <button type="button" class="btn btn-success" onclick="confirmImport()"><i class="fas fa-check"></i> Confirm Import</button>
+                                <button type="button" class="btn btn-danger" onclick="cancelImport()"><i class="fas fa-times"></i> Cancel</button>
+                            </div>
+                        </div>
+                        <div class="table-wrapper" style="max-height:500px; overflow:auto;">
+                            <table id="previewTable">
+                                <thead></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="importStatus" style="margin-top:20px; padding:15px; background:var(--bg-hover); border:1px solid var(--border-color); border-radius:6px; min-height:50px;">
+                        Waiting for file selection...
+                    </div>
+                </div>
+                <?php endif; ?>
 
                 <script>
                 function duplicateTablePrompt(sourceTable) {
@@ -4279,6 +4582,384 @@ async function generatePhpHash() {
             });
             toast.fire({ icon: 'success', title: 'Copied!' });
         });
+    }
+
+    // --- XLSX Export Logic ---
+    function handleExport(event) {
+        const formatSelect = document.getElementById('exportFormat');
+        if (formatSelect.value === 'xlsx') {
+            event.preventDefault(); // Prevent form submission
+            exportTableAsXLSX();
+            return false;
+        }
+        return true; // Allow other formats to submit normally
+    }
+
+    async function exportTableAsXLSX() {
+        const currentTable = "<?= htmlspecialchars($currentTable) ?>";
+        const filename = `${currentTable}_${new Date().toISOString().slice(0,10)}.xlsx`;
+
+        try {
+            // Fetch full data as JSON using the existing export action
+            const formData = new FormData();
+            formData.append('action', 'export');
+            formData.append('table', currentTable);
+            formData.append('format', 'json'); // Request JSON data from the server
+
+            const response = await fetch('?', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const fetchedData = await response.json(); // Parse the JSON response
+            if (fetchedData.length === 0) {
+                Swal.fire('Info', 'No data to export for this table.', 'info');
+                return;
+            }
+            
+            // Create a new workbook
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet(fetchedData); // json to sheet
+
+            // Add the worksheet to the workbook
+            XLSX.utils.book_append_sheet(wb, ws, currentTable);
+            // Write the workbook to an XLSX file and trigger download
+            XLSX.writeFile(wb, filename);
+
+            const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+            toast.fire({ icon: 'success', title: 'Exported to XLSX!' });
+
+        } catch (error) {
+            console.error('Error exporting to XLSX:', error);
+            Swal.fire('Error', 'Failed to export to XLSX: ' + error.message, 'error');
+        }
+    }
+
+    async function downloadExcelTemplate() {
+        const currentTable = "<?= htmlspecialchars($currentTable) ?>";
+        const filename = `${currentTable}_template.xlsx`;
+
+        try {
+            // Fetch detailed column info
+            const formData = new FormData();
+            formData.append('action', 'get_table_columns');
+            formData.append('table', currentTable);
+
+            const response = await fetch('?', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+            
+            if (result.success) {
+                const columns = result.columns;
+                
+                // Prepare Headers and Data Sheet
+                const headers = [];
+                const dataSheetRows = []; // Transposed data for validation lists
+                const validations = [];
+                const colWidths = [];
+                
+                // We need to transpose FK values to columns in the Data sheet
+                // But first let's just collect them
+                const fkDataMap = {}; // colIndex -> array of values
+
+                columns.forEach((col, index) => {
+                    let headerName = col.name;
+                    if (col.required) headerName += ' *';
+                    headers.push(headerName);
+                    colWidths.push({ wch: Math.max(headerName.length + 5, 15) });
+
+                    if (col.fk_values && col.fk_values.length > 0) {
+                        fkDataMap[index] = col.fk_values;
+                    }
+                });
+
+                // Create Template Worksheet
+                const ws = XLSX.utils.aoa_to_sheet([headers]);
+                ws['!cols'] = colWidths;
+
+                // Add Comments (Rule Info)
+                // Note: SheetJS Community might strip comments on write, but we try.
+                // If comments fail, we rely on the header '*' and Data sheet.
+                for (let i = 0; i < columns.length; i++) {
+                    const col = columns[i];
+                    const cellRef = XLSX.utils.encode_cell({c: i, r: 0});
+                    
+                    let note = `Type: ${col.type}\n`;
+                    note += col.required ? "Required: YES\n" : "Required: NO\n";
+                    if (col.fk) {
+                        note += `Foreign Key: ${col.fk.table}.${col.fk.col}`;
+                    }
+                    
+                    if(!ws[cellRef].c) ws[cellRef].c = [];
+                    ws[cellRef].c.push({a: "Adminer", t: note});
+                    
+                    // Also add a cell comment property if supported by specific build
+                    if(!ws[cellRef].c) ws[cellRef].comment = { a:"Adminer", t: note }; 
+                }
+
+                // Create Data Sheet for Dropdowns
+                const dataWsData = [];
+                const dataSheetName = "Data";
+                
+                // Find max length of fk values to determine rows
+                let maxRows = 0;
+                Object.values(fkDataMap).forEach(arr => maxRows = Math.max(maxRows, arr.length));
+                
+                // Initialize Data Sheet with headers
+                const dataHeaders = [];
+                Object.keys(fkDataMap).forEach(idx => {
+                    dataHeaders.push(`${columns[idx].name} Values`);
+                });
+                if (dataHeaders.length > 0) {
+                    dataWsData.push(dataHeaders);
+                    
+                    for(let r=0; r < maxRows; r++) {
+                        const row = [];
+                        let colCounter = 0;
+                        Object.keys(fkDataMap).forEach(idx => {
+                            row.push(fkDataMap[idx][r] || "");
+                        });
+                        dataWsData.push(row);
+                    }
+                }
+
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template");
+
+                if (dataHeaders.length > 0) {
+                    const dataWs = XLSX.utils.aoa_to_sheet(dataWsData);
+                    XLSX.utils.book_append_sheet(wb, dataWs, dataSheetName);
+                    
+                    // Add Data Validations
+                    // Only works if the sheet writer supports it. 
+                    // Ref: https://docs.sheetjs.com/docs/csf/features/validations
+                    // We map the template column index to the Data sheet column index
+                    let refColIdx = 0;
+                    Object.keys(fkDataMap).forEach(colIdx => {
+                        const valuesCount = fkDataMap[colIdx].length;
+                        if(valuesCount > 0) {
+                            // Column in Data Sheet (0-based)
+                            const dataColChar = XLSX.utils.encode_col(refColIdx); 
+                            const range = `'${dataSheetName}'!$${dataColChar}$2:$${dataColChar}$${valuesCount + 1}`;
+                            
+                            // Apply to Template Sheet Column (e.g., A2:A1000)
+                            const templateColChar = XLSX.utils.encode_col(parseInt(colIdx));
+                            
+                            // Validations
+                            if (!ws['!dataValidation']) ws['!dataValidation'] = [];
+                            ws['!dataValidation'].push({
+                                type: 'list',
+                                allowBlank: true,
+                                operator: 'between', 
+                                formula1: range,
+                                sqref: `${templateColChar}2:${templateColChar}1000`,
+                                showErrorMessage: true,
+                                errorTitle: "Invalid Value",
+                                error: "Please select a value from the list."
+                            });
+                           
+                           refColIdx++;
+                        }
+                    });
+                }
+
+                // Write File
+                XLSX.writeFile(wb, filename);
+
+                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                toast.fire({ icon: 'success', title: 'Template downloaded!' });
+            } else {
+                throw new Error(result.message || 'Failed to fetch table columns.');
+            }
+        } catch (error) {
+            console.error('Error downloading template:', error);
+            Swal.fire('Error', 'Failed to download template: ' + error.message, 'error');
+        }
+    }
+
+    // --- XLSX Import Logic ---
+    let importDataPayload = null; // Store context for confirm
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const excelImportForm = document.getElementById('excelImportForm');
+        if (excelImportForm) {
+            excelImportForm.addEventListener('submit', handleExcelImport);
+        }
+    });
+
+    function updateImportStatus(message, type = 'info') {
+        const statusDiv = document.getElementById('importStatus');
+        if (statusDiv) {
+            statusDiv.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+        }
+    }
+
+    async function handleExcelImport(event) {
+        event.preventDefault();
+        updateImportStatus('Reading Excel file...', 'info');
+
+        const fileInput = document.getElementById('excelFile');
+        const file = fileInput.files[0];
+        if (!file) {
+            updateImportStatus('Please select an Excel file.', 'danger');
+            return;
+        }
+
+        const tableName = event.target.querySelector('input[name="table"]').value;
+        const importType = event.target.querySelector('input[name="importType"]:checked').value;
+        const primaryKeyCol = document.getElementById('primaryKeyCol').value;
+        const truncateTable = document.getElementById('truncateTable').checked;
+
+        if ((importType === 'update' || importType === 'upsert') && !primaryKeyCol) {
+            updateImportStatus('Primary Key Column is required for Update/Upsert import types.', 'danger');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                // Convert sheet to JSON. header:1 means first row is header.
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                if (jsonData.length < 2) {
+                    updateImportStatus('Excel file is empty or only contains headers.', 'danger');
+                    return;
+                }
+
+                // Assume first row is headers
+                const headers = jsonData[0];
+                const rowsToImport = jsonData.slice(1); // Data rows
+
+                // Store basic payload info
+                importDataPayload = {
+                    action: 'import_excel',
+                    table: tableName,
+                    importType: importType,
+                    primaryKeyCol: primaryKeyCol,
+                    truncateTable: truncateTable,
+                    headers: headers
+                    // data will be grabbed from table on confirm
+                };
+
+                renderPreviewTable(headers, rowsToImport);
+                updateImportStatus('Preview loaded. Review data below before confirming.', 'success');
+
+            } catch (error) {
+                console.error('Error during Excel import:', error);
+                updateImportStatus(`An error occurred during import: ${error.message}`, 'danger');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    function renderPreviewTable(headers, data) {
+        const container = document.getElementById('importPreviewContainer');
+        const table = document.getElementById('previewTable');
+        const thead = table.querySelector('thead');
+        const tbody = table.querySelector('tbody');
+
+        container.style.display = 'block';
+        thead.innerHTML = '';
+        tbody.innerHTML = '';
+
+        // Headers
+        const trHead = document.createElement('tr');
+        headers.forEach(h => {
+            const th = document.createElement('th');
+            th.textContent = h;
+            trHead.appendChild(th);
+        });
+        thead.appendChild(trHead);
+
+        // Body
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            // Ensure row matches header length
+            for(let i=0; i < headers.length; i++) {
+                const td = document.createElement('td');
+                const val = (row[i] !== undefined && row[i] !== null) ? row[i] : "";
+                td.textContent = val;
+                td.setAttribute('contenteditable', 'true');
+                td.style.border = '1px solid #444'; // Visual cue
+                td.addEventListener('blur', function() {
+                    // Optional: Validation logic here
+                });
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        });
+    }
+
+    function cancelImport() {
+        document.getElementById('importPreviewContainer').style.display = 'none';
+        updateImportStatus('Import cancelled.');
+        importDataPayload = null;
+    }
+
+    async function confirmImport() {
+        if(!importDataPayload) return;
+
+        updateImportStatus('Sending data to server...', 'info');
+        
+        // Scrape data from table
+        const table = document.getElementById('previewTable');
+        const rows = table.querySelectorAll('tbody tr');
+        const finalData = [];
+
+        rows.forEach(tr => {
+            const rowData = [];
+            tr.querySelectorAll('td').forEach(td => {
+                rowData.push(td.textContent); // Text content from contenteditable
+            });
+            finalData.push(rowData);
+        });
+
+        importDataPayload.data = finalData;
+
+        try {
+            const response = await fetch('?', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json' 
+                },
+                body: JSON.stringify(importDataPayload)
+            });
+
+            // Handle non-JSON responses (fatal errors)
+            const text = await response.text();
+            let result;
+            try {
+                result = JSON.parse(text);
+            } catch (e) {
+                throw new Error('Server returned invalid JSON: ' + text.substring(0, 100) + '...');
+            }
+
+            if (result.success) {
+                updateImportStatus(`Import successful! ${result.insertedRows || 0} inserted, ${result.updatedRows || 0} updated.`, 'success');
+                document.getElementById('importPreviewContainer').style.display = 'none';
+            } else {
+                updateImportStatus(`Import failed: ${result.message || 'Unknown error.'}`, 'danger');
+            }
+
+        } catch (error) {
+            console.error('Error sending import data:', error);
+            updateImportStatus(`An error occurred: ${error.message}`, 'danger');
+        }
     }
 </script>
 </body>

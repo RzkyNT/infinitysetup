@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 ob_start(); // Start output buffering to prevent "headers already sent" errors
 //Default Configuration
 $CONFIG = '{"lang":"en","error_reporting":true,"show_hidden":true,"hide_Cols":true,"theme":"dark","show_disk_usage":true}';

@@ -1,0 +1,41 @@
+
+Parse error: Unmatched '}' in C:\laragon\www\test\infinitysetup\adminer.php on line 1388
+[{
+	"resource": "/c:/laragon/www/test/infinitysetup/adminer.php",
+	"owner": "_generated_diagnostic_collection_name_#3",
+	"severity": 8,
+	"message": "Unexpected '}'",
+	"source": "php",
+	"startLineNumber": 1388,
+	"startColumn": 1,
+	"endLineNumber": 1388,
+	"endColumn": 1,
+	"modelVersionId": 15,
+	"origin": "extHost1"
+},{
+	"resource": "/c:/laragon/www/test/infinitysetup/adminer.php",
+	"owner": "_generated_diagnostic_collection_name_#1",
+	"code": "P1001",
+	"severity": 8,
+	"message": "Unexpected '}'.",
+	"source": "intelephense",
+	"startLineNumber": 1388,
+	"startColumn": 1,
+	"endLineNumber": 1388,
+	"endColumn": 2,
+	"modelVersionId": 15,
+	"origin": "extHost1"
+},{
+	"resource": "/c:/laragon/www/test/infinitysetup/adminer.php",
+	"owner": "_generated_diagnostic_collection_name_#6",
+	"code": "PHP2014",
+	"severity": 8,
+	"message": "Syntax error: unexpected token '}'",
+	"source": "PHP",
+	"startLineNumber": 1388,
+	"startColumn": 1,
+	"endLineNumber": 1388,
+	"endColumn": 2,
+	"modelVersionId": 15,
+	"origin": "extHost1"
+}]
