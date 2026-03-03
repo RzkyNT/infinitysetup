@@ -912,6 +912,35 @@ function render_db_setup($defaults = [], $error = '', $success = '')
         });
     }
 
+    // Media Modal Functions
+    function showImageModal(src) {
+        Swal.fire({
+            imageUrl: src,
+            imageAlt: 'Image Preview',
+            showCloseButton: true,
+            showConfirmButton: false,
+            width: 'auto',
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal',
+                image: 'swal-image-preview'
+            }
+        });
+    }
+
+    function showVideoModal(src) {
+        Swal.fire({
+            html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
+            showCloseButton: true,
+            showConfirmButton: false,
+            width: 'auto',
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal'
+            }
+        });
+    }
+
     // --- XLSX Export Logic ---
     function handleExport(event) {
         const formatSelect = document.getElementById('exportFormat');
@@ -3350,6 +3379,19 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
     word-break: break-all;
     position: relative;
 }
+
+/* Media Preview Styles */
+.swal-image-preview {
+    max-width: 90vw !important;
+    max-height: 80vh !important;
+    object-fit: contain;
+    border-radius: 8px;
+}
+
+.dark-modal {
+    background: var(--bg-card) !important;
+    color: var(--text-primary) !important;
+}
     </style>
 </head>
 <body>
@@ -3830,10 +3872,64 @@ if ($is_logged_in && $currentTable && isset($pdo)) {
                                         </td>
                                         <?php foreach ($row as $key => $val):
                                             $displayVal = $val !== null ? htmlspecialchars((string)$val) : '<span style="color:#666">NULL</span>';
-                                            // Clickable Foreign Keys Logic
-                                            if ($val !== null && substr($key, -3) === '_id') {
+                                            
+                                            // Media Display Logic (Images)
+                                            $isMediaColumn = false;
+                                            if ($val !== null) {
+                                                $valStr = (string)$val;
+                                                // Check if it's a base64 image
+                                                if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
+                                                    $isMediaColumn = true;
+                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                                                        . '<img src="' . htmlspecialchars($valStr) . '" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="Click to enlarge">'
+                                                        . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
+                                                        . '</div>';
+                                                }
+                                                // Check if it's a file path to an image (only show if column name suggests it's an image)
+                                                elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
+                                                        (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
+                                                         stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
+                                                         stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
+                                                         stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
+                                                    $isMediaColumn = true;
+                                                    // Try to construct a valid URL
+                                                    $imgUrl = $valStr;
+                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
+                                                        // Relative path - try to make it absolute
+                                                        $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                                                    }
+                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                                                        . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                                                        . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
+                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
+                                                        . '</div>'
+                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                                                        . '</div>';
+                                                }
+                                                // Check if it's a video file path
+                                                elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
+                                                        (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
+                                                         stripos($key, 'media') !== false)) {
+                                                    $isMediaColumn = true;
+                                                    $videoUrl = $valStr;
+                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
+                                                        $videoUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                                                    }
+                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                                                        . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                                                        . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" muted>'
+                                                        . '<source src="' . htmlspecialchars($videoUrl) . '">'
+                                                        . '</video>'
+                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
+                                                        . '</div>'
+                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                                                        . '</div>';
+                                                }
+                                            }
+                                            
+                                            // Clickable Foreign Keys Logic (only if not media)
+                                            if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
                                                 $targetTable = substr($key, 0, -3) . 's'; // simple pluralization
-                                                // Check if table exists (optional, skipping for speed)
                                                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
                                             }
                                             ?><td data-col="<?=htmlspecialchars($key)?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
@@ -5344,6 +5440,201 @@ async function generatePhpHash() {
                 });
             };
         })();
+
+        // ===== GLOBAL FUNCTIONS (MUST BE AVAILABLE ON ALL PAGES) =====
+        
+        // Global SweetAlert Helpers
+        function saConfirmLink(e, text) {
+            e.preventDefault();
+            const href = e.currentTarget.getAttribute('href');
+            Swal.fire({
+                title: 'Are you sure?',
+                text: text,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#3085d6',
+                cancelButtonColor: '#d33',
+                confirmButtonText: 'Yes, proceed!'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    window.location.href = href;
+                }
+            });
+        }
+
+        function saConfirmForm(e, text) {
+            e.preventDefault();
+            const form = e.target;
+            Swal.fire({
+                title: 'Are you sure?',
+                text: text,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#3085d6',
+                confirmButtonText: 'Yes, do it!'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    form.submit();
+                }
+            });
+        }
+
+        // --- INLINE EDITING ---
+        function makeCellEditable(td) {
+            if (td.querySelector('input')) return; // Already editing
+            
+            const originalContent = td.innerText;
+            const originalHtml = td.innerHTML;
+            const pk = td.getAttribute('data-pk');
+            const col = td.getAttribute('data-col');
+            const table = td.closest('table').getAttribute('data-table');
+            
+            if(!pk || !col) return;
+
+            td.classList.add('editing');
+            td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
+            td.querySelector('input').focus();
+        }
+
+        function saveCellData(input, table, col, pk, original) {
+            const newVal = input.value;
+            const td = input.parentElement;
+            
+            if (newVal === original) {
+                td.innerText = original;
+                td.classList.remove('editing');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('action', 'update_cell');
+            formData.append('table', table);
+            formData.append('column', col);
+            formData.append('id', pk);
+            formData.append('value', newVal);
+
+            fetch('?', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if(data.success) {
+                    td.innerText = newVal;
+                    td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
+                    setTimeout(() => td.style.backgroundColor = '', 1000);
+                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                    toast.fire({ icon: 'success', title: 'Saved' });
+                } else {
+                    td.innerHTML = original;
+                    Swal.fire('Error', data.message || 'Update failed', 'error');
+                }
+            })
+            .catch(err => {
+                td.innerHTML = original;
+                Swal.fire('Error', 'Network error', 'error');
+            })
+            .finally(() => {
+                td.classList.remove('editing');
+            });
+        }
+
+        // Helper to init TomSelect with correct settings
+        function initTomSelect(el) {
+            if (el.tomselect) return; // Prevent double initialization
+            if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
+                new TomSelect(el, {
+                    plugins: ['clear_button'],
+                    maxOptions: 50,
+                    sortField: { field: "text", direction: "asc" },
+                    dropdownParent: 'body',
+                    onDropdownOpen: function() {
+                        const wrapper = this.dropdown;
+                        if(wrapper) wrapper.style.zIndex = "99999";
+                    }
+                });
+            }
+        }
+
+        // Initialize TomSelect for Searchable Dropdowns (Global)
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('form select.form-select').forEach((el) => {
+                initTomSelect(el);
+            });
+        });
+
+        // Bulk Actions
+        function updateBulkBtn() {
+            const checked = document.querySelectorAll('.row-checkbox:checked').length > 0;
+            const select = document.getElementById('bulkActionSelect');
+            const btn = document.getElementById('bulkApplyBtn');
+            if(select && btn) {
+                select.style.display = checked ? 'block' : 'none';
+                btn.style.display = checked ? 'block' : 'none';
+            }
+        }
+
+        function toggleSelectAll(source) {
+            document.querySelectorAll('.row-checkbox').forEach(cb => {
+                cb.checked = source.checked;
+            });
+            updateBulkBtn();
+        }
+
+        function submitBulkAction() {
+            const select = document.getElementById('bulkActionSelect');
+            const form = document.getElementById('bulkForm');
+            const action = select.value;
+            
+            if (!action) return;
+            
+            if (action === 'delete') {
+                form.querySelector('input[name="action"]').value = 'bulk_delete';
+                Swal.fire({
+                    title: 'Delete selected rows?',
+                    text: "You won't be able to revert this!",
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonColor: '#d33',
+                    confirmButtonText: 'Yes, delete!'
+                }).then((result) => {
+                    if (result.isConfirmed) form.submit();
+                });
+            } else {
+                form.querySelector('input[name="action"]').value = action;
+                form.submit();
+            }
+        }
+
+        // Media Modal Functions
+        function showImageModal(src) {
+            Swal.fire({
+                imageUrl: src,
+                imageAlt: 'Image Preview',
+                showCloseButton: true,
+                showConfirmButton: false,
+                width: 'auto',
+                background: 'var(--bg-card)',
+                customClass: {
+                    popup: 'dark-modal',
+                    image: 'swal-image-preview'
+                }
+            });
+        }
+
+        function showVideoModal(src) {
+            Swal.fire({
+                html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
+                showCloseButton: true,
+                showConfirmButton: false,
+                width: 'auto',
+                background: 'var(--bg-card)',
+                customClass: {
+                    popup: 'dark-modal'
+                }
+            });
+        }
     </script>
 </body>
 </html>
