@@ -2,416 +2,6 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
-/**
- * JsonDatabase - A simple JSON-based database system
- * Provides SQL-like operations on JSON files
- */
-class JsonDatabase {
-    private $basePath;
-    private $currentFile;
-    private $data;
-    
-    public function __construct($basePath = './json_db/') {
-        $this->basePath = rtrim($basePath, '/') . '/';
-        if (!is_dir($this->basePath)) {
-            mkdir($this->basePath, 0755, true);
-        }
-    }
-    
-    /**
-     * Select a JSON file (equivalent to selecting a database)
-     */
-    public function selectFile($filename) {
-        $this->currentFile = $this->basePath . basename($filename);
-        if (!file_exists($this->currentFile)) {
-            file_put_contents($this->currentFile, json_encode([], JSON_PRETTY_PRINT));
-        }
-        $this->loadData();
-        return true;
-    }
-    
-    /**
-     * Set file path directly (for external files)
-     */
-    public function setFilePath($fullPath) {
-        if (!file_exists($fullPath)) {
-            throw new Exception('File not found: ' . $fullPath);
-        }
-        if (pathinfo($fullPath, PATHINFO_EXTENSION) !== 'json') {
-            throw new Exception('File must be a JSON file');
-        }
-        $this->currentFile = $fullPath;
-        $this->loadData();
-        return true;
-    }
-    
-    /**
-     * Load data from current JSON file
-     */
-    private function loadData() {
-        if (!$this->currentFile) {
-            throw new Exception('No file selected');
-        }
-        $content = file_get_contents($this->currentFile);
-        $this->data = json_decode($content, true);
-        if (!is_array($this->data)) {
-            $this->data = [];
-        }
-    }
-    
-    /**
-     * Save data to current JSON file
-     */
-    private function saveData() {
-        if (!$this->currentFile) {
-            throw new Exception('No file selected');
-        }
-        $json = json_encode($this->data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        return file_put_contents($this->currentFile, $json) !== false;
-    }
-    
-    /**
-     * Get list of all JSON files (equivalent to SHOW DATABASES)
-     */
-    public function listFiles() {
-        $files = glob($this->basePath . '*.json');
-        return array_map('basename', $files);
-    }
-    
-    /**
-     * Get list of "tables" (root keys in JSON)
-     */
-    public function listTables() {
-        if (!is_array($this->data)) {
-            return [];
-        }
-        return array_keys($this->data);
-    }
-    
-    /**
-     * Get table structure (columns from first row)
-     */
-    public function getTableStructure($table) {
-        if (!isset($this->data[$table]) || !is_array($this->data[$table]) || empty($this->data[$table])) {
-            return [];
-        }
-        
-        $firstRow = reset($this->data[$table]);
-        if (!is_array($firstRow)) {
-            return [];
-        }
-        
-        $structure = [];
-        foreach ($firstRow as $key => $value) {
-            $structure[] = [
-                'Field' => $key,
-                'Type' => $this->guessType($value),
-                'Null' => 'YES',
-                'Key' => $key === 'id' ? 'PRI' : '',
-                'Default' => null,
-                'Extra' => ''
-            ];
-        }
-        return $structure;
-    }
-    
-    /**
-     * Guess data type from value
-     */
-    private function guessType($value) {
-        if (is_int($value)) return 'int';
-        if (is_float($value)) return 'float';
-        if (is_bool($value)) return 'boolean';
-        if (is_array($value)) return 'json';
-        if (is_null($value)) return 'null';
-        return 'string';
-    }
-    
-    /**
-     * SELECT query
-     */
-    public function select($table, $conditions = [], $orderBy = null, $orderDir = 'ASC', $limit = null, $offset = 0) {
-        if (!isset($this->data[$table]) || !is_array($this->data[$table])) {
-            return [];
-        }
-        
-        $results = $this->data[$table];
-        
-        // Apply conditions (WHERE clause)
-        if (!empty($conditions)) {
-            $results = array_filter($results, function($row) use ($conditions) {
-                foreach ($conditions as $field => $condition) {
-                    $operator = $condition['operator'] ?? '=';
-                    $value = $condition['value'] ?? '';
-                    
-                    if (!isset($row[$field])) {
-                        return false;
-                    }
-                    
-                    $rowValue = $row[$field];
-                    
-                    switch ($operator) {
-                        case '=':
-                            if ($rowValue != $value) return false;
-                            break;
-                        case '!=':
-                            if ($rowValue == $value) return false;
-                            break;
-                        case '>':
-                            if ($rowValue <= $value) return false;
-                            break;
-                        case '<':
-                            if ($rowValue >= $value) return false;
-                            break;
-                        case '>=':
-                            if ($rowValue < $value) return false;
-                            break;
-                        case '<=':
-                            if ($rowValue > $value) return false;
-                            break;
-                        case 'LIKE':
-                            $pattern = str_replace('%', '.*', preg_quote($value, '/'));
-                            if (!preg_match('/^' . $pattern . '$/i', $rowValue)) return false;
-                            break;
-                        case 'IN':
-                            if (!in_array($rowValue, (array)$value)) return false;
-                            break;
-                    }
-                }
-                return true;
-            });
-        }
-        
-        // Apply ordering
-        if ($orderBy && !empty($results)) {
-            usort($results, function($a, $b) use ($orderBy, $orderDir) {
-                $aVal = $a[$orderBy] ?? '';
-                $bVal = $b[$orderBy] ?? '';
-                
-                if ($aVal == $bVal) return 0;
-                
-                $comparison = $aVal < $bVal ? -1 : 1;
-                return $orderDir === 'DESC' ? -$comparison : $comparison;
-            });
-        }
-        
-        // Apply limit and offset
-        if ($limit !== null) {
-            $results = array_slice($results, $offset, $limit);
-        }
-        
-        return array_values($results);
-    }
-    
-    /**
-     * Count rows
-     */
-    public function count($table, $conditions = []) {
-        $results = $this->select($table, $conditions);
-        return count($results);
-    }
-    
-    /**
-     * INSERT query
-     */
-    public function insert($table, $data) {
-        if (!isset($this->data[$table])) {
-            $this->data[$table] = [];
-        }
-        
-        // Auto-generate ID if not provided
-        if (!isset($data['id'])) {
-            $maxId = 0;
-            foreach ($this->data[$table] as $row) {
-                if (isset($row['id']) && is_numeric($row['id']) && $row['id'] > $maxId) {
-                    $maxId = $row['id'];
-                }
-            }
-            $data['id'] = $maxId + 1;
-        }
-        
-        $this->data[$table][] = $data;
-        return $this->saveData();
-    }
-    
-    /**
-     * UPDATE query
-     */
-    public function update($table, $data, $conditions) {
-        if (!isset($this->data[$table])) {
-            return false;
-        }
-        
-        $updated = 0;
-        foreach ($this->data[$table] as &$row) {
-            $match = true;
-            foreach ($conditions as $field => $condition) {
-                $operator = $condition['operator'] ?? '=';
-                $value = $condition['value'] ?? '';
-                
-                if (!isset($row[$field]) || $row[$field] != $value) {
-                    $match = false;
-                    break;
-                }
-            }
-            
-            if ($match) {
-                foreach ($data as $key => $value) {
-                    $row[$key] = $value;
-                }
-                $updated++;
-            }
-        }
-        
-        if ($updated > 0) {
-            $this->saveData();
-        }
-        
-        return $updated;
-    }
-    
-    /**
-     * DELETE query
-     */
-    public function delete($table, $conditions) {
-        if (!isset($this->data[$table])) {
-            return 0;
-        }
-        
-        $originalCount = count($this->data[$table]);
-        
-        $this->data[$table] = array_filter($this->data[$table], function($row) use ($conditions) {
-            foreach ($conditions as $field => $condition) {
-                $operator = $condition['operator'] ?? '=';
-                $value = $condition['value'] ?? '';
-                
-                if (isset($row[$field]) && $row[$field] == $value) {
-                    return false; // Remove this row
-                }
-            }
-            return true; // Keep this row
-        });
-        
-        $this->data[$table] = array_values($this->data[$table]); // Re-index
-        
-        $deleted = $originalCount - count($this->data[$table]);
-        
-        if ($deleted > 0) {
-            $this->saveData();
-        }
-        
-        return $deleted;
-    }
-    
-    /**
-     * Create new table
-     */
-    public function createTable($table, $structure = []) {
-        if (!isset($this->data[$table])) {
-            $this->data[$table] = [];
-            return $this->saveData();
-        }
-        return false;
-    }
-    
-    /**
-     * Drop table
-     */
-    public function dropTable($table) {
-        if (isset($this->data[$table])) {
-            unset($this->data[$table]);
-            return $this->saveData();
-        }
-        return false;
-    }
-    
-    /**
-     * Truncate table
-     */
-    public function truncateTable($table) {
-        if (isset($this->data[$table])) {
-            $this->data[$table] = [];
-            return $this->saveData();
-        }
-        return false;
-    }
-    
-    /**
-     * Get primary key field (assumes 'id' or first field)
-     */
-    public function getPrimaryKey($table) {
-        $structure = $this->getTableStructure($table);
-        if (empty($structure)) {
-            return 'id';
-        }
-        
-        foreach ($structure as $field) {
-            if ($field['Key'] === 'PRI') {
-                return $field['Field'];
-            }
-        }
-        
-        return $structure[0]['Field'] ?? 'id';
-    }
-    
-    /**
-     * Export table to array
-     */
-    public function exportTable($table) {
-        return $this->data[$table] ?? [];
-    }
-    
-    /**
-     * Import data to table
-     */
-    public function importTable($table, $data) {
-        if (!is_array($data)) {
-            return false;
-        }
-        
-        $this->data[$table] = $data;
-        return $this->saveData();
-    }
-    
-    /**
-     * Get current file path
-     */
-    public function getCurrentFile() {
-        return $this->currentFile;
-    }
-    
-    /**
-     * Get base path
-     */
-    public function getBasePath() {
-        return $this->basePath;
-    }
-    
-    /**
-     * Create new JSON file
-     */
-    public function createFile($filename, $initialData = []) {
-        $filepath = $this->basePath . basename($filename);
-        if (file_exists($filepath)) {
-            return false;
-        }
-        
-        $json = json_encode($initialData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        return file_put_contents($filepath, $json) !== false;
-    }
-    
-    /**
-     * Delete JSON file
-     */
-    public function deleteFile($filename) {
-        $filepath = $this->basePath . basename($filename);
-        if (file_exists($filepath)) {
-            return unlink($filepath);
-        }
-        return false;
-    }
-}
-
 // ===== API HASH PHP (Bcrypt) =====
 // Paste tepat di sini, setelah session_start
 if (isset($_GET['api']) && $_GET['api'] === 'generate_php_hash') {
@@ -1322,35 +912,6 @@ function render_db_setup($defaults = [], $error = '', $success = '')
         });
     }
 
-    // Media Modal Functions
-    function showImageModal(src) {
-        Swal.fire({
-            imageUrl: src,
-            imageAlt: 'Image Preview',
-            showCloseButton: true,
-            showConfirmButton: false,
-            width: 'auto',
-            background: 'var(--bg-card)',
-            customClass: {
-                popup: 'dark-modal',
-                image: 'swal-image-preview'
-            }
-        });
-    }
-
-    function showVideoModal(src) {
-        Swal.fire({
-            html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
-            showCloseButton: true,
-            showConfirmButton: false,
-            width: 'auto',
-            background: 'var(--bg-card)',
-            customClass: {
-                popup: 'dark-modal'
-            }
-        });
-    }
-
     // --- XLSX Export Logic ---
     function handleExport(event) {
         const formatSelect = document.getElementById('exportFormat');
@@ -1778,15 +1339,6 @@ if (!file_exists($configFile)) {
 
 $dbConfig = load_config($configFile);
 $user_defined_databases = $dbConfig['databases'] ?? [];
-if (!is_array($user_defined_databases)) {
-    if (is_string($user_defined_databases) && trim($user_defined_databases) !== '') {
-        // Support legacy comma-delimited strings by normalizing to an array
-        $user_defined_databases = array_filter(array_map('trim', preg_split('/[,\n]+/', $user_defined_databases)));
-    } else {
-        $user_defined_databases = [];
-    }
-}
-$user_defined_databases = array_values(array_unique($user_defined_databases));
 
 if (isset($_POST['db_setup_action'])) {
     $host = trim($_POST['db_host'] ?? '');
@@ -1842,64 +1394,6 @@ if (isset($_GET['select_db'])) {
     $_SESSION['db_name'] = $_GET['select_db'];
     header("Location: ?");
     exit;
-}
-
-// ===== DATABASE MODE SWITCHING (SQL/JSON) =====
-if (isset($_GET['db_mode'])) {
-    $_SESSION['db_mode'] = $_GET['db_mode'] === 'json' ? 'json' : 'sql';
-    header("Location: ?");
-    exit;
-}
-
-// ===== JSON FILE SELECTION =====
-if (isset($_GET['select_json_file'])) {
-    $jsonFile = $_GET['select_json_file'];
-    $isExternal = isset($_GET['external']) && $_GET['external'] === '1';
-    
-    if ($isExternal) {
-        // External file (full path from server root)
-        $fullPath = $_SERVER['DOCUMENT_ROOT'] . '/' . ltrim($jsonFile, '/');
-        
-        // Security check: ensure file is within document root
-        $realPath = realpath($fullPath);
-        $docRoot = realpath($_SERVER['DOCUMENT_ROOT']);
-        
-        if ($realPath && strpos($realPath, $docRoot) === 0 && file_exists($realPath) && pathinfo($realPath, PATHINFO_EXTENSION) === 'json') {
-            $_SESSION['json_file'] = $jsonFile;
-            $_SESSION['json_file_external'] = true;
-            $_SESSION['json_file_full_path'] = $realPath;
-        } else {
-            error_log("Invalid external JSON file: $jsonFile");
-        }
-    } else {
-        // Internal file (from json_db folder)
-        $_SESSION['json_file'] = $jsonFile;
-        $_SESSION['json_file_external'] = false;
-        unset($_SESSION['json_file_full_path']);
-    }
-    
-    $_SESSION['db_mode'] = 'json';
-    header("Location: ?");
-    exit;
-}
-
-// Initialize database mode (default to SQL)
-$_SESSION['db_mode'] = $_SESSION['db_mode'] ?? 'sql';
-
-// Initialize JsonDatabase instance
-$jsonDb = new JsonDatabase(__DIR__ . '/json_db/');
-if (!empty($_SESSION['json_file'])) {
-    try {
-        if (!empty($_SESSION['json_file_external']) && !empty($_SESSION['json_file_full_path'])) {
-            // External file - use full path directly
-            $jsonDb->setFilePath($_SESSION['json_file_full_path']);
-        } else {
-            // Internal file - use relative path from json_db folder
-            $jsonDb->selectFile($_SESSION['json_file']);
-        }
-    } catch (Exception $e) {
-        error_log("JsonDatabase error: " . $e->getMessage());
-    }
 }
 
 // ===== AUTHENTICATION CHECK =====
@@ -2319,185 +1813,6 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     }
-    // --- EXPORT FILTERED DATA ---
-    elseif ($action === 'export_filtered') {
-        $table = $_POST['table'] ?? '';
-        $format = $_POST['format'] ?? 'csv';
-        $whereClause = $_POST['where_clause'] ?? '';
-        
-        if (empty($table)) {
-            fm_set_msg('Table name is required', 'error');
-            fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
-        }
-        
-        if (empty($whereClause)) {
-            fm_set_msg('No filter conditions provided', 'error');
-            fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
-        }
-        
-        try {
-            // Check if we're in JSON mode
-            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-                // JSON Mode - parse WHERE clause and fetch data
-                // For simplicity, we'll fetch all data and filter in PHP
-                $allData = $jsonDb->select($table);
-                $rows = $allData; // TODO: Implement WHERE clause parsing for JSON
-            } else {
-                // SQL Mode
-                $query = "SELECT * FROM `$table` WHERE $whereClause";
-                $stmt = $pdo->query($query);
-                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            }
-            
-            if (empty($rows)) {
-                fm_set_msg('No data to export', 'error');
-                fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
-            }
-            
-            $filename = $table . "_filtered_" . date("Y-m-d_H-i-s");
-            
-            if ($format === 'csv') {
-                header('Content-Type: text/csv');
-                header("Content-Disposition: attachment; filename=\"$filename.csv\"");
-                $out = fopen('php://output', 'w');
-                fputcsv($out, array_keys($rows[0]));
-                foreach ($rows as $row) {
-                    fputcsv($out, $row);
-                }
-                fclose($out);
-            } elseif ($format === 'json') {
-                header('Content-Type: application/json');
-                header("Content-Disposition: attachment; filename=\"$filename.json\"");
-                echo json_encode($rows, JSON_PRETTY_PRINT);
-            } elseif ($format === 'sql') {
-                header('Content-Type: application/octet-stream');
-                header("Content-Disposition: attachment; filename=\"$filename.sql\"");
-                foreach ($rows as $row) {
-                    $keys = array_keys($row);
-                    $values = array_map(function($v) use ($pdo) {
-                        return $v === null ? "NULL" : $pdo->quote($v);
-                    }, array_values($row));
-                    echo "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $values) . ");\n";
-                }
-            }
-            exit;
-        } catch (Exception $e) {
-            fm_set_msg('Export error: ' . $e->getMessage(), 'error');
-            fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
-        }
-    }
-    // --- CREATE JSON FILE ---
-    elseif ($action === 'create_json_file') {
-        header('Content-Type: application/json');
-        $filename = $_POST['filename'] ?? '';
-        
-        if (empty($filename)) {
-            echo json_encode(['success' => false, 'message' => 'Filename is required']);
-            exit;
-        }
-        
-        if (!preg_match('/^[a-zA-Z0-9_\-]+\.json$/', $filename)) {
-            echo json_encode(['success' => false, 'message' => 'Invalid filename. Use only letters, numbers, underscore, and hyphen']);
-            exit;
-        }
-        
-        try {
-            $jsonDb->selectFile($filename);
-            // Create empty file with default structure
-            $jsonDb->createTable('default_table');
-            echo json_encode(['success' => true, 'message' => 'JSON file created successfully']);
-        } catch (Exception $e) {
-            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    // --- DELETE JSON FILE ---
-    elseif ($action === 'delete_json_file') {
-        header('Content-Type: application/json');
-        $filename = $_POST['filename'] ?? '';
-        
-        if (empty($filename)) {
-            echo json_encode(['success' => false, 'message' => 'Filename is required']);
-            exit;
-        }
-        
-        try {
-            $filePath = __DIR__ . '/json_db/' . basename($filename);
-            if (file_exists($filePath)) {
-                if (unlink($filePath)) {
-                    // Clear session if deleting current file
-                    if ($_SESSION['json_file'] === $filename) {
-                        unset($_SESSION['json_file']);
-                    }
-                    echo json_encode(['success' => true, 'message' => 'JSON file deleted successfully']);
-                } else {
-                    echo json_encode(['success' => false, 'message' => 'Failed to delete file']);
-                }
-            } else {
-                echo json_encode(['success' => false, 'message' => 'File not found']);
-            }
-        } catch (Exception $e) {
-            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        }
-        exit;
-    }
-    // --- BROWSE FILES (FOR JSON FILE SELECTION) ---
-    elseif ($action === 'browse_files') {
-        header('Content-Type: application/json');
-        $path = $_POST['path'] ?? '';
-        
-        // Security: clean path and prevent directory traversal
-        $path = str_replace(['..', '\\'], ['', '/'], $path);
-        $path = trim($path, '/');
-        
-        // Base path is document root
-        $basePath = $_SERVER['DOCUMENT_ROOT'];
-        $fullPath = $basePath . ($path ? '/' . $path : '');
-        
-        try {
-            if (!is_dir($fullPath)) {
-                throw new Exception('Invalid path');
-            }
-            
-            $items = scandir($fullPath);
-            $folders = [];
-            $files = [];
-            
-            foreach ($items as $item) {
-                if ($item === '.' || $item === '..') continue;
-                
-                // Skip hidden files/folders
-                if (substr($item, 0, 1) === '.') continue;
-                
-                $itemPath = $fullPath . '/' . $item;
-                
-                if (is_dir($itemPath)) {
-                    $folders[] = $item;
-                } elseif (is_file($itemPath) && pathinfo($item, PATHINFO_EXTENSION) === 'json') {
-                    $files[] = $item;
-                }
-            }
-            
-            // Sort
-            natcasesort($folders);
-            natcasesort($files);
-            
-            echo json_encode([
-                'success' => true,
-                'current_path' => $path,
-                'items' => [
-                    'folders' => array_values($folders),
-                    'files' => array_values($files)
-                ]
-            ]);
-        } catch (Exception $e) {
-            echo json_encode([
-                'success' => false,
-                'message' => $e->getMessage()
-            ]);
-        }
-        exit;
-    }
     // --- SAVE ROW ---
     elseif ($action === 'save_row') {
         $data = $_POST['data'] ?? [];
@@ -2505,44 +1820,28 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $pkVal = $_POST['pk_val'] ?? null;
         
         try {
-            // Check if we're in JSON mode
-            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-                if ($pkVal) {
-                    // UPDATE
-                    $jsonDb->update($table, $data, [
-                        'id' => ['operator' => '=', 'value' => $pkVal]
-                    ]);
-                    $msg = "Row updated successfully.";
-                } else {
-                    // INSERT
-                    $jsonDb->insert($table, $data);
-                    $msg = "Row inserted successfully.";
+            if ($pkVal) {
+                // UPDATE
+                $set = [];
+                $params = [];
+                foreach ($data as $col => $val) {
+                    $set[] = "`$col` = ?";
+                    $params[] = $val;
                 }
+                $params[] = $pkVal;
+                $sql = "UPDATE `$table` SET " . implode(', ', $set) . " WHERE `$pk` = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($params);
+                $msg = "Row updated successfully.";
             } else {
-                // SQL Mode
-                if ($pkVal) {
-                    // UPDATE
-                    $set = [];
-                    $params = [];
-                    foreach ($data as $col => $val) {
-                        $set[] = "`$col` = ?";
-                        $params[] = $val;
-                    }
-                    $params[] = $pkVal;
-                    $sql = "UPDATE `$table` SET " . implode(', ', $set) . " WHERE `$pk` = ?";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute($params);
-                    $msg = "Row updated successfully.";
-                } else {
-                    // INSERT
-                    $cols = array_keys($data);
-                    $vals = array_values($data);
-                    $placeholders = array_fill(0, count($vals), '?');
-                    $sql = "INSERT INTO `$table` (`" . implode('`, `', $cols) . "`) VALUES (" . implode(', ', $placeholders) . ")";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute($vals);
-                    $msg = "Row inserted successfully.";
-                }
+                // INSERT
+                $cols = array_keys($data);
+                $vals = array_values($data);
+                $placeholders = array_fill(0, count($vals), '?');
+                $sql = "INSERT INTO `$table` (`" . implode('`, `', $cols) . "`) VALUES (" . implode(', ', $placeholders) . ")";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($vals);
+                $msg = "Row inserted successfully.";
             }
             redirect("?table=$table&view=data&msg=" . urlencode($msg));
         } catch (Exception $e) {
@@ -2759,31 +2058,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Check if we're in JSON mode
-        if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-            try {
-                $jsonDb->update($tableName, [$col => $val], [
-                    'id' => ['operator' => '=', 'value' => $id]
-                ]);
-                echo json_encode(['success' => true]);
-            } catch (Exception $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-            }
-        } else {
-            // SQL Mode
-            $pkCol = getPrimaryKey($pdo, $tableName);
-            if (!$pkCol) {
-                echo json_encode(['success' => false, 'message' => 'No Primary Key found']);
-                exit;
-            }
-            
-            try {
-                $stmt = $pdo->prepare("UPDATE `$tableName` SET `$col` = ? WHERE `$pkCol` = ?");
-                $stmt->execute([$val, $id]);
-                echo json_encode(['success' => true]);
-            } catch (Exception $e) {
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-            }
+        $pkCol = getPrimaryKey($pdo, $tableName);
+        if (!$pkCol) {
+            echo json_encode(['success' => false, 'message' => 'No Primary Key found']);
+            exit;
+        }
+        
+        try {
+            $stmt = $pdo->prepare("UPDATE `$tableName` SET `$col` = ? WHERE `$pkCol` = ?");
+            $stmt->execute([$val, $id]);
+            echo json_encode(['success' => true]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
         exit;
     }
@@ -3479,16 +2765,8 @@ if ($is_logged_in) {
         $pk = $_GET['pk'];
         $val = $_GET['val'];
         try {
-            // Check if we're in JSON mode
-            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-                $jsonDb->delete($table, [
-                    'id' => ['operator' => '=', 'value' => $val]
-                ]);
-            } else {
-                // SQL Mode
-                $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `$pk` = ?");
-                $stmt->execute([$val]);
-            }
+            $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `$pk` = ?");
+            $stmt->execute([$val]);
             redirect("?table=$table&view=data&msg=" . urlencode("Row deleted."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -3518,33 +2796,9 @@ $relationshipPlantumlEncoded = null;
 $plantumlDiagramEncoded = null;
 $erdPlantumlEncoded = null;
 
-// Check if we're in JSON mode
-if ($is_logged_in && ($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-    // JSON Mode - Get tables from JSON file
-    try {
-        $jsonTables = $jsonDb->listTables();
-        foreach ($jsonTables as $tableName) {
-            $tableData = $jsonDb->select($tableName);
-            $rowCount = count($tableData);
-            $dataSize = strlen(json_encode($tableData));
-            
-            $tables[] = [
-                'Name' => $tableName,
-                'Rows' => $rowCount,
-                'Data_length' => $dataSize,
-                'Index_length' => 0,
-                'Collation' => 'JSON'
-            ];
-            
-            $totalRows += $rowCount;
-            $totalSize += $dataSize;
-        }
-    } catch (Exception $e) {
-        error_log("JsonDatabase error: " . $e->getMessage());
-        $tables = [];
-    }
-} elseif ($is_logged_in && isset($pdo) && $pdo !== null && $hasSelectedDatabase) {
-    // SQL Mode - Get tables from MySQL database
+// Hanya jalankan jika ada koneksi PDO yang valid DAN ada database yang dipilih
+if ($is_logged_in && isset($pdo) && $pdo !== null && $hasSelectedDatabase) {
+    // Tables list
     try {
         $stmt = $pdo->query("SHOW TABLE STATUS");
         $tables = $stmt->fetchAll();
@@ -3756,90 +3010,50 @@ $searchVal = $_GET['search_val'] ?? '';
 $orderBy = $_GET['order_by'] ?? null;
 $orderDir = $_GET['order_dir'] ?? 'ASC';
 
-if ($is_logged_in && $currentTable) {
-    // Check if we're in JSON mode
-    if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
-        // JSON Mode
-        try {
-            $tableStructure = $jsonDb->getTableStructure($currentTable);
-            $tableColumns = array_keys($tableStructure);
-            
-            if ($view === 'data') {
-                // Build conditions for JSON database
-                $conditions = [];
-                
-                if ($searchVal !== '') {
-                    $op = '=';
-                    $val = $searchVal;
-                    
-                    if ($searchOp === 'LIKE') {
-                        $op = 'LIKE';
-                    } elseif (in_array($searchOp, ['=', '!=', '>', '<', '>=', '<='])) {
-                        $op = $searchOp;
-                    }
-                    
-                    if ($searchColumn && in_array($searchColumn, $tableColumns)) {
-                        $conditions[$searchColumn] = ['operator' => $op, 'value' => $val];
-                    }
-                    // Note: Global search across all columns is not supported in JSON mode yet
-                }
-                
-                // Fetch data from JSON database
-                $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
-                $tableData = $jsonDb->select($currentTable, $conditions, $orderBy, $orderDir, $limit, $offset);
-            }
-        } catch (Exception $e) {
-            error_log("JsonDatabase error: " . $e->getMessage());
-            $tableStructure = [];
-            $tableColumns = [];
-            $tableData = [];
-        }
-    } elseif (isset($pdo)) {
-        // SQL Mode
-        $stmt = $pdo->query("DESCRIBE `$currentTable`");
-        $tableStructure = $stmt->fetchAll();
-        $tableColumns = array_column($tableStructure, 'Field');
+if ($is_logged_in && $currentTable && isset($pdo)) {
+    $stmt = $pdo->query("DESCRIBE `$currentTable`");
+    $tableStructure = $stmt->fetchAll();
+    $tableColumns = array_column($tableStructure, 'Field');
 
-        if ($view === 'data') {
-            $sql = "SELECT * FROM `$currentTable`";
-            $params = [];
+    if ($view === 'data') {
+        $sql = "SELECT * FROM `$currentTable`";
+        $params = [];
+        
+        if ($searchVal !== '') {
+            $op = '=';
+            $val = $searchVal;
             
-            if ($searchVal !== '') {
-                $op = '=';
-                $val = $searchVal;
-                
-                if ($searchOp === 'LIKE') {
-                    $op = 'LIKE';
-                    $val = "%$searchVal%";
-                } elseif (in_array($searchOp, ['=', '!=', '>', '<', '>=', '<='])) {
-                    $op = $searchOp;
-                }
-                
-                if ($searchColumn && in_array($searchColumn, $tableColumns)) {
-                    $sql .= " WHERE `$searchColumn` $op ?";
-                    $params[] = $val;
-                } else {
-                    // Global search
-                    $where = [];
-                    foreach ($tableColumns as $col) {
-                        $where[] = "`$col` LIKE ?";
-                        $params[] = "%$searchVal%";
-                    }
-                    if ($where) $sql .= " WHERE " . implode(" OR ", $where);
-                }
+            if ($searchOp === 'LIKE') {
+                $op = 'LIKE';
+                $val = "%$searchVal%";
+            } elseif (in_array($searchOp, ['=', '!=', '>', '<', '>=', '<='])) {
+                $op = $searchOp;
             }
             
-            // Add sorting
-            if ($orderBy && in_array($orderBy, $tableColumns)) {
-                $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
-                $sql .= " ORDER BY `$orderBy` $orderDir";
+            if ($searchColumn && in_array($searchColumn, $tableColumns)) {
+                $sql .= " WHERE `$searchColumn` $op ?";
+                $params[] = $val;
+            } else {
+                // Global search
+                $where = [];
+                foreach ($tableColumns as $col) {
+                    $where[] = "`$col` LIKE ?";
+                    $params[] = "%$searchVal%";
+                }
+                if ($where) $sql .= " WHERE " . implode(" OR ", $where);
             }
-            
-            $sql .= " LIMIT $limit OFFSET $offset";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute($params);
-            $tableData = $stmt->fetchAll();
         }
+        
+        // Add sorting
+        if ($orderBy && in_array($orderBy, $tableColumns)) {
+            $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
+            $sql .= " ORDER BY `$orderBy` $orderDir";
+        }
+        
+        $sql .= " LIMIT $limit OFFSET $offset";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $tableData = $stmt->fetchAll();
     }
 }
 ?>
@@ -3856,392 +3070,6 @@ if ($is_logged_in && $currentTable) {
     <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="<?= get_asset_url('assets/vendor/mermaid/mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js') ?>"></script>
     <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
-    <script>
-        /**
- * Advanced Filters Component
- * Multiple column filters with searchable dropdowns
- */
-
-class AdvancedFilters {
-    constructor(containerId, options = {}) {
-        this.container = document.getElementById(containerId);
-        this.table = options.table || '';
-        this.columns = options.columns || [];
-        this.filters = [];
-        this.tomSelectInstances = [];
-        
-        this.init();
-    }
-    
-    init() {
-        this.render();
-    }
-    
-    render() {
-        this.container.innerHTML = `
-            <div class="advanced-filters">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                    <h4 style="margin:0;"><i class="fas fa-filter"></i> Advanced Filters</h4>
-                    <div style="display:flex; gap:10px;">
-                        <button type="button" class="btn btn-sm" onclick="advancedFilters.addFilter()">
-                            <i class="fas fa-plus"></i> Add Filter
-                        </button>
-                        <button type="button" class="btn btn-sm" onclick="advancedFilters.clearAll()">
-                            <i class="fas fa-times"></i> Clear All
-                        </button>
-                    </div>
-                </div>
-                <div id="af-filters-container"></div>
-                <div style="margin-top:15px; display:flex; gap:10px; justify-content:flex-end;">
-                    <button type="button" class="btn btn-primary" onclick="advancedFilters.applyFilters()">
-                        <i class="fas fa-search"></i> Apply Filters
-                    </button>
-                    <button type="button" class="btn" onclick="advancedFilters.exportFilters()">
-                        <i class="fas fa-download"></i> Export Filtered Data
-                    </button>
-                </div>
-            </div>
-        `;
-        
-        // Add initial filter
-        if (this.filters.length === 0) {
-            this.addFilter();
-        }
-    }
-    
-    addFilter() {
-        const container = document.getElementById('af-filters-container');
-        const index = this.filters.length;
-        
-        const filterHtml = `
-            <div class="af-filter" data-index="${index}" style="display:flex; gap:10px; margin-bottom:12px; align-items:center; padding:12px; background:var(--bg-hover); border-radius:6px; flex-wrap:wrap;">
-                ${index > 0 ? `
-                    <select class="af-logic form-select" style="width:80px; background:var(--bg-input);">
-                        <option value="AND">AND</option>
-                        <option value="OR">OR</option>
-                    </select>
-                ` : '<div style="width:80px;"></div>'}
-                
-                <select class="af-column form-select" style="flex:1; min-width:150px; background:var(--bg-input);">
-                    <option value="">-- Select Column --</option>
-                    ${this.columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-                </select>
-                
-                <select class="af-operator form-select" style="width:140px; background:var(--bg-input);">
-                    <option value="=">=</option>
-                    <option value="!=">!=</option>
-                    <option value=">">></option>
-                    <option value="<"><</option>
-                    <option value=">=">>=</option>
-                    <option value="<="><=</option>
-                    <option value="LIKE">Contains (LIKE)</option>
-                    <option value="NOT LIKE">Not Contains</option>
-                    <option value="STARTS">Starts With</option>
-                    <option value="ENDS">Ends With</option>
-                    <option value="IN">In List</option>
-                    <option value="NOT IN">Not In List</option>
-                    <option value="IS NULL">Is Empty</option>
-                    <option value="IS NOT NULL">Is Not Empty</option>
-                    <option value="BETWEEN">Between</option>
-                </select>
-                
-                <div class="af-value-container" style="flex:1; min-width:200px; display:flex; gap:8px;">
-                    <input type="text" class="af-value form-control" placeholder="Value" style="flex:1; background:var(--bg-input);">
-                </div>
-                
-                <button type="button" class="btn btn-danger btn-sm" onclick="advancedFilters.removeFilter(${index})" title="Remove Filter">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </div>
-        `;
-        
-        container.insertAdjacentHTML('beforeend', filterHtml);
-        
-        const filterDiv = container.lastElementChild;
-        
-        // Initialize TomSelect for column dropdown
-        const columnSelect = filterDiv.querySelector('.af-column');
-        if (columnSelect && typeof TomSelect !== 'undefined') {
-            const ts = new TomSelect(columnSelect, {
-                plugins: ['clear_button'],
-                placeholder: 'Select Column',
-                maxOptions: 100,
-                sortField: { field: "text", direction: "asc" }
-            });
-            this.tomSelectInstances.push(ts);
-        }
-        
-        // Handle operator change
-        const operatorSelect = filterDiv.querySelector('.af-operator');
-        operatorSelect.addEventListener('change', (e) => {
-            this.updateValueInput(filterDiv, e.target.value);
-        });
-        
-        this.filters.push({ index });
-    }
-    
-    updateValueInput(filterDiv, operator) {
-        const valueContainer = filterDiv.querySelector('.af-value-container');
-        
-        if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
-            // No value needed
-            valueContainer.innerHTML = '<span style="color:var(--text-secondary); font-style:italic;">No value required</span>';
-        } else if (operator === 'BETWEEN') {
-            // Two inputs for range
-            valueContainer.innerHTML = `
-                <input type="text" class="af-value form-control" placeholder="From" style="flex:1; background:var(--bg-input);">
-                <span style="color:var(--text-secondary);">to</span>
-                <input type="text" class="af-value-2 form-control" placeholder="To" style="flex:1; background:var(--bg-input);">
-            `;
-        } else if (operator === 'IN' || operator === 'NOT IN') {
-            // Textarea for list
-            valueContainer.innerHTML = `
-                <textarea class="af-value form-control" placeholder="Enter values separated by comma&#10;Example: value1, value2, value3" rows="2" style="flex:1; background:var(--bg-input); resize:vertical;"></textarea>
-            `;
-        } else {
-            // Single input
-            valueContainer.innerHTML = `
-                <input type="text" class="af-value form-control" placeholder="Value" style="flex:1; background:var(--bg-input);">
-            `;
-        }
-    }
-    
-    removeFilter(index) {
-        const filter = document.querySelector(`.af-filter[data-index="${index}"]`);
-        if (filter) {
-            filter.remove();
-            this.filters = this.filters.filter(f => f.index !== index);
-            
-            // If no filters left, add one
-            if (this.filters.length === 0) {
-                this.addFilter();
-            }
-        }
-    }
-    
-    clearAll() {
-        document.getElementById('af-filters-container').innerHTML = '';
-        this.filters = [];
-        this.tomSelectInstances.forEach(ts => ts.destroy());
-        this.tomSelectInstances = [];
-        this.addFilter();
-    }
-    
-    getFilters() {
-        const filters = [];
-        
-        document.querySelectorAll('.af-filter').forEach((filterDiv, idx) => {
-            const logic = filterDiv.querySelector('.af-logic')?.value || 'AND';
-            const column = filterDiv.querySelector('.af-column')?.value;
-            const operator = filterDiv.querySelector('.af-operator')?.value;
-            const value = filterDiv.querySelector('.af-value')?.value;
-            const value2 = filterDiv.querySelector('.af-value-2')?.value;
-            
-            if (column && operator) {
-                const filter = {
-                    logic: idx > 0 ? logic : null,
-                    column,
-                    operator,
-                    value
-                };
-                
-                if (operator === 'BETWEEN' && value2) {
-                    filter.value2 = value2;
-                }
-                
-                filters.push(filter);
-            }
-        });
-        
-        return filters;
-    }
-    
-    buildWhereClause() {
-        const filters = this.getFilters();
-        if (filters.length === 0) return '';
-        
-        const conditions = filters.map((filter, idx) => {
-            let condition = idx > 0 ? `${filter.logic} ` : '';
-            condition += `\`${filter.column}\``;
-            
-            switch (filter.operator) {
-                case 'IS NULL':
-                case 'IS NOT NULL':
-                    condition += ` ${filter.operator}`;
-                    break;
-                    
-                case 'LIKE':
-                    condition += ` LIKE '%${this.escapeValue(filter.value)}%'`;
-                    break;
-                    
-                case 'NOT LIKE':
-                    condition += ` NOT LIKE '%${this.escapeValue(filter.value)}%'`;
-                    break;
-                    
-                case 'STARTS':
-                    condition += ` LIKE '${this.escapeValue(filter.value)}%'`;
-                    break;
-                    
-                case 'ENDS':
-                    condition += ` LIKE '%${this.escapeValue(filter.value)}'`;
-                    break;
-                    
-                case 'IN':
-                case 'NOT IN':
-                    const values = filter.value.split(',').map(v => `'${this.escapeValue(v.trim())}'`).join(', ');
-                    condition += ` ${filter.operator} (${values})`;
-                    break;
-                    
-                case 'BETWEEN':
-                    condition += ` BETWEEN '${this.escapeValue(filter.value)}' AND '${this.escapeValue(filter.value2)}'`;
-                    break;
-                    
-                default:
-                    const isNumeric = !isNaN(filter.value) && filter.value !== '';
-                    condition += ` ${filter.operator} ${isNumeric ? filter.value : `'${this.escapeValue(filter.value)}'`}`;
-            }
-            
-            return condition;
-        });
-        
-        return conditions.join(' ');
-    }
-    
-    escapeValue(value) {
-        return String(value).replace(/'/g, "''");
-    }
-    
-    applyFilters() {
-        const whereClause = this.buildWhereClause();
-        
-        if (!whereClause) {
-            Swal.fire('No Filters', 'Please add at least one filter condition', 'info');
-            return;
-        }
-        
-        // Build full query
-        const query = `SELECT * FROM \`${this.table}\` WHERE ${whereClause};`;
-        
-        // Show preview
-        Swal.fire({
-            title: 'Apply Filters?',
-            html: `<div style="text-align:left;">
-                <p style="margin-bottom:10px;">Generated WHERE clause:</p>
-                <pre style="background:#080808; color:#a5d6ff; padding:12px; border-radius:6px; overflow-x:auto; font-size:13px;">${whereClause}</pre>
-            </div>`,
-            icon: 'question',
-            showCancelButton: true,
-            confirmButtonText: 'Apply',
-            cancelButtonText: 'Cancel'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                // Submit query
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.innerHTML = `
-                    <input type="hidden" name="action" value="sql_query">
-                    <input type="hidden" name="table" value="${this.table}">
-                    <textarea name="query" style="display:none;">${query}</textarea>
-                `;
-                document.body.appendChild(form);
-                form.submit();
-            }
-        });
-    }
-    
-    exportFilters() {
-        const whereClause = this.buildWhereClause();
-        
-        if (!whereClause) {
-            Swal.fire('No Filters', 'Please add at least one filter condition', 'info');
-            return;
-        }
-        
-        Swal.fire({
-            title: 'Export Filtered Data',
-            html: `
-                <div style="text-align:left; margin-bottom:15px;">
-                    <p style="margin-bottom:10px;">Select export format:</p>
-                    <select id="export-format" class="form-select">
-                        <option value="csv">CSV</option>
-                        <option value="json">JSON</option>
-                        <option value="sql">SQL</option>
-                    </select>
-                </div>
-            `,
-            showCancelButton: true,
-            confirmButtonText: 'Export',
-            preConfirm: () => {
-                return document.getElementById('export-format').value;
-            }
-        }).then((result) => {
-            if (result.isConfirmed) {
-                const format = result.value;
-                const query = `SELECT * FROM \`${this.table}\` WHERE ${whereClause}`;
-                
-                // Create form to export
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.innerHTML = `
-                    <input type="hidden" name="action" value="export_filtered">
-                    <input type="hidden" name="table" value="${this.table}">
-                    <input type="hidden" name="format" value="${format}">
-                    <input type="hidden" name="where_clause" value="${this.escapeValue(whereClause)}">
-                `;
-                document.body.appendChild(form);
-                form.submit();
-            }
-        });
-    }
-    
-    saveFilters() {
-        const filters = this.getFilters();
-        const json = JSON.stringify(filters, null, 2);
-        
-        // Download as JSON
-        const blob = new Blob([json], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${this.table}_filters_${Date.now()}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-    }
-    
-    loadFilters(filtersData) {
-        this.clearAll();
-        
-        filtersData.forEach((filter, idx) => {
-            if (idx > 0) this.addFilter();
-            
-            const filterDiv = document.querySelectorAll('.af-filter')[idx];
-            if (filterDiv) {
-                if (filter.logic) {
-                    const logicSelect = filterDiv.querySelector('.af-logic');
-                    if (logicSelect) logicSelect.value = filter.logic;
-                }
-                
-                filterDiv.querySelector('.af-column').value = filter.column;
-                filterDiv.querySelector('.af-operator').value = filter.operator;
-                
-                this.updateValueInput(filterDiv, filter.operator);
-                
-                const valueInput = filterDiv.querySelector('.af-value');
-                if (valueInput) valueInput.value = filter.value;
-                
-                if (filter.value2) {
-                    const value2Input = filterDiv.querySelector('.af-value-2');
-                    if (value2Input) value2Input.value = filter.value2;
-                }
-            }
-        });
-    }
-}
-
-// Global instance
-let advancedFilters = null;
-
-    </script>
     <script>
         // Functional stub: fetches all table structures and copies to clipboard immediately.
         if (typeof copyAllTablesStructure === 'undefined') {
@@ -4302,92 +3130,6 @@ let advancedFilters = null;
         .ts-dropdown .option { color: var(--text-primary) !important; }
         .ts-dropdown .active { background-color: var(--accent) !important; color: var(--text-primary) !important; }
         .ts-wrapper.single .ts-control:after { border-color: #888 transparent transparent transparent !important; }
-        
-        /* SweetAlert2 Custom Dark Theme */
-        .swal2-popup {
-            background: var(--bg-card) !important;
-            border: 1px solid var(--border-color) !important;
-            color: var(--text-primary) !important;
-        }
-        .swal2-title {
-            color: var(--text-primary) !important;
-        }
-        .swal2-html-container {
-            color: var(--text-secondary) !important;
-        }
-        .swal2-input, .swal2-textarea {
-            background: var(--bg-input) !important;
-            border: 1px solid var(--border-color) !important;
-            color: var(--text-primary) !important;
-        }
-        .swal2-input:focus, .swal2-textarea:focus {
-            border-color: var(--accent) !important;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1) !important;
-        }
-        .swal2-confirm {
-            background: var(--accent) !important;
-            border: none !important;
-        }
-        .swal2-confirm:hover {
-            background: #2563eb !important;
-        }
-        .swal2-cancel {
-            background: var(--bg-hover) !important;
-            border: 1px solid var(--border-color) !important;
-            color: var(--text-primary) !important;
-        }
-        .swal2-cancel:hover {
-            background: #2a2a2a !important;
-        }
-        .swal2-styled:focus {
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3) !important;
-        }
-        .swal2-icon.swal2-success [class^='swal2-success-line'] {
-            background-color: var(--success) !important;
-        }
-        .swal2-icon.swal2-success .swal2-success-ring {
-            border-color: rgba(16, 185, 129, 0.3) !important;
-        }
-        .swal2-icon.swal2-error [class^='swal2-x-mark-line'] {
-            background-color: var(--danger) !important;
-        }
-        .swal2-icon.swal2-warning {
-            border-color: #f59e0b !important;
-            color: #f59e0b !important;
-        }
-        .swal2-icon.swal2-info {
-            border-color: var(--accent) !important;
-            color: var(--accent) !important;
-        }
-        .swal2-icon.swal2-question {
-            border-color: var(--accent) !important;
-            color: var(--accent) !important;
-        }
-        /* SweetAlert2 Toast */
-        .swal2-toast {
-            background: var(--bg-card) !important;
-            border: 1px solid var(--border-color) !important;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
-        }
-        .swal2-toast .swal2-title {
-            color: var(--text-primary) !important;
-        }
-        .swal2-toast .swal2-icon {
-            border-width: 2px !important;
-        }
-        /* SweetAlert2 Validation Message */
-        .swal2-validation-message {
-            background: var(--bg-hover) !important;
-            color: var(--danger) !important;
-            border: 1px solid var(--danger) !important;
-        }
-        /* SweetAlert2 Close Button */
-        .swal2-close {
-            color: var(--text-secondary) !important;
-        }
-        .swal2-close:hover {
-            color: var(--text-primary) !important;
-        }
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -4608,184 +3350,6 @@ let advancedFilters = null;
     word-break: break-all;
     position: relative;
 }
-
-/* Media Preview Styles */
-.swal-image-preview {
-    max-width: 90vw !important;
-    max-height: 80vh !important;
-    object-fit: contain;
-    border-radius: 8px;
-}
-
-.dark-modal {
-    background: var(--bg-card) !important;
-    color: var(--text-primary) !important;
-}
-/* Query Builder & Advanced Filters Styles */
-
-.query-builder,
-.advanced-filters {
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 20px;
-}
-
-.qb-section {
-    margin-bottom: 25px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.qb-section:last-child {
-    border-bottom: none;
-    margin-bottom: 0;
-}
-
-.qb-section h4 {
-    margin: 0 0 15px 0;
-    color: var(--text-primary);
-    font-size: 1rem;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.qb-section h4 i {
-    color: var(--accent);
-}
-
-.qb-columns label {
-    cursor: pointer;
-    padding: 4px 0;
-    transition: color 0.2s;
-}
-
-.qb-columns label:hover {
-    color: var(--accent);
-}
-
-.qb-condition,
-.qb-order,
-.af-filter {
-    animation: slideIn 0.3s ease-out;
-}
-
-@keyframes slideIn {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.qb-condition select,
-.qb-condition input,
-.qb-order select,
-.af-filter select,
-.af-filter input,
-.af-filter textarea {
-    font-size: 0.9rem;
-}
-
-/* Advanced Filters specific */
-.af-filter {
-    position: relative;
-    transition: all 0.2s;
-}
-
-.af-filter:hover {
-    background: var(--bg-card) !important;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.af-value-container {
-    display: flex;
-    align-items: center;
-}
-
-/* Responsive */
-@media (max-width: 768px) {
-    .qb-condition,
-    .qb-order,
-    .af-filter {
-        flex-direction: column;
-        align-items: stretch !important;
-    }
-    
-    .qb-condition > *,
-    .qb-order > *,
-    .af-filter > * {
-        width: 100% !important;
-        min-width: 100% !important;
-    }
-}
-
-/* Button styles */
-.btn-sm {
-    padding: 6px 12px;
-    font-size: 0.85rem;
-}
-
-/* TomSelect overrides for dark theme */
-.ts-wrapper.form-select .ts-control {
-    background-color: var(--bg-input) !important;
-    border-color: var(--border-color) !important;
-}
-
-.ts-dropdown {
-    background-color: var(--bg-card) !important;
-    border-color: var(--border-color) !important;
-}
-
-.ts-dropdown .option {
-    color: var(--text-primary) !important;
-}
-
-.ts-dropdown .option:hover,
-.ts-dropdown .option.active {
-    background-color: var(--bg-hover) !important;
-    color: var(--accent) !important;
-}
-
-/* Query preview */
-#qb-generated-query {
-    font-family: 'Fira Code', 'Courier New', monospace;
-    line-height: 1.6;
-    tab-size: 4;
-}
-
-/* Loading state */
-.qb-loading,
-.af-loading {
-    position: relative;
-    pointer-events: none;
-    opacity: 0.6;
-}
-
-.qb-loading::after,
-.af-loading::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 30px;
-    height: 30px;
-    margin: -15px 0 0 -15px;
-    border: 3px solid var(--border-color);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
     </style>
 </head>
 <body>
@@ -4796,64 +3360,17 @@ let advancedFilters = null;
             <i class="fas fa-database"></i> <span>Adminer Lite</span>
         </div>
         <div class="db-info">
-            <!-- Database Mode Toggle -->
-            <div style="margin-bottom: 10px; padding: 8px; background: var(--bg-hover); border-radius: 4px; border: 1px solid #444;">
-                <div style="display: flex; gap: 5px; margin-bottom: 5px;">
-                    <button type="button" onclick="switchDbMode('sql')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'sql' ? 'background: var(--accent); color: white;' : '' ?>">
-                        <i class="fas fa-database"></i> SQL
-                    </button>
-                    <button type="button" onclick="switchDbMode('json')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'json' ? 'background: var(--accent); color: white;' : '' ?>">
-                        <i class="fas fa-file-code"></i> JSON
-                    </button>
-                </div>
-                <small style="font-size: 0.7rem; color: var(--text-secondary); display: block; text-align: center;">
-                    Mode: <?= strtoupper($_SESSION['db_mode'] ?? 'sql') ?>
-                </small>
-            </div>
-            
-            <?php if (($_SESSION['db_mode'] ?? 'sql') === 'sql'): ?>
-                <form method="GET" style="margin-bottom: 5px;">
-                    <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
-                        <option value="">-- Pilih Database --</option>
-                        <?php foreach ($databases as $db): ?>
-                            <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
-                                <?=htmlspecialchars($db)?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </form>
-                <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
-            <?php else: ?>
-                <form method="GET" style="margin-bottom: 5px;">
-                    <select name="select_json_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
-                        <option value="">-- Pilih JSON File --</option>
-                        <?php 
-                        if (isset($jsonDb)) {
-                            $jsonFiles = $jsonDb->listFiles();
-                            foreach ($jsonFiles as $file): ?>
-                                <option value="<?=htmlspecialchars($file)?>" <?=$file === ($_SESSION['json_file'] ?? '') ? 'selected' : ''?>>
-                                    <?=htmlspecialchars($file)?>
-                                </option>
-                            <?php endforeach;
-                        }
-                        ?>
-                    </select>
-                </form>
-                <div style="display: flex; gap: 5px; margin-bottom: 5px;">
-                    <button type="button" onclick="createNewJsonFile()" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--success);">
-                        <i class="fas fa-plus"></i> New
-                    </button>
-                    <button type="button" onclick="browseJsonFile()" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--accent);">
-                        <i class="fas fa-folder-open"></i> Browse
-                    </button>
-                    <?php if (!empty($_SESSION['json_file'])): ?>
-                    <button type="button" onclick="deleteJsonFile('<?=htmlspecialchars($_SESSION['json_file'])?>')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--danger);">
-                        <i class="fas fa-trash"></i> Delete
-                    </button>
-                    <?php endif; ?>
-                </div>
-                <small><i class="fas fa-folder"></i> <span>JSON Database</span></small>
-            <?php endif; ?>
+            <form method="GET" style="margin-bottom: 5px;">
+                <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
+                    <option value="">-- Pilih Database --</option>
+                    <?php foreach ($databases as $db): ?>
+                        <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
+                            <?=htmlspecialchars($db)?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </form>
+            <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
         </div>
         <div class="nav-list">
             <div style="padding: 0 20px 10px;">
@@ -5313,64 +3830,10 @@ let advancedFilters = null;
                                         </td>
                                         <?php foreach ($row as $key => $val):
                                             $displayVal = $val !== null ? htmlspecialchars((string)$val) : '<span style="color:#666">NULL</span>';
-                                            
-                                            // Media Display Logic (Images)
-                                            $isMediaColumn = false;
-                                            if ($val !== null) {
-                                                $valStr = (string)$val;
-                                                // Check if it's a base64 image
-                                                if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
-                                                    $isMediaColumn = true;
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<img src="' . htmlspecialchars($valStr) . '" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="Click to enlarge">'
-                                                        . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
-                                                        . '</div>';
-                                                }
-                                                // Check if it's a file path to an image (only show if column name suggests it's an image)
-                                                elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
-                                                        (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
-                                                         stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
-                                                         stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
-                                                         stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
-                                                    $isMediaColumn = true;
-                                                    // Try to construct a valid URL
-                                                    $imgUrl = $valStr;
-                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                                                        // Relative path - try to make it absolute
-                                                        $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                                                    }
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                                                        . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
-                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
-                                                        . '</div>'
-                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                                                        . '</div>';
-                                                }
-                                                // Check if it's a video file path
-                                                elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
-                                                        (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
-                                                         stripos($key, 'media') !== false)) {
-                                                    $isMediaColumn = true;
-                                                    $videoUrl = $valStr;
-                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                                                        $videoUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                                                    }
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                                                        . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" muted>'
-                                                        . '<source src="' . htmlspecialchars($videoUrl) . '">'
-                                                        . '</video>'
-                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
-                                                        . '</div>'
-                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                                                        . '</div>';
-                                                }
-                                            }
-                                            
-                                            // Clickable Foreign Keys Logic (only if not media)
-                                            if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
+                                            // Clickable Foreign Keys Logic
+                                            if ($val !== null && substr($key, -3) === '_id') {
                                                 $targetTable = substr($key, 0, -3) . 's'; // simple pluralization
+                                                // Check if table exists (optional, skipping for speed)
                                                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
                                             }
                                             ?><td data-col="<?=htmlspecialchars($key)?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
@@ -6022,98 +4485,66 @@ async function generatePhpHash() {
 
                 <?php elseif ($view === 'sql'): 
                     ?>
-                    <!-- SQL View Tabs -->
-                    <div style="margin-bottom:20px; border-bottom:2px solid var(--border-color);">
-                        <div style="display:flex; gap:5px;">
-                            <button type="button" class="sql-tab-btn active" onclick="switchSqlTab('sql-editor')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-terminal"></i> SQL Editor
-                            </button>
-                            <button type="button" class="sql-tab-btn" onclick="switchSqlTab('query-builder')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-tools"></i> Query Builder
-                            </button>
-                            <button type="button" class="sql-tab-btn" onclick="switchSqlTab('advanced-filters')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-filter"></i> Advanced Filters
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <style>
-                        .sql-tab-btn.active {
-                            color: var(--accent) !important;
-                            border-bottom-color: var(--accent) !important;
-                        }
-                        .sql-tab-btn:hover {
-                            color: var(--text-primary) !important;
-                        }
-                        .sql-tab-content {
-                            display: none;
-                        }
-                        .sql-tab-content.active {
-                            display: block;
-                        }
-                    </style>
-                    
-                    <!-- SQL Editor Tab -->
-                    <div id="sql-editor" class="sql-tab-content active">
-                        <div class="card">
-                            <h3><i class="fas fa-terminal"></i> SQL Command</h3>
-                            <form method="POST" id="sqlForm">
-                                <input type="hidden" name="action" value="sql_query">
-                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                
-                                <div style="display:flex; gap:15px; flex-wrap:wrap;">
-                                    <div style="flex:1; min-width:300px;">
-                                        <textarea name="query" id="queryInput" class="form-control" rows="12" style="font-family: 'Fira Code', monospace; background: #080808; border:1px solid #333; color:#a5d6ff; line-height:1.5; padding:15px; font-size:14px;" placeholder="SELECT * FROM `<?=htmlspecialchars($currentTable ?: 'table')?>` WHERE 1"><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : ($currentTable ? "SELECT * FROM `$currentTable` LIMIT 50" : "SHOW TABLES")?></textarea>
-                                        <div style="margin-top: 10px; display:flex; gap:10px; justify-content:flex-end;">
-                                            <button type="button" class="btn" onclick="document.getElementById('queryInput').value=''">Clear</button>
-                                            <button type="submit" class="btn btn-primary" style="padding-left:20px; padding-right:20px;"><i class="fas fa-play"></i> Execute</button>
-                                        </div>
-                                    </div>
-                                    
-                                    <div style="width: 280px; display: flex; flex-direction: column; border-left:1px solid var(--border-color); padding-left:15px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                                            <span style="font-weight:bold; color:var(--text-secondary); text-transform:uppercase; font-size:0.75rem;">Query History</span>
-                                            <button type="button" class="btn btn-danger" onclick="clearHistory()" style="padding:2px 6px; font-size:0.7rem;" title="Clear History"><i class="fas fa-trash"></i></button>
-                                        </div>
-                                        <div id="queryHistory" style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; overflow-y:auto; font-size:0.8rem; max-height:300px;">
-                                            <!-- JS populates this -->
-                                        </div>
+                    <div class="card">
+                        <h3><i class="fas fa-terminal"></i> SQL Command</h3>
+                        <form method="POST" id="sqlForm">
+                            <input type="hidden" name="action" value="sql_query">
+                            <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                            
+                            <div style="display:flex; gap:15px; flex-wrap:wrap;">
+                                <div style="flex:1; min-width:300px;">
+                                    <textarea name="query" id="queryInput" class="form-control" rows="12" style="font-family: 'Fira Code', monospace; background: #080808; border:1px solid #333; color:#a5d6ff; line-height:1.5; padding:15px; font-size:14px;" placeholder="SELECT * FROM `<?=htmlspecialchars($currentTable ?: 'table')?>` WHERE 1"><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : ($currentTable ? "SELECT * FROM `$currentTable` LIMIT 50" : "SHOW TABLES")?></textarea>
+                                    <div style="margin-top: 10px; display:flex; gap:10px; justify-content:flex-end;">
+                                        <button type="button" class="btn" onclick="document.getElementById('queryInput').value=''">Clear</button>
+                                        <button type="submit" class="btn btn-primary" style="padding-left:20px; padding-right:20px;"><i class="fas fa-play"></i> Execute</button>
                                     </div>
                                 </div>
-                            </form>
-                            
-                            <script>
-                                const historyKey = 'adminer_query_history_<?=md5($_SESSION['db_host'].$_SESSION['db_user'])?>';
-                                const input = document.getElementById('queryInput');
-                                const list = document.getElementById('queryHistory');
                                 
-                                function renderHistory() {
-                                    let history = JSON.parse(localStorage.getItem(historyKey) || '[]');
-                                    list.innerHTML = '';
-                                    history.forEach(q => {
-                                        let item = document.createElement('div');
-                                        item.style.padding = '10px';
-                                        item.style.borderBottom = '1px solid #333';
-                                        item.style.cursor = 'pointer';
-                                        item.style.whiteSpace = 'pre-wrap';
-                                        item.style.maxHeight = '60px';
-                                        item.style.overflow = 'hidden';
-                                        item.style.textOverflow = 'ellipsis';
-                                        item.style.fontFamily = 'monospace';
-                                        item.style.color = '#ccc';
-                                        item.style.transition = '0.2s';
-                                        item.title = q;
-                                        item.textContent = q;
-                                        item.onmouseover = () => { item.style.background = '#333'; item.style.color = '#fff'; };
-                                        item.onmouseout = () => { item.style.background = 'transparent'; item.style.color = '#ccc'; };
-                                        item.onclick = () => { 
-                                            input.value = q; 
-                                            input.scrollTop = 0;
-                                        };
-                                        list.appendChild(item);
-                                    });
-                                    if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history yet.<br>Execute a query to save it.</div>';
-                                }
+                                <div style="width: 280px; display: flex; flex-direction: column; border-left:1px solid var(--border-color); padding-left:15px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                        <span style="font-weight:bold; color:var(--text-secondary); text-transform:uppercase; font-size:0.75rem;">Query History</span>
+                                        <button type="button" class="btn btn-danger" onclick="clearHistory()" style="padding:2px 6px; font-size:0.7rem;" title="Clear History"><i class="fas fa-trash"></i></button>
+                                    </div>
+                                    <div id="queryHistory" style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; overflow-y:auto; font-size:0.8rem; max-height:300px;">
+                                        <!-- JS populates this -->
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                        
+                        <script>
+                            const historyKey = 'adminer_query_history_<?=md5($_SESSION['db_host'].$_SESSION['db_user'])?>';
+                            const input = document.getElementById('queryInput');
+                            const list = document.getElementById('queryHistory');
+                            
+                            function renderHistory() {
+                                let history = JSON.parse(localStorage.getItem(historyKey) || '[]');
+                                list.innerHTML = '';
+                                history.forEach(q => {
+                                    let item = document.createElement('div');
+                                    item.style.padding = '10px';
+                                    item.style.borderBottom = '1px solid #333';
+                                    item.style.cursor = 'pointer';
+                                    item.style.whiteSpace = 'pre-wrap'; // Allow wrap for long queries
+                                    item.style.maxHeight = '60px'; // Limit height
+                                    item.style.overflow = 'hidden';
+                                    item.style.textOverflow = 'ellipsis';
+                                    item.style.fontFamily = 'monospace';
+                                    item.style.color = '#ccc';
+                                    item.style.transition = '0.2s';
+                                    item.title = q;
+                                    item.textContent = q;
+                                    item.onmouseover = () => { item.style.background = '#333'; item.style.color = '#fff'; };
+                                    item.onmouseout = () => { item.style.background = 'transparent'; item.style.color = '#ccc'; };
+                                    item.onclick = () => { 
+                                        input.value = q; 
+                                        // Scroll to top of textarea
+                                        input.scrollTop = 0;
+                                    };
+                                    list.appendChild(item);
+                                });
+                                if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history yet.<br>Execute a query to save it.</div>';
+                            }
                                                         
                             function clearHistory() {
                                 Swal.fire({
@@ -6196,22 +4627,7 @@ async function generatePhpHash() {
                             </div>
                         <?php endif; ?>
                     </div>
-                    
-                    <!-- Query Builder Tab -->
-                    <div id="query-builder" class="sql-tab-content">
-                        <div class="card">
-                            <h3><i class="fas fa-tools"></i> Query Builder</h3>
-                            <div id="query-builder-container"></div>
-                        </div>
-                    </div>
-                    
-                    <!-- Advanced Filters Tab -->
-                    <div id="advanced-filters" class="sql-tab-content">
-                        <div class="card">
-                            <h3><i class="fas fa-filter"></i> Advanced Filters</h3>
-                            <div id="advanced-filters-container"></div>
-                        </div>
-                    </div>
+
                 <?php elseif ($view === 'import'): ?>
                     <div class="card">
                         <h3>Import Database</h3>
@@ -6842,371 +5258,6 @@ async function generatePhpHash() {
                 <?php endif; ?>
         </div>
     </div>
-     <script>
-             /**
- * Visual Query Builder
- * Allows users to build SQL queries using a GUI
- */
-
-class QueryBuilder {
-    constructor(containerId, options = {}) {
-        this.container = document.getElementById(containerId);
-        this.table = options.table || '';
-        this.columns = options.columns || [];
-        this.conditions = [];
-        this.orderBy = [];
-        this.limit = null;
-        this.offset = 0;
-        
-        this.init();
-    }
-    
-    init() {
-        this.render();
-        this.attachEvents();
-    }
-    
-    render() {
-        this.container.innerHTML = `
-            <div class="query-builder">
-                <div class="qb-section">
-                    <h4><i class="fas fa-table"></i> SELECT Columns</h4>
-                    <div id="qb-columns" class="qb-columns">
-                        <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-                            <input type="checkbox" id="qb-select-all" checked>
-                            <span>Select All (*)</span>
-                        </label>
-                        <div id="qb-column-list" style="display:none; max-height:200px; overflow-y:auto; padding-left:24px;">
-                            ${this.columns.map(col => `
-                                <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
-                                    <input type="checkbox" class="qb-column-check" value="${col}" checked>
-                                    <span>${col}</span>
-                                </label>
-                            `).join('')}
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="qb-section">
-                    <h4><i class="fas fa-filter"></i> WHERE Conditions</h4>
-                    <div id="qb-conditions"></div>
-                    <button type="button" class="btn btn-sm" onclick="queryBuilder.addCondition()">
-                        <i class="fas fa-plus"></i> Add Condition
-                    </button>
-                </div>
-                
-                <div class="qb-section">
-                    <h4><i class="fas fa-sort"></i> ORDER BY</h4>
-                    <div id="qb-orderby"></div>
-                    <button type="button" class="btn btn-sm" onclick="queryBuilder.addOrderBy()">
-                        <i class="fas fa-plus"></i> Add Order
-                    </button>
-                </div>
-                
-                <div class="qb-section">
-                    <h4><i class="fas fa-list"></i> LIMIT & OFFSET</h4>
-                    <div style="display:flex; gap:15px; align-items:center;">
-                        <label style="display:flex; align-items:center; gap:8px;">
-                            <span>LIMIT:</span>
-                            <input type="number" id="qb-limit" class="form-control" style="width:100px;" placeholder="No limit" min="1">
-                        </label>
-                        <label style="display:flex; align-items:center; gap:8px;">
-                            <span>OFFSET:</span>
-                            <input type="number" id="qb-offset" class="form-control" style="width:100px;" value="0" min="0">
-                        </label>
-                    </div>
-                </div>
-                
-                <div class="qb-section">
-                    <h4><i class="fas fa-code"></i> Generated Query</h4>
-                    <textarea id="qb-generated-query" class="form-control" rows="6" readonly style="font-family:monospace; background:#080808; color:#a5d6ff; border:1px solid #333;"></textarea>
-                    <div style="margin-top:10px; display:flex; gap:10px;">
-                        <button type="button" class="btn btn-primary" onclick="queryBuilder.executeQuery()">
-                            <i class="fas fa-play"></i> Execute Query
-                        </button>
-                        <button type="button" class="btn" onclick="queryBuilder.copyQuery()">
-                            <i class="fas fa-copy"></i> Copy Query
-                        </button>
-                        <button type="button" class="btn" onclick="queryBuilder.reset()">
-                            <i class="fas fa-redo"></i> Reset
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        this.updateQuery();
-    }
-    
-    attachEvents() {
-        // Select all checkbox
-        const selectAll = document.getElementById('qb-select-all');
-        const columnList = document.getElementById('qb-column-list');
-        
-        if (selectAll) {
-            selectAll.addEventListener('change', (e) => {
-                if (e.target.checked) {
-                    columnList.style.display = 'none';
-                    document.querySelectorAll('.qb-column-check').forEach(cb => cb.checked = true);
-                } else {
-                    columnList.style.display = 'block';
-                }
-                this.updateQuery();
-            });
-        }
-        
-        // Column checkboxes
-        document.querySelectorAll('.qb-column-check').forEach(cb => {
-            cb.addEventListener('change', () => this.updateQuery());
-        });
-        
-        // Limit and offset
-        document.getElementById('qb-limit')?.addEventListener('input', () => this.updateQuery());
-        document.getElementById('qb-offset')?.addEventListener('input', () => this.updateQuery());
-    }
-    
-    addCondition() {
-        const conditionsDiv = document.getElementById('qb-conditions');
-        const index = this.conditions.length;
-        
-        const conditionHtml = `
-            <div class="qb-condition" data-index="${index}" style="display:flex; gap:10px; margin-bottom:10px; align-items:center; flex-wrap:wrap;">
-                ${index > 0 ? `
-                    <select class="form-select qb-logic" style="width:80px;">
-                        <option value="AND">AND</option>
-                        <option value="OR">OR</option>
-                    </select>
-                ` : ''}
-                <select class="form-select qb-column" style="width:150px;">
-                    <option value="">-- Column --</option>
-                    ${this.columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-                </select>
-                <select class="form-select qb-operator" style="width:120px;">
-                    <option value="=">=</option>
-                    <option value="!=">!=</option>
-                    <option value=">">></option>
-                    <option value="<"><</option>
-                    <option value=">=">>=</option>
-                    <option value="<="><=</option>
-                    <option value="LIKE">LIKE</option>
-                    <option value="NOT LIKE">NOT LIKE</option>
-                    <option value="IN">IN</option>
-                    <option value="NOT IN">NOT IN</option>
-                    <option value="IS NULL">IS NULL</option>
-                    <option value="IS NOT NULL">IS NOT NULL</option>
-                </select>
-                <input type="text" class="form-control qb-value" placeholder="Value" style="flex:1; min-width:150px;">
-                <button type="button" class="btn btn-danger btn-sm" onclick="queryBuilder.removeCondition(${index})">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-        `;
-        
-        conditionsDiv.insertAdjacentHTML('beforeend', conditionHtml);
-        
-        // Attach change events
-        const condition = conditionsDiv.lastElementChild;
-        condition.querySelectorAll('select, input').forEach(el => {
-            el.addEventListener('change', () => this.updateQuery());
-            el.addEventListener('input', () => this.updateQuery());
-        });
-        
-        // Handle operator change (hide value input for IS NULL/IS NOT NULL)
-        condition.querySelector('.qb-operator').addEventListener('change', (e) => {
-            const valueInput = condition.querySelector('.qb-value');
-            if (e.target.value === 'IS NULL' || e.target.value === 'IS NOT NULL') {
-                valueInput.style.display = 'none';
-                valueInput.value = '';
-            } else {
-                valueInput.style.display = 'block';
-            }
-            this.updateQuery();
-        });
-        
-        this.conditions.push({});
-        this.updateQuery();
-    }
-    
-    removeCondition(index) {
-        const condition = document.querySelector(`.qb-condition[data-index="${index}"]`);
-        if (condition) {
-            condition.remove();
-            this.conditions.splice(index, 1);
-            this.updateQuery();
-        }
-    }
-    
-    addOrderBy() {
-        const orderByDiv = document.getElementById('qb-orderby');
-        const index = this.orderBy.length;
-        
-        const orderHtml = `
-            <div class="qb-order" data-index="${index}" style="display:flex; gap:10px; margin-bottom:10px; align-items:center;">
-                <select class="form-select qb-order-column" style="width:200px;">
-                    <option value="">-- Column --</option>
-                    ${this.columns.map(col => `<option value="${col}">${col}</option>`).join('')}
-                </select>
-                <select class="form-select qb-order-dir" style="width:100px;">
-                    <option value="ASC">ASC</option>
-                    <option value="DESC">DESC</option>
-                </select>
-                <button type="button" class="btn btn-danger btn-sm" onclick="queryBuilder.removeOrderBy(${index})">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-        `;
-        
-        orderByDiv.insertAdjacentHTML('beforeend', orderHtml);
-        
-        // Attach change events
-        const order = orderByDiv.lastElementChild;
-        order.querySelectorAll('select').forEach(el => {
-            el.addEventListener('change', () => this.updateQuery());
-        });
-        
-        this.orderBy.push({});
-        this.updateQuery();
-    }
-    
-    removeOrderBy(index) {
-        const order = document.querySelector(`.qb-order[data-index="${index}"]`);
-        if (order) {
-            order.remove();
-            this.orderBy.splice(index, 1);
-            this.updateQuery();
-        }
-    }
-    
-    updateQuery() {
-        const query = this.buildQuery();
-        document.getElementById('qb-generated-query').value = query;
-    }
-    
-    buildQuery() {
-        // SELECT clause
-        let query = 'SELECT ';
-        
-        const selectAll = document.getElementById('qb-select-all')?.checked;
-        if (selectAll) {
-            query += '*';
-        } else {
-            const selectedColumns = Array.from(document.querySelectorAll('.qb-column-check:checked'))
-                .map(cb => `\`${cb.value}\``);
-            query += selectedColumns.length > 0 ? selectedColumns.join(', ') : '*';
-        }
-        
-        query += `\nFROM \`${this.table}\``;
-        
-        // WHERE clause
-        const conditions = [];
-        document.querySelectorAll('.qb-condition').forEach((condDiv, idx) => {
-            const logic = condDiv.querySelector('.qb-logic')?.value || '';
-            const column = condDiv.querySelector('.qb-column')?.value;
-            const operator = condDiv.querySelector('.qb-operator')?.value;
-            const value = condDiv.querySelector('.qb-value')?.value;
-            
-            if (column && operator) {
-                let condStr = idx > 0 ? `${logic} ` : '';
-                condStr += `\`${column}\` ${operator}`;
-                
-                if (operator !== 'IS NULL' && operator !== 'IS NOT NULL') {
-                    if (operator === 'IN' || operator === 'NOT IN') {
-                        condStr += ` (${value})`;
-                    } else if (operator === 'LIKE' || operator === 'NOT LIKE') {
-                        condStr += ` '${value.replace(/'/g, "''")}'`;
-                    } else {
-                        // Try to detect if value is numeric
-                        condStr += isNaN(value) ? ` '${value.replace(/'/g, "''")}'` : ` ${value}`;
-                    }
-                }
-                
-                conditions.push(condStr);
-            }
-        });
-        
-        if (conditions.length > 0) {
-            query += '\nWHERE ' + conditions.join('\n  ');
-        }
-        
-        // ORDER BY clause
-        const orders = [];
-        document.querySelectorAll('.qb-order').forEach(orderDiv => {
-            const column = orderDiv.querySelector('.qb-order-column')?.value;
-            const dir = orderDiv.querySelector('.qb-order-dir')?.value;
-            
-            if (column) {
-                orders.push(`\`${column}\` ${dir}`);
-            }
-        });
-        
-        if (orders.length > 0) {
-            query += '\nORDER BY ' + orders.join(', ');
-        }
-        
-        // LIMIT clause
-        const limit = document.getElementById('qb-limit')?.value;
-        const offset = document.getElementById('qb-offset')?.value;
-        
-        if (limit) {
-            query += `\nLIMIT ${limit}`;
-            if (offset && offset > 0) {
-                query += ` OFFSET ${offset}`;
-            }
-        }
-        
-        return query + ';';
-    }
-    
-    executeQuery() {
-        const query = document.getElementById('qb-generated-query').value;
-        
-        // Submit to SQL form
-        const sqlForm = document.getElementById('sqlForm');
-        if (sqlForm) {
-            const queryInput = sqlForm.querySelector('textarea[name="query"]');
-            if (queryInput) {
-                queryInput.value = query;
-                sqlForm.submit();
-            }
-        } else {
-            // Alternative: create and submit form
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.innerHTML = `
-                <input type="hidden" name="action" value="sql_query">
-                <textarea name="query" style="display:none;">${query}</textarea>
-            `;
-            document.body.appendChild(form);
-            form.submit();
-        }
-    }
-    
-    copyQuery() {
-        const query = document.getElementById('qb-generated-query').value;
-        navigator.clipboard.writeText(query).then(() => {
-            Swal.fire({
-                toast: true,
-                position: 'top-end',
-                showConfirmButton: false,
-                timer: 1500,
-                icon: 'success',
-                title: 'Query copied!'
-            });
-        });
-    }
-    
-    reset() {
-        this.conditions = [];
-        this.orderBy = [];
-        this.render();
-    }
-}
-
-// Global instance
-let queryBuilder = null;
-
-                    </script>
-
     <script>
         (function() {
             if (typeof window.confirmBulkTables === 'function') {
@@ -7293,433 +5344,6 @@ let queryBuilder = null;
                 });
             };
         })();
-
-        // ===== GLOBAL FUNCTIONS (MUST BE AVAILABLE ON ALL PAGES) =====
-        
-        // Global SweetAlert Helpers
-        function saConfirmLink(e, text) {
-            e.preventDefault();
-            const href = e.currentTarget.getAttribute('href');
-            Swal.fire({
-                title: 'Are you sure?',
-                text: text,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#3085d6',
-                cancelButtonColor: '#d33',
-                confirmButtonText: 'Yes, proceed!'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    window.location.href = href;
-                }
-            });
-        }
-
-        function saConfirmForm(e, text) {
-            e.preventDefault();
-            const form = e.target;
-            Swal.fire({
-                title: 'Are you sure?',
-                text: text,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#d33',
-                cancelButtonColor: '#3085d6',
-                confirmButtonText: 'Yes, do it!'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    form.submit();
-                }
-            });
-        }
-
-        // --- INLINE EDITING ---
-        function makeCellEditable(td) {
-            if (td.querySelector('input')) return; // Already editing
-            
-            const originalContent = td.innerText;
-            const originalHtml = td.innerHTML;
-            const pk = td.getAttribute('data-pk');
-            const col = td.getAttribute('data-col');
-            const table = td.closest('table').getAttribute('data-table');
-            
-            if(!pk || !col) return;
-
-            td.classList.add('editing');
-            td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
-            td.querySelector('input').focus();
-        }
-
-        function saveCellData(input, table, col, pk, original) {
-            const newVal = input.value;
-            const td = input.parentElement;
-            
-            if (newVal === original) {
-                td.innerText = original;
-                td.classList.remove('editing');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'update_cell');
-            formData.append('table', table);
-            formData.append('column', col);
-            formData.append('id', pk);
-            formData.append('value', newVal);
-
-            fetch('?', {
-                method: 'POST',
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if(data.success) {
-                    td.innerText = newVal;
-                    td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
-                    setTimeout(() => td.style.backgroundColor = '', 1000);
-                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-                    toast.fire({ icon: 'success', title: 'Saved' });
-                } else {
-                    td.innerHTML = original;
-                    Swal.fire('Error', data.message || 'Update failed', 'error');
-                }
-            })
-            .catch(err => {
-                td.innerHTML = original;
-                Swal.fire('Error', 'Network error', 'error');
-            })
-            .finally(() => {
-                td.classList.remove('editing');
-            });
-        }
-
-        // Helper to init TomSelect with correct settings
-        function initTomSelect(el) {
-            if (el.tomselect) return; // Prevent double initialization
-            if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
-                new TomSelect(el, {
-                    plugins: ['clear_button'],
-                    maxOptions: 50,
-                    sortField: { field: "text", direction: "asc" },
-                    dropdownParent: 'body',
-                    onDropdownOpen: function() {
-                        const wrapper = this.dropdown;
-                        if(wrapper) wrapper.style.zIndex = "99999";
-                    }
-                });
-            }
-        }
-
-        // Initialize TomSelect for Searchable Dropdowns (Global)
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('form select.form-select').forEach((el) => {
-                initTomSelect(el);
-            });
-        });
-
-        // Bulk Actions
-        function updateBulkBtn() {
-            const checked = document.querySelectorAll('.row-checkbox:checked').length > 0;
-            const select = document.getElementById('bulkActionSelect');
-            const btn = document.getElementById('bulkApplyBtn');
-            if(select && btn) {
-                select.style.display = checked ? 'block' : 'none';
-                btn.style.display = checked ? 'block' : 'none';
-            }
-        }
-
-        function toggleSelectAll(source) {
-            document.querySelectorAll('.row-checkbox').forEach(cb => {
-                cb.checked = source.checked;
-            });
-            updateBulkBtn();
-        }
-
-        function submitBulkAction() {
-            const select = document.getElementById('bulkActionSelect');
-            const form = document.getElementById('bulkForm');
-            const action = select.value;
-            
-            if (!action) return;
-            
-            if (action === 'delete') {
-                form.querySelector('input[name="action"]').value = 'bulk_delete';
-                Swal.fire({
-                    title: 'Delete selected rows?',
-                    text: "You won't be able to revert this!",
-                    icon: 'warning',
-                    showCancelButton: true,
-                    confirmButtonColor: '#d33',
-                    confirmButtonText: 'Yes, delete!'
-                }).then((result) => {
-                    if (result.isConfirmed) form.submit();
-                });
-            } else {
-                form.querySelector('input[name="action"]').value = action;
-                form.submit();
-            }
-        }
-
-        // Media Modal Functions
-        function showImageModal(src) {
-            Swal.fire({
-                imageUrl: src,
-                imageAlt: 'Image Preview',
-                showCloseButton: true,
-                showConfirmButton: false,
-                width: 'auto',
-                background: 'var(--bg-card)',
-                customClass: {
-                    popup: 'dark-modal',
-                    image: 'swal-image-preview'
-                }
-            });
-        }
-
-        function showVideoModal(src) {
-            Swal.fire({
-                html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
-                showCloseButton: true,
-                showConfirmButton: false,
-                width: 'auto',
-                background: 'var(--bg-card)',
-                customClass: {
-                    popup: 'dark-modal'
-                }
-            });
-        }
-        
-    // --- DATABASE MODE TOGGLE (SQL/JSON) ---
-    function switchDbMode(mode) {
-        window.location.href = '?db_mode=' + mode;
-    }
-
-    // --- JSON FILE MANAGEMENT ---
-    function createNewJsonFile() {
-        Swal.fire({
-            title: 'Create New JSON File',
-            html: `
-                <input type="text" id="jsonFileName" class="swal2-input" placeholder="Enter filename (e.g., mydata.json)" style="width: 80%;">
-                <small style="display: block; margin-top: 10px; color: var(--text-secondary);">
-                    File akan dibuat di folder json_db/
-                </small>
-            `,
-            showCancelButton: true,
-            confirmButtonText: 'Create',
-            cancelButtonText: 'Cancel',
-            preConfirm: () => {
-                const fileName = document.getElementById('jsonFileName').value;
-                if (!fileName) {
-                    Swal.showValidationMessage('Please enter a filename');
-                    return false;
-                }
-                if (!fileName.endsWith('.json')) {
-                    Swal.showValidationMessage('Filename must end with .json');
-                    return false;
-                }
-                return fileName;
-            }
-        }).then((result) => {
-            if (result.isConfirmed) {
-                const formData = new FormData();
-                formData.append('action', 'create_json_file');
-                formData.append('filename', result.value);
-                
-                fetch('?', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Success',
-                            text: 'JSON file created!',
-                            timer: 1500
-                        }).then(() => {
-                            window.location.href = '?select_json_file=' + encodeURIComponent(result.value);
-                        });
-                    } else {
-                        Swal.fire('Error', data.message || 'Failed to create file', 'error');
-                    }
-                })
-                .catch(err => {
-                    Swal.fire('Error', 'Network error', 'error');
-                });
-            }
-        });
-    }
-
-    function deleteJsonFile(filename) {
-        Swal.fire({
-            title: 'Delete JSON File?',
-            text: 'File: ' + filename + ' - This cannot be undone!',
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#d33',
-            confirmButtonText: 'Yes, delete it!'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                const formData = new FormData();
-                formData.append('action', 'delete_json_file');
-                formData.append('filename', filename);
-                
-                fetch('?', {
-                    method: 'POST',
-                    body: formData
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Deleted!',
-                            text: 'File deleted successfully',
-                            timer: 1500
-                        }).then(() => {
-                            window.location.href = '?db_mode=json';
-                        });
-                    } else {
-                        Swal.fire('Error', data.message || 'Failed to delete file', 'error');
-                    }
-                })
-                .catch(err => {
-                    Swal.fire('Error', 'Network error', 'error');
-                });
-            }
-        });
-    }
-
-    // --- BROWSE JSON FILE FROM SERVER ---
-    function browseJsonFile() {
-        Swal.fire({
-            title: 'Browse JSON File',
-            html: `
-                <div style="text-align: left;">
-                    <div style="margin-bottom: 10px;">
-                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Current Path:</label>
-                        <div style="display: flex; gap: 5px;">
-                            <input type="text" id="browsePath" class="swal2-input" value="" placeholder="/" style="flex: 1; margin: 0;">
-                            <button onclick="loadBrowsePath()" class="swal2-confirm swal2-styled" style="margin: 0; padding: 8px 15px;">Go</button>
-                        </div>
-                    </div>
-                    <div id="browseContent" style="max-height: 400px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 10px; background: rgba(0,0,0,0.2);">
-                        <div style="text-align: center; padding: 20px; color: #888;">
-                            <i class="fas fa-spinner fa-spin"></i> Loading...
-                        </div>
-                    </div>
-                </div>
-            `,
-            width: '600px',
-            showCancelButton: true,
-            showConfirmButton: false,
-            cancelButtonText: 'Close',
-            didOpen: () => {
-                loadBrowsePath('');
-            }
-        });
-    }
-
-    function loadBrowsePath(path) {
-        if (path === undefined) {
-            path = document.getElementById('browsePath').value;
-        } else {
-            document.getElementById('browsePath').value = path;
-        }
-        
-        const formData = new FormData();
-        formData.append('action', 'browse_files');
-        formData.append('path', path);
-        
-        fetch('?', {
-            method: 'POST',
-            body: formData
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (data.success) {
-                renderBrowseContent(data.items, data.current_path);
-            } else {
-                document.getElementById('browseContent').innerHTML = `
-                    <div style="text-align: center; padding: 20px; color: #ff6b6b;">
-                        <i class="fas fa-exclamation-triangle"></i> ${data.message || 'Error loading path'}
-                    </div>
-                `;
-            }
-        })
-        .catch(err => {
-            document.getElementById('browseContent').innerHTML = `
-                <div style="text-align: center; padding: 20px; color: #ff6b6b;">
-                    <i class="fas fa-exclamation-triangle"></i> Network error
-                </div>
-            `;
-        });
-    }
-
-    function renderBrowseContent(items, currentPath) {
-        let html = '';
-        
-        // Parent directory link
-        if (currentPath !== '') {
-            const parentPath = currentPath.split('/').slice(0, -1).join('/');
-            html += `
-                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePath('${parentPath}')">
-                    <i class="fas fa-level-up-alt" style="color: #888;"></i> <span style="color: #888;">..</span>
-                </div>
-            `;
-        }
-        
-        // Folders
-        items.folders.forEach(folder => {
-            const fullPath = currentPath ? currentPath + '/' + folder : folder;
-            html += `
-                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePath('${fullPath}')">
-                    <i class="fas fa-folder" style="color: #ffd700;"></i> ${folder}
-                </div>
-            `;
-        });
-        
-        // JSON Files
-        items.files.forEach(file => {
-            const fullPath = currentPath ? currentPath + '/' + file : file;
-            html += `
-                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">
-                    <div>
-                        <i class="fas fa-file-code" style="color: #4CAF50;"></i> ${file}
-                    </div>
-                    <button onclick="selectJsonFile('${fullPath}'); event.stopPropagation();" class="swal2-confirm swal2-styled" style="margin: 0; padding: 4px 12px; font-size: 0.85rem;">
-                        Select
-                    </button>
-                </div>
-            `;
-        });
-        
-        if (items.folders.length === 0 && items.files.length === 0) {
-            html = `
-                <div style="text-align: center; padding: 20px; color: #888;">
-                    <i class="fas fa-folder-open"></i> Empty folder
-                </div>
-            `;
-        }
-        
-        document.getElementById('browseContent').innerHTML = html;
-    }
-
-    function selectJsonFile(filePath) {
-        Swal.fire({
-            title: 'Use this file?',
-            text: filePath,
-            icon: 'question',
-            showCancelButton: true,
-            confirmButtonText: 'Yes, use it!',
-            cancelButtonText: 'Cancel'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                window.location.href = '?select_json_file=' + encodeURIComponent(filePath) + '&external=1';
-            }
-        });
-    }
     </script>
 </body>
 </html>

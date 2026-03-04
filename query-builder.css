@@ -1,0 +1,164 @@
+/* Query Builder & Advanced Filters Styles */
+
+.query-builder,
+.advanced-filters {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.qb-section {
+    margin-bottom: 25px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.qb-section:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+.qb-section h4 {
+    margin: 0 0 15px 0;
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.qb-section h4 i {
+    color: var(--accent);
+}
+
+.qb-columns label {
+    cursor: pointer;
+    padding: 4px 0;
+    transition: color 0.2s;
+}
+
+.qb-columns label:hover {
+    color: var(--accent);
+}
+
+.qb-condition,
+.qb-order,
+.af-filter {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.qb-condition select,
+.qb-condition input,
+.qb-order select,
+.af-filter select,
+.af-filter input,
+.af-filter textarea {
+    font-size: 0.9rem;
+}
+
+/* Advanced Filters specific */
+.af-filter {
+    position: relative;
+    transition: all 0.2s;
+}
+
+.af-filter:hover {
+    background: var(--bg-card) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.af-value-container {
+    display: flex;
+    align-items: center;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .qb-condition,
+    .qb-order,
+    .af-filter {
+        flex-direction: column;
+        align-items: stretch !important;
+    }
+    
+    .qb-condition > *,
+    .qb-order > *,
+    .af-filter > * {
+        width: 100% !important;
+        min-width: 100% !important;
+    }
+}
+
+/* Button styles */
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+}
+
+/* TomSelect overrides for dark theme */
+.ts-wrapper.form-select .ts-control {
+    background-color: var(--bg-input) !important;
+    border-color: var(--border-color) !important;
+}
+
+.ts-dropdown {
+    background-color: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+}
+
+.ts-dropdown .option {
+    color: var(--text-primary) !important;
+}
+
+.ts-dropdown .option:hover,
+.ts-dropdown .option.active {
+    background-color: var(--bg-hover) !important;
+    color: var(--accent) !important;
+}
+
+/* Query preview */
+#qb-generated-query {
+    font-family: 'Fira Code', 'Courier New', monospace;
+    line-height: 1.6;
+    tab-size: 4;
+}
+
+/* Loading state */
+.qb-loading,
+.af-loading {
+    position: relative;
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+.qb-loading::after,
+.af-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 30px;
+    height: 30px;
+    margin: -15px 0 0 -15px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
