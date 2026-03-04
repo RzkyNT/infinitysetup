@@ -5,11 +5,15 @@ session_start();
 /**
  * JsonDatabase - A simple JSON-based database system
  * Provides SQL-like operations on JSON files
+ * Supports two formats:
+ * 1. Table format: {"users": [{"id":1,"name":"John"}]}
+ * 2. Flat format: {"maxQuota": 50, "formActive": true}
  */
 class JsonDatabase {
     private $basePath;
     private $currentFile;
     private $data;
+    private $isFlat = false; // Detect flat structure
     
     public function __construct($basePath = './json_db/') {
         $this->basePath = rtrim($basePath, '/') . '/';
@@ -53,10 +57,49 @@ class JsonDatabase {
             throw new Exception('No file selected');
         }
         $content = file_get_contents($this->currentFile);
-        $this->data = json_decode($content, true);
-        if (!is_array($this->data)) {
+        $decoded = json_decode($content, true);
+        
+        if (!is_array($decoded)) {
             $this->data = [];
+        } else {
+            // Check if root is an array (not object)
+            if (isset($decoded[0])) {
+                // Root-level array: wrap it with default table name
+                $this->data = ['data' => $decoded];
+            } else {
+                $this->data = $decoded;
+            }
         }
+        
+        // Detect if this is a flat structure (key-value pairs)
+        $this->isFlat = $this->detectFlatStructure();
+    }
+    
+    /**
+     * Detect if JSON is flat structure (config-style) or table structure
+     */
+    private function detectFlatStructure() {
+        if (empty($this->data)) {
+            return false;
+        }
+        
+        // Check if all values are scalar or if any value is an array of objects
+        $hasArrayOfObjects = false;
+        foreach ($this->data as $key => $value) {
+            if (is_array($value) && !empty($value)) {
+                // Check if it's an array of objects (table format)
+                // First element should be an associative array (object)
+                $firstElement = reset($value);
+                if (is_array($firstElement) && !isset($firstElement[0])) {
+                    // It's an associative array (object), so this is table format
+                    $hasArrayOfObjects = true;
+                    break;
+                }
+            }
+        }
+        
+        // If no array of objects found, it's a flat structure
+        return !$hasArrayOfObjects;
     }
     
     /**
@@ -66,7 +109,20 @@ class JsonDatabase {
         if (!$this->currentFile) {
             throw new Exception('No file selected');
         }
-        $json = json_encode($this->data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        // Check if we need to unwrap the data (root-level array)
+        $toSave = $this->data;
+        if (isset($this->data['data']) && count($this->data) === 1) {
+            // Check if original file was root-level array
+            $content = file_get_contents($this->currentFile);
+            $original = json_decode($content, true);
+            if (isset($original[0])) {
+                // Original was root-level array, unwrap it
+                $toSave = $this->data['data'];
+            }
+        }
+        
+        $json = json_encode($toSave, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         return file_put_contents($this->currentFile, $json) !== false;
     }
     
@@ -80,18 +136,35 @@ class JsonDatabase {
     
     /**
      * Get list of "tables" (root keys in JSON)
+     * For flat structure, returns single table "config"
      */
     public function listTables() {
         if (!is_array($this->data)) {
             return [];
         }
+        
+        if ($this->isFlat) {
+            // Flat structure: treat entire file as one table
+            return ['config'];
+        }
+        
         return array_keys($this->data);
     }
     
     /**
      * Get table structure (columns from first row)
+     * For flat structure, returns key-value structure
      */
     public function getTableStructure($table) {
+        if ($this->isFlat) {
+            // Flat structure: return columns as key, value, type
+            return [
+                ['Field' => 'key', 'Type' => 'string', 'Null' => 'NO', 'Key' => 'PRI', 'Default' => null, 'Extra' => ''],
+                ['Field' => 'value', 'Type' => 'mixed', 'Null' => 'YES', 'Key' => '', 'Default' => null, 'Extra' => ''],
+                ['Field' => 'type', 'Type' => 'string', 'Null' => 'YES', 'Key' => '', 'Default' => null, 'Extra' => '']
+            ];
+        }
+        
         if (!isset($this->data[$table]) || !is_array($this->data[$table]) || empty($this->data[$table])) {
             return [];
         }
@@ -129,8 +202,72 @@ class JsonDatabase {
     
     /**
      * SELECT query
+     * For flat structure, converts to key-value-type rows
      */
     public function select($table, $conditions = [], $orderBy = null, $orderDir = 'ASC', $limit = null, $offset = 0) {
+        if ($this->isFlat) {
+            // Convert flat structure to rows
+            $results = [];
+            foreach ($this->data as $key => $value) {
+                $results[] = [
+                    'key' => $key,
+                    'value' => is_array($value) ? json_encode($value) : $value,
+                    'type' => $this->guessType($value)
+                ];
+            }
+            
+            // Apply conditions
+            if (!empty($conditions)) {
+                $results = array_filter($results, function($row) use ($conditions) {
+                    foreach ($conditions as $field => $condition) {
+                        $operator = $condition['operator'] ?? '=';
+                        $value = $condition['value'] ?? '';
+                        
+                        if (!isset($row[$field])) {
+                            return false;
+                        }
+                        
+                        $rowValue = $row[$field];
+                        
+                        switch ($operator) {
+                            case '=':
+                                if ($rowValue != $value) return false;
+                                break;
+                            case '!=':
+                                if ($rowValue == $value) return false;
+                                break;
+                            case 'LIKE':
+                                $pattern = str_replace('%', '.*', preg_quote($value, '/'));
+                                if (!preg_match('/^' . $pattern . '$/i', $rowValue)) return false;
+                                break;
+                        }
+                    }
+                    return true;
+                });
+            }
+            
+            // Apply ordering
+            if ($orderBy && !empty($results)) {
+                usort($results, function($a, $b) use ($orderBy, $orderDir) {
+                    $aVal = $a[$orderBy] ?? '';
+                    $bVal = $b[$orderBy] ?? '';
+                    
+                    if ($aVal == $bVal) return 0;
+                    
+                    $comparison = $aVal < $bVal ? -1 : 1;
+                    return $orderDir === 'DESC' ? -$comparison : $comparison;
+                });
+            }
+            
+            // Apply limit and offset
+            if ($limit !== null) {
+                $results = array_slice($results, $offset, $limit);
+            }
+            
+            return array_values($results);
+        }
+        
+        // Table structure handling (original code)
         if (!isset($this->data[$table]) || !is_array($this->data[$table])) {
             return [];
         }
@@ -213,8 +350,37 @@ class JsonDatabase {
     
     /**
      * INSERT query
+     * For flat structure, adds/updates key-value pair
      */
     public function insert($table, $data) {
+        if ($this->isFlat) {
+            // Flat structure: add/update key-value
+            if (isset($data['key']) && isset($data['value'])) {
+                $key = $data['key'];
+                $value = $data['value'];
+                
+                // Try to decode JSON
+                $decoded = json_decode($value, true);
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    $value = $decoded;
+                }
+                
+                // Convert string booleans
+                if ($value === 'true') $value = true;
+                if ($value === 'false') $value = false;
+                
+                // Convert numeric strings
+                if (is_numeric($value)) {
+                    $value = strpos($value, '.') !== false ? (float)$value : (int)$value;
+                }
+                
+                $this->data[$key] = $value;
+                return $this->saveData();
+            }
+            return false;
+        }
+        
+        // Table structure handling
         if (!isset($this->data[$table])) {
             $this->data[$table] = [];
         }
@@ -236,8 +402,39 @@ class JsonDatabase {
     
     /**
      * UPDATE query
+     * For flat structure, updates key-value pair
      */
     public function update($table, $data, $conditions) {
+        if ($this->isFlat) {
+            // Flat structure: update by key
+            if (isset($conditions['key'])) {
+                $key = $conditions['key']['value'];
+                if (isset($this->data[$key]) && isset($data['value'])) {
+                    $value = $data['value'];
+                    
+                    // Try to decode JSON
+                    $decoded = json_decode($value, true);
+                    if (json_last_error() === JSON_ERROR_NONE) {
+                        $value = $decoded;
+                    }
+                    
+                    // Convert string booleans
+                    if ($value === 'true') $value = true;
+                    if ($value === 'false') $value = false;
+                    
+                    // Convert numeric strings
+                    if (is_numeric($value)) {
+                        $value = strpos($value, '.') !== false ? (float)$value : (int)$value;
+                    }
+                    
+                    $this->data[$key] = $value;
+                    return $this->saveData() ? 1 : 0;
+                }
+            }
+            return 0;
+        }
+        
+        // Table structure handling
         if (!isset($this->data[$table])) {
             return false;
         }
@@ -272,8 +469,22 @@ class JsonDatabase {
     
     /**
      * DELETE query
+     * For flat structure, removes key
      */
     public function delete($table, $conditions) {
+        if ($this->isFlat) {
+            // Flat structure: delete by key
+            if (isset($conditions['key'])) {
+                $key = $conditions['key']['value'];
+                if (isset($this->data[$key])) {
+                    unset($this->data[$key]);
+                    return $this->saveData() ? 1 : 0;
+                }
+            }
+            return 0;
+        }
+        
+        // Table structure handling
         if (!isset($this->data[$table])) {
             return 0;
         }
@@ -338,8 +549,13 @@ class JsonDatabase {
     
     /**
      * Get primary key field (assumes 'id' or first field)
+     * For flat structure, returns 'key'
      */
     public function getPrimaryKey($table) {
+        if ($this->isFlat) {
+            return 'key';
+        }
+        
         $structure = $this->getTableStructure($table);
         if (empty($structure)) {
             return 'id';
@@ -543,11 +759,14 @@ function should_prefix_database_names($hostProfile) {
 }
 
 function should_show_managed_database_list($hostProfile) {
-    return $hostProfile !== 'local';
+    // Only show for SQL mode
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+    return $hostProfile !== 'local' && $dbMode === 'sql';
 }
 
 function should_show_server_database_panel($hostProfile) {
-    return $hostProfile !== 'infinityfree';
+    // Show for all modes, but content will be different based on mode
+    return true;
 }
 
 function apply_database_prefix($dbname, $dbUser, $hostProfile) {
@@ -1844,9 +2063,63 @@ if (isset($_GET['select_db'])) {
     exit;
 }
 
-// ===== DATABASE MODE SWITCHING (SQL/JSON) =====
+// ===== INITIALIZE JSONDATABASE EARLY (before mode switching) =====
+$jsonDb = new JsonDatabase(__DIR__ . '/json_db/');
+
+// ===== SQLITE FILE SELECTION =====
+if (isset($_GET['select_sqlite_file'])) {
+    $sqliteFile = $_GET['select_sqlite_file'];
+    $sqlitePath = __DIR__ . '/sqlite_db/' . basename($sqliteFile);
+    
+    if (file_exists($sqlitePath)) {
+        $_SESSION['sqlite_file'] = $sqliteFile;
+        $_SESSION['sqlite_file_path'] = $sqlitePath;
+        $_SESSION['db_mode'] = 'sqlite';
+        
+        // Reconnect to SQLite
+        try {
+            $pdo = new PDO('sqlite:' . $sqlitePath);
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        } catch (Exception $e) {
+            error_log("SQLite connection error: " . $e->getMessage());
+        }
+    }
+    header("Location: ?");
+    exit;
+}
+
+// ===== DATABASE MODE SWITCHING (SQL/JSON/SQLITE) =====
 if (isset($_GET['db_mode'])) {
-    $_SESSION['db_mode'] = $_GET['db_mode'] === 'json' ? 'json' : 'sql';
+    $mode = $_GET['db_mode'];
+    if (in_array($mode, ['sql', 'json', 'sqlite'])) {
+        $_SESSION['db_mode'] = $mode;
+        
+        // Don't clear mode-specific sessions - keep them for when user switches back
+        // This allows users to switch between modes without losing their file selections
+        
+        // If switching to SQLite and there's a saved SQLite file, reconnect to it
+        if ($mode === 'sqlite' && !empty($_SESSION['sqlite_file_path'])) {
+            try {
+                $pdo = new PDO('sqlite:' . $_SESSION['sqlite_file_path']);
+                $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            } catch (Exception $e) {
+                error_log("SQLite reconnection error: " . $e->getMessage());
+            }
+        }
+        
+        // If switching to JSON and there's a saved JSON file, reload it
+        if ($mode === 'json' && !empty($_SESSION['json_file'])) {
+            try {
+                if (!empty($_SESSION['json_file_external']) && !empty($_SESSION['json_file_full_path'])) {
+                    $jsonDb->setFilePath($_SESSION['json_file_full_path']);
+                } else {
+                    $jsonDb->selectFile($_SESSION['json_file']);
+                }
+            } catch (Exception $e) {
+                error_log("JSON reconnection error: " . $e->getMessage());
+            }
+        }
+    }
     header("Location: ?");
     exit;
 }
@@ -1886,8 +2159,12 @@ if (isset($_GET['select_json_file'])) {
 // Initialize database mode (default to SQL)
 $_SESSION['db_mode'] = $_SESSION['db_mode'] ?? 'sql';
 
-// Initialize JsonDatabase instance
-$jsonDb = new JsonDatabase(__DIR__ . '/json_db/');
+// Create sqlite_db folder if not exists
+if (!is_dir(__DIR__ . '/sqlite_db')) {
+    mkdir(__DIR__ . '/sqlite_db', 0755, true);
+}
+
+// Load JSON file if in JSON mode (jsonDb already initialized above)
 if (!empty($_SESSION['json_file'])) {
     try {
         if (!empty($_SESSION['json_file_external']) && !empty($_SESSION['json_file_full_path'])) {
@@ -1899,6 +2176,17 @@ if (!empty($_SESSION['json_file'])) {
         }
     } catch (Exception $e) {
         error_log("JsonDatabase error: " . $e->getMessage());
+    }
+}
+
+// Initialize SQLite connection if in SQLite mode
+if (($_SESSION['db_mode'] ?? 'sql') === 'sqlite' && !empty($_SESSION['sqlite_file_path'])) {
+    try {
+        $pdo = new PDO('sqlite:' . $_SESSION['sqlite_file_path']);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        error_log("SQLite connection error: " . $e->getMessage());
     }
 }
 
@@ -2411,6 +2699,137 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- CREATE SQLITE FILE ---
+    elseif ($action === 'create_sqlite_file') {
+        header('Content-Type: application/json');
+        $filename = $_POST['filename'] ?? '';
+        
+        if (empty($filename)) {
+            echo json_encode(['success' => false, 'message' => 'Filename is required']);
+            exit;
+        }
+        
+        if (!preg_match('/^[a-zA-Z0-9_\-]+\.(db|sqlite)$/', $filename)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid filename. Use only letters, numbers, underscore, and hyphen']);
+            exit;
+        }
+        
+        try {
+            $sqlitePath = __DIR__ . '/sqlite_db/' . basename($filename);
+            
+            if (file_exists($sqlitePath)) {
+                echo json_encode(['success' => false, 'message' => 'File already exists']);
+                exit;
+            }
+            
+            // Create new SQLite database
+            $sqlitePdo = new PDO('sqlite:' . $sqlitePath);
+            $sqlitePdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            
+            // Create a default table
+            $sqlitePdo->exec("CREATE TABLE IF NOT EXISTS example (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )");
+            
+            echo json_encode(['success' => true, 'message' => 'SQLite database created successfully']);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- DELETE SQLITE FILE ---
+    elseif ($action === 'delete_sqlite_file') {
+        header('Content-Type: application/json');
+        $filename = $_POST['filename'] ?? '';
+        
+        if (empty($filename)) {
+            echo json_encode(['success' => false, 'message' => 'Filename is required']);
+            exit;
+        }
+        
+        try {
+            $filePath = __DIR__ . '/sqlite_db/' . basename($filename);
+            if (file_exists($filePath)) {
+                if (unlink($filePath)) {
+                    // Clear session if deleting current file
+                    if ($_SESSION['sqlite_file'] === $filename) {
+                        unset($_SESSION['sqlite_file']);
+                        unset($_SESSION['sqlite_file_path']);
+                    }
+                    echo json_encode(['success' => true, 'message' => 'SQLite database deleted successfully']);
+                } else {
+                    echo json_encode(['success' => false, 'message' => 'Failed to delete file']);
+                }
+            } else {
+                echo json_encode(['success' => false, 'message' => 'File not found']);
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- BROWSE SQLITE FILES ---
+    elseif ($action === 'browse_sqlite_files') {
+        header('Content-Type: application/json');
+        $path = $_POST['path'] ?? '';
+        
+        // Security: clean path and prevent directory traversal
+        $path = str_replace(['..', '\\'], ['', '/'], $path);
+        $path = trim($path, '/');
+        
+        // Base path is document root
+        $basePath = $_SERVER['DOCUMENT_ROOT'];
+        $fullPath = $basePath . ($path ? '/' . $path : '');
+        
+        try {
+            if (!is_dir($fullPath)) {
+                throw new Exception('Invalid path');
+            }
+            
+            $items = scandir($fullPath);
+            $folders = [];
+            $files = [];
+            
+            foreach ($items as $item) {
+                if ($item === '.' || $item === '..') continue;
+                
+                // Skip hidden files/folders
+                if (substr($item, 0, 1) === '.') continue;
+                
+                $itemPath = $fullPath . '/' . $item;
+                
+                if (is_dir($itemPath)) {
+                    $folders[] = $item;
+                } elseif (is_file($itemPath)) {
+                    $ext = pathinfo($item, PATHINFO_EXTENSION);
+                    if ($ext === 'db' || $ext === 'sqlite' || $ext === 'sqlite3') {
+                        $files[] = $item;
+                    }
+                }
+            }
+            
+            // Sort
+            natcasesort($folders);
+            natcasesort($files);
+            
+            echo json_encode([
+                'success' => true,
+                'current_path' => $path,
+                'items' => [
+                    'folders' => array_values($folders),
+                    'files' => array_values($files)
+                ]
+            ]);
+        } catch (Exception $e) {
+            echo json_encode([
+                'success' => false,
+                'message' => $e->getMessage()
+            ]);
+        }
+        exit;
+    }
     // --- DELETE JSON FILE ---
     elseif ($action === 'delete_json_file') {
         header('Content-Type: application/json');
@@ -2762,9 +3181,16 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         // Check if we're in JSON mode
         if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
             try {
-                $jsonDb->update($tableName, [$col => $val], [
-                    'id' => ['operator' => '=', 'value' => $id]
-                ]);
+                // For flat structure, id is the key name
+                if ($col === 'value') {
+                    $jsonDb->update($tableName, [$col => $val], [
+                        'key' => ['operator' => '=', 'value' => $id]
+                    ]);
+                } else {
+                    $jsonDb->update($tableName, [$col => $val], [
+                        'id' => ['operator' => '=', 'value' => $id]
+                    ]);
+                }
                 echo json_encode(['success' => true]);
             } catch (Exception $e) {
                 echo json_encode(['success' => false, 'message' => $e->getMessage()]);
@@ -3543,6 +3969,31 @@ if ($is_logged_in && ($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESS
         error_log("JsonDatabase error: " . $e->getMessage());
         $tables = [];
     }
+} elseif ($is_logged_in && ($_SESSION['db_mode'] ?? 'sql') === 'sqlite' && !empty($_SESSION['sqlite_file'])) {
+    // SQLite Mode - Get tables from SQLite database
+    try {
+        $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $tableName = $row['name'];
+            
+            // Get row count
+            $countStmt = $pdo->query("SELECT COUNT(*) as count FROM `$tableName`");
+            $rowCount = $countStmt->fetch(PDO::FETCH_ASSOC)['count'];
+            
+            $tables[] = [
+                'Name' => $tableName,
+                'Rows' => $rowCount,
+                'Data_length' => 0,
+                'Index_length' => 0,
+                'Collation' => 'SQLite'
+            ];
+            
+            $totalRows += $rowCount;
+        }
+    } catch (Exception $e) {
+        error_log("SQLite error: " . $e->getMessage());
+        $tables = [];
+    }
 } elseif ($is_logged_in && isset($pdo) && $pdo !== null && $hasSelectedDatabase) {
     // SQL Mode - Get tables from MySQL database
     try {
@@ -3745,7 +4196,16 @@ $tableStructure = [];
 $tableColumns = [];
 $limit = 50;
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
-$primaryKey = $currentTable ? getPrimaryKey($pdo, $currentTable) : null;
+
+// Primary key detection based on database mode
+$primaryKey = null;
+if ($currentTable) {
+    if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+        $primaryKey = $jsonDb->getPrimaryKey($currentTable);
+    } else {
+        $primaryKey = getPrimaryKey($pdo, $currentTable);
+    }
+}
 
 // Search Params
 $searchColumn = $_GET['search_col'] ?? '';
@@ -3762,7 +4222,7 @@ if ($is_logged_in && $currentTable) {
         // JSON Mode
         try {
             $tableStructure = $jsonDb->getTableStructure($currentTable);
-            $tableColumns = array_keys($tableStructure);
+            $tableColumns = array_column($tableStructure, 'Field');
             
             if ($view === 'data') {
                 // Build conditions for JSON database
@@ -4802,6 +5262,9 @@ let advancedFilters = null;
                     <button type="button" onclick="switchDbMode('sql')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'sql' ? 'background: var(--accent); color: white;' : '' ?>">
                         <i class="fas fa-database"></i> SQL
                     </button>
+                    <button type="button" onclick="switchDbMode('sqlite')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'sqlite' ? 'background: var(--accent); color: white;' : '' ?>">
+                        <i class="fas fa-cube"></i> SQLite
+                    </button>
                     <button type="button" onclick="switchDbMode('json')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'json' ? 'background: var(--accent); color: white;' : '' ?>">
                         <i class="fas fa-file-code"></i> JSON
                     </button>
@@ -4823,6 +5286,36 @@ let advancedFilters = null;
                     </select>
                 </form>
                 <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
+            <?php elseif (($_SESSION['db_mode'] ?? 'sql') === 'sqlite'): ?>
+                <form method="GET" style="margin-bottom: 5px;">
+                    <select name="select_sqlite_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
+                        <option value="">-- Pilih SQLite File --</option>
+                        <?php 
+                        $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.db');
+                        $sqliteFiles = array_merge($sqliteFiles, glob(__DIR__ . '/sqlite_db/*.sqlite'));
+                        foreach ($sqliteFiles as $file): 
+                            $basename = basename($file);
+                        ?>
+                            <option value="<?=htmlspecialchars($basename)?>" <?=$basename === ($_SESSION['sqlite_file'] ?? '') ? 'selected' : ''?>>
+                                <?=htmlspecialchars($basename)?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </form>
+                <div style="display: flex; gap: 5px; margin-bottom: 5px;">
+                    <button type="button" onclick="createNewSqliteFile()" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--success);">
+                        <i class="fas fa-plus"></i> New
+                    </button>
+                    <button type="button" onclick="browseSqliteFile()" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--accent);">
+                        <i class="fas fa-folder-open"></i> Browse
+                    </button>
+                    <?php if (!empty($_SESSION['sqlite_file'])): ?>
+                    <button type="button" onclick="deleteSqliteFile('<?=htmlspecialchars($_SESSION['sqlite_file'])?>')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.7rem; background: var(--danger);">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                    <?php endif; ?>
+                </div>
+                <small><i class="fas fa-database"></i> <span>SQLite Database</span></small>
             <?php else: ?>
                 <form method="GET" style="margin-bottom: 5px;">
                     <select name="select_json_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
@@ -4909,7 +5402,10 @@ let advancedFilters = null;
                 <div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> <?=htmlspecialchars($error)?></div>
             <?php endif; ?>
 
-            <?php if (!$hasSelectedDatabase): ?>
+            <?php 
+            $dbMode = $_SESSION['db_mode'] ?? 'sql';
+            if (!$hasSelectedDatabase && $dbMode === 'sql'): 
+            ?>
                 <div class="card">
                     <h3>Pilih Database</h3>
                     <p style="color:var(--text-secondary); line-height:1.6;">
@@ -4917,6 +5413,7 @@ let advancedFilters = null;
                         melalui modul manajemen di bawah.
                     </p>
                 </div>
+            <?php endif; ?>
 
                 <?php 
                 $configList = load_config($configFile)['databases'] ?? [];
@@ -4974,72 +5471,169 @@ let advancedFilters = null;
                     </form>
                 </div>
                 <?php endif; ?>
-                <?php if (should_show_server_database_panel($hostProfile)): ?>
+                
+                <?php if (should_show_server_database_panel($hostProfile) && !$currentTable): ?>
                 <div class="card">
                     <div style="display:flex; align-items:center; justify-content:space-between;">
-                        <h3 style="margin:0;"><i class="fas fa-server"></i> Server Databases</h3>
+                        <?php 
+                        $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                        if ($dbMode === 'json') {
+                            echo '<h3 style="margin:0;"><i class="fas fa-file-code"></i> Available JSON Files</h3>';
+                        } elseif ($dbMode === 'sqlite') {
+                            echo '<h3 style="margin:0;"><i class="fas fa-database"></i> Available SQLite Files</h3>';
+                        } else {
+                            echo '<h3 style="margin:0;"><i class="fas fa-server"></i> Server Databases</h3>';
+                        }
+                        ?>
                         <div>
-                            <button type="button" class="btn" id="btnToggleServerDbs" onclick="toggleServerDbs()" title="Collapse/Expand Server Databases"><i class="fas fa-chevron-up"></i></button>
+                            <button type="button" class="btn" id="btnToggleServerDbs" onclick="toggleServerDbs()" title="Collapse/Expand"><i class="fas fa-chevron-up"></i></button>
                         </div>
                     </div>
-                    <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
+                    <?php 
+                    if ($dbMode === 'json') {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">JSON files in the json_db folder.</p>';
+                    } elseif ($dbMode === 'sqlite') {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">SQLite database files in the sqlite_db folder.</p>';
+                    } else {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>';
+                    }
+                    ?>
 
                     <div id="serverDbsPanel">
                     <div class="table-wrapper">
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Database Name</th>
+                                    <?php 
+                                    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                                    if ($dbMode === 'json') {
+                                        echo '<th>File Name</th>';
+                                    } elseif ($dbMode === 'sqlite') {
+                                        echo '<th>File Name</th>';
+                                    } else {
+                                        echo '<th>Database Name</th>';
+                                    }
+                                    ?>
                                     <th style="width:150px; text-align:right;">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php 
-                                $serverDbs = [];
-                                try {
-                                    $stmt = $pdo->query("SHOW DATABASES");
-                                    $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                                } catch (Exception $e) {
-                                    if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
-                                        echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                                
+                                if ($dbMode === 'json') {
+                                    // List JSON files
+                                    $jsonFiles = $jsonDb->listFiles();
+                                    $currentJsonFile = $_SESSION['json_file'] ?? '';
+                                    
+                                    if (empty($jsonFiles)) {
+                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No JSON files found. Click 'New' to create one.</td></tr>";
                                     } else {
-                                        echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                        foreach ($jsonFiles as $file):
+                                            $isActive = ($file === $currentJsonFile);
+                                        ?>
+                                        <tr>
+                                            <td><?=htmlspecialchars($file)?></td>
+                                            <td style="text-align:right;">
+                                                <?php if(!$isActive): ?>
+                                                    <a href="?select_json_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-folder-open"></i></a>
+                                                <?php else: ?>
+                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                                <?php endif; ?>
+                                                <button type="button" onclick="deleteJsonFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach;
                                     }
-                                }
+                                    
+                                } elseif ($dbMode === 'sqlite') {
+                                    // List SQLite files
+                                    $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.sqlite');
+                                    $sqliteFiles = array_map('basename', $sqliteFiles);
+                                    $currentSqliteFile = $_SESSION['sqlite_file'] ?? '';
+                                    
+                                    if (empty($sqliteFiles)) {
+                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No SQLite files found. Click 'New' to create one.</td></tr>";
+                                    } else {
+                                        foreach ($sqliteFiles as $file):
+                                            $isActive = ($file === $currentSqliteFile);
+                                        ?>
+                                        <tr>
+                                            <td><?=htmlspecialchars($file)?></td>
+                                            <td style="text-align:right;">
+                                                <?php if(!$isActive): ?>
+                                                    <a href="?select_sqlite_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-database"></i></a>
+                                                <?php else: ?>
+                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                                <?php endif; ?>
+                                                <button type="button" onclick="deleteSqliteFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach;
+                                    }
+                                    
+                                } else {
+                                    // SQL Mode - List databases
+                                    $serverDbs = [];
+                                    try {
+                                        $stmt = $pdo->query("SHOW DATABASES");
+                                        $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                    } catch (Exception $e) {
+                                        if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
+                                            echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                        } else {
+                                            echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                        }
+                                    }
 
-                                $configList = load_config($configFile)['databases'] ?? [];
-                                foreach ($serverDbs as $dbItem): 
-                                    $inList = in_array($dbItem, $configList);
+                                    $configList = load_config($configFile)['databases'] ?? [];
+                                    foreach ($serverDbs as $dbItem): 
+                                        $inList = in_array($dbItem, $configList);
+                                    ?>
+                                    <tr>
+                                        <td><?=htmlspecialchars($dbItem)?></td>
+                                        <td style="text-align:right;">
+                                            <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
+                                                <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                            <?php else: ?>
+                                                <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                            <?php endif; ?>
+                                            <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP DATABASE ' . $dbItem . '? THIS DESTROYS ALL DATA!') ?>)' style="display:inline;">
+                                                <input type="hidden" name="action" value="drop_database_server">
+                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                                <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach;
+                                }
                                 ?>
-                                <tr>
-                                    <td><?=htmlspecialchars($dbItem)?></td>
-                                    <td style="text-align:right;">
-                                        <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
-                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
-                                        <?php else: ?>
-                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
-                                        <?php endif; ?>
-                                        <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP DATABASE ' . $dbItem . '? THIS DESTROYS ALL DATA!') ?>)' style="display:inline;">
-                                            <input type="hidden" name="action" value="drop_database_server">
-                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
                             </tbody>
                         </table>
                     </div>
                     
+                    <?php if ($dbMode === 'sql'): ?>
                     <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
                         <input type="hidden" name="action" value="create_database_server">
                         <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
                         <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
                     </form>
+                    <?php elseif ($dbMode === 'json'): ?>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button type="button" onclick="createNewJsonFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New JSON File</button>
+                        <button type="button" onclick="browseJsonFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
+                    </div>
+                    <?php elseif ($dbMode === 'sqlite'): ?>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button type="button" onclick="createNewSqliteFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New SQLite File</button>
+                        <button type="button" onclick="browseSqliteFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
+                    </div>
+                    <?php endif; ?>
                     </div>
                 </div>
                 <?php endif; ?>
-            <?php elseif ($currentTable):
+                
+            <?php if ($currentTable):
                 ?>
                 <!-- TABLE VIEW -->
                 <div class="tabs">
@@ -5171,37 +5765,6 @@ let advancedFilters = null;
                         }
                     });
                     }
-                    </script>
-
-                    <script>
-                    // Toggle Server Databases panel collapse/expand with state persisted in localStorage
-                    function toggleServerDbs() {
-                        const panel = document.getElementById('serverDbsPanel');
-                        const btn = document.getElementById('btnToggleServerDbs');
-                        if (!panel || !btn) return;
-                        const isHidden = panel.style.display === 'none';
-                        if (isHidden) {
-                            panel.style.display = '';
-                            btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
-                            localStorage.setItem('serverDbsCollapsed', '0');
-                        } else {
-                            panel.style.display = 'none';
-                            btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
-                            localStorage.setItem('serverDbsCollapsed', '1');
-                        }
-                    }
-                    document.addEventListener('DOMContentLoaded', function() {
-                        const panel = document.getElementById('serverDbsPanel');
-                        const btn = document.getElementById('btnToggleServerDbs');
-                        if (!panel || !btn) return;
-                        const collapsed = localStorage.getItem('serverDbsCollapsed') === '1';
-                        if (collapsed) {
-                            panel.style.display = 'none';
-                            btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
-                        } else {
-                            btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
-                        }
-                    });
                     </script>
 
                 <?php if ($view === 'data'): 
@@ -6294,18 +6857,37 @@ async function generatePhpHash() {
                         $formData = [];
                         $mode = $_GET['mode'] ?? '';
                         $isCopyMode = ($mode === 'copy');
-                        if (isset($_GET['pk']) && isset($_GET['val'])) {
-                            $stmt = $pdo->prepare("SELECT * FROM `$currentTable` WHERE `".$_GET['pk']."` = ?");
-                            $stmt->execute([$_GET['val']]);
-                            $formData = $stmt->fetch();
-                        }
-                        if ($isCopyMode && isset($primaryKey) && $primaryKey && isset($formData[$primaryKey])) {
-                            unset($formData[$primaryKey]);
-                        }
+                        
+                        // Check database mode
+                        if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                            // JSON Mode
+                            if (isset($_GET['pk']) && isset($_GET['val'])) {
+                                $pkField = $_GET['pk'];
+                                $pkValue = $_GET['val'];
+                                $conditions = [$pkField => ['operator' => '=', 'value' => $pkValue]];
+                                $results = $jsonDb->select($currentTable, $conditions);
+                                if (!empty($results)) {
+                                    $formData = $results[0];
+                                }
+                            }
+                            if ($isCopyMode && isset($primaryKey) && $primaryKey && isset($formData[$primaryKey])) {
+                                unset($formData[$primaryKey]);
+                            }
+                            $fks = []; // JSON mode doesn't support foreign keys
+                        } else {
+                            // SQL Mode
+                            if (isset($_GET['pk']) && isset($_GET['val'])) {
+                                $stmt = $pdo->prepare("SELECT * FROM `$currentTable` WHERE `".$_GET['pk']."` = ?");
+                                $stmt->execute([$_GET['val']]);
+                                $formData = $stmt->fetch();
+                            }
+                            if ($isCopyMode && isset($primaryKey) && $primaryKey && isset($formData[$primaryKey])) {
+                                unset($formData[$primaryKey]);
+                            }
 
-                        // --- FETCH FOREIGN KEYS (Smart Dropdown Logic) ---
-                        $fks = [];
-                        try {
+                            // --- FETCH FOREIGN KEYS (Smart Dropdown Logic) ---
+                            $fks = [];
+                            try {
                             $fkStmt = $pdo->prepare("
                                 SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
                                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
@@ -6343,6 +6925,7 @@ async function generatePhpHash() {
                                 $fkInfo['display'] = $displayCol;
                             }
                         } catch (Exception $e) { /* Ignore FK errors */ }
+                        } // End SQL Mode
                     ?>
                     <div class="card">
                         <h3 style="margin-bottom: 20px; color:var(--accent);">
@@ -6510,61 +7093,169 @@ async function generatePhpHash() {
                 <?php endif; ?>
 
                 <div class="card">
-                    <h3><i class="fas fa-server"></i> Server Databases</h3>
-                    <p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <?php 
+                        $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                        if ($dbMode === 'json') {
+                            echo '<h3 style="margin:0;"><i class="fas fa-file-code"></i> Available JSON Files</h3>';
+                        } elseif ($dbMode === 'sqlite') {
+                            echo '<h3 style="margin:0;"><i class="fas fa-database"></i> Available SQLite Files</h3>';
+                        } else {
+                            echo '<h3 style="margin:0;"><i class="fas fa-server"></i> Server Databases</h3>';
+                        }
+                        ?>
+                        <div>
+                            <button type="button" class="btn" id="btnToggleServerDbs" onclick="toggleServerDbs()" title="Collapse/Expand"><i class="fas fa-chevron-up"></i></button>
+                        </div>
+                    </div>
+                    <?php 
+                    if ($dbMode === 'json') {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">JSON files in the json_db folder.</p>';
+                    } elseif ($dbMode === 'sqlite') {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">SQLite database files in the sqlite_db folder.</p>';
+                    } else {
+                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>';
+                    }
+                    ?>
                     
+                    <div id="serverDbsPanel">
                     <div class="table-wrapper">
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Database Name</th>
+                                    <?php 
+                                    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                                    if ($dbMode === 'json') {
+                                        echo '<th>File Name</th>';
+                                    } elseif ($dbMode === 'sqlite') {
+                                        echo '<th>File Name</th>';
+                                    } else {
+                                        echo '<th>Database Name</th>';
+                                    }
+                                    ?>
                                     <th style="width:150px; text-align:right;">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <?php 
-                                $serverDbs = [];
-                                try {
-                                    $stmt = $pdo->query("SHOW DATABASES");
-                                    $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                                } catch (Exception $e) {
-                                    if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
-                                        echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                                
+                                if ($dbMode === 'json') {
+                                    // List JSON files
+                                    $jsonFiles = $jsonDb->listFiles();
+                                    $currentJsonFile = $_SESSION['json_file'] ?? '';
+                                    
+                                    if (empty($jsonFiles)) {
+                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No JSON files found. Click 'New' to create one.</td></tr>";
                                     } else {
-                                        echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                        foreach ($jsonFiles as $file):
+                                            $isActive = ($file === $currentJsonFile);
+                                        ?>
+                                        <tr>
+                                            <td><?=htmlspecialchars($file)?></td>
+                                            <td style="text-align:right;">
+                                                <?php if(!$isActive): ?>
+                                                    <a href="?select_json_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-folder-open"></i></a>
+                                                <?php else: ?>
+                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                                <?php endif; ?>
+                                                <button type="button" onclick="deleteJsonFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach;
                                     }
-                                }
+                                    
+                                } elseif ($dbMode === 'sqlite') {
+                                    // List SQLite files
+                                    $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.sqlite');
+                                    $sqliteFiles = array_map('basename', $sqliteFiles);
+                                    $currentSqliteFile = $_SESSION['sqlite_file'] ?? '';
+                                    
+                                    if (empty($sqliteFiles)) {
+                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No SQLite files found. Click 'New' to create one.</td></tr>";
+                                    } else {
+                                        foreach ($sqliteFiles as $file):
+                                            $isActive = ($file === $currentSqliteFile);
+                                        ?>
+                                        <tr>
+                                            <td><?=htmlspecialchars($file)?></td>
+                                            <td style="text-align:right;">
+                                                <?php if(!$isActive): ?>
+                                                    <a href="?select_sqlite_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-database"></i></a>
+                                                <?php else: ?>
+                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                                <?php endif; ?>
+                                                <button type="button" onclick="deleteSqliteFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach;
+                                    }
+                                    
+                                } else {
+                                    // SQL Mode - List databases
+                                    $serverDbs = [];
+                                    try {
+                                        $stmt = $pdo->query("SHOW DATABASES");
+                                        $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                    } catch (Exception $e) {
+                                        if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
+                                            echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
+                                        } else {
+                                            echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
+                                        }
+                                    }
 
-                                $configList = load_config($configFile)['databases'] ?? [];
-                                foreach ($serverDbs as $dbItem): 
-                                    $inList = in_array($dbItem, $configList);
+                                    $configList = load_config($configFile)['databases'] ?? [];
+                                    foreach ($serverDbs as $dbItem): 
+                                        $inList = in_array($dbItem, $configList);
+                                    ?>
+                                    <tr>
+                                        <td><?=htmlspecialchars($dbItem)?></td>
+                                        <td style="text-align:right;">
+                                            <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
+                                                <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
+                                            <?php else: ?>
+                                                <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
+                                            <?php endif; ?>
+                                            <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP DATABASE ' . $dbItem . '? THIS DESTROYS ALL DATA!') ?>)' style="display:inline;">
+                                                <input type="hidden" name="action" value="drop_database_server">
+                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
+                                                <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach;
+                                }
                                 ?>
-                                <tr>
-                                    <td><?=htmlspecialchars($dbItem)?></td>
-                                    <td style="text-align:right;">
-                                        <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
-                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
-                                        <?php else: ?>
-                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
-                                        <?php endif; ?>
-                                        <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP DATABASE ' . $dbItem . '? THIS DESTROYS ALL DATA!') ?>)' style="display:inline;">
-                                            <input type="hidden" name="action" value="drop_database_server">
-                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
                             </tbody>
                         </table>
                     </div>
 
+                    <?php if ($dbMode === 'sql'): ?>
                     <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
                         <input type="hidden" name="action" value="create_database_server">
                         <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
                         <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
                     </form>
+                    <?php elseif ($dbMode === 'json'): ?>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button type="button" onclick="createNewJsonFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New JSON File</button>
+                        <button type="button" onclick="browseJsonFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
+                    </div>
+                    <?php elseif ($dbMode === 'sqlite'): ?>
+                    <div style="margin-top:15px; display:flex; gap:10px;">
+                        <button type="button" onclick="createNewSqliteFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New SQLite File</button>
+                        <button type="button" onclick="browseSqliteFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
+                    </div>
+                    <?php endif; ?>
+                    </div>
                 </div>
+                
+                <?php 
+                // Only show Quick SQL for SQL and SQLite modes
+                $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                if ($dbMode === 'sql' || $dbMode === 'sqlite'): 
+                ?>
                 <div class="card" style="margin-bottom:20px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
                         <h3 style="margin:0;">Quick SQL</h3>
@@ -6614,8 +7305,13 @@ async function generatePhpHash() {
                         </div>
                     <?php endif; ?>
                 </div>
+                <?php endif; // End Quick SQL mode check ?>
 
-                <?php if ($hasSelectedDatabase && !$currentTable): ?>
+                <?php 
+                // Only show Create New Table for SQL mode
+                $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                if ($hasSelectedDatabase && !$currentTable && $dbMode === 'sql'): 
+                ?>
                 <div class="card">
                     <h3><i class="fas fa-plus-square"></i> Create New Table</h3>
                     <form method="POST" id="createTableForm" style="margin-top: 20px;">
@@ -7489,7 +8185,7 @@ let queryBuilder = null;
             });
         }
         
-    // --- DATABASE MODE TOGGLE (SQL/JSON) ---
+    // --- DATABASE MODE TOGGLE (SQL/JSON/SQLITE) ---
     function switchDbMode(mode) {
         window.location.href = '?db_mode=' + mode;
     }
@@ -7547,6 +8243,233 @@ let queryBuilder = null;
                 .catch(err => {
                     Swal.fire('Error', 'Network error', 'error');
                 });
+            }
+        });
+    }
+
+    // --- SQLITE FILE MANAGEMENT ---
+    function createNewSqliteFile() {
+        Swal.fire({
+            title: 'Create New SQLite Database',
+            html: `
+                <input type="text" id="sqliteFileName" class="swal2-input" placeholder="Enter filename (e.g., mydata.db)" style="width: 80%;">
+                <small style="display: block; margin-top: 10px; color: var(--text-secondary);">
+                    File akan dibuat di folder sqlite_db/
+                </small>
+            `,
+            showCancelButton: true,
+            confirmButtonText: 'Create',
+            cancelButtonText: 'Cancel',
+            preConfirm: () => {
+                const fileName = document.getElementById('sqliteFileName').value;
+                if (!fileName) {
+                    Swal.showValidationMessage('Please enter a filename');
+                    return false;
+                }
+                if (!fileName.endsWith('.db') && !fileName.endsWith('.sqlite')) {
+                    Swal.showValidationMessage('Filename must end with .db or .sqlite');
+                    return false;
+                }
+                return fileName;
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const formData = new FormData();
+                formData.append('action', 'create_sqlite_file');
+                formData.append('filename', result.value);
+                
+                fetch('?', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Success',
+                            text: 'SQLite database created!',
+                            timer: 1500
+                        }).then(() => {
+                            window.location.href = '?select_sqlite_file=' + encodeURIComponent(result.value);
+                        });
+                    } else {
+                        Swal.fire('Error', data.message || 'Failed to create database', 'error');
+                    }
+                })
+                .catch(err => {
+                    Swal.fire('Error', 'Network error', 'error');
+                });
+            }
+        });
+    }
+
+    function deleteSqliteFile(filename) {
+        Swal.fire({
+            title: 'Delete SQLite Database?',
+            text: 'File: ' + filename + ' - This cannot be undone!',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33',
+            confirmButtonText: 'Yes, delete it!'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const formData = new FormData();
+                formData.append('action', 'delete_sqlite_file');
+                formData.append('filename', filename);
+                
+                fetch('?', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Deleted!',
+                            text: 'Database deleted successfully',
+                            timer: 1500
+                        }).then(() => {
+                            window.location.href = '?db_mode=sqlite';
+                        });
+                    } else {
+                        Swal.fire('Error', data.message || 'Failed to delete database', 'error');
+                    }
+                })
+                .catch(err => {
+                    Swal.fire('Error', 'Network error', 'error');
+                });
+            }
+        });
+    }
+
+    function browseSqliteFile() {
+        // Similar to browseJsonFile but for SQLite
+        Swal.fire({
+            title: 'Browse SQLite Database',
+            html: `
+                <div style="text-align: left;">
+                    <div style="margin-bottom: 10px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">Current Path:</label>
+                        <div style="display: flex; gap: 5px;">
+                            <input type="text" id="browsePath" class="swal2-input" value="" placeholder="/" style="flex: 1; margin: 0;">
+                            <button onclick="loadBrowsePathSqlite()" class="swal2-confirm swal2-styled" style="margin: 0; padding: 8px 15px;">Go</button>
+                        </div>
+                    </div>
+                    <div id="browseContent" style="max-height: 400px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 10px; background: rgba(0,0,0,0.2);">
+                        <div style="text-align: center; padding: 20px; color: #888;">
+                            <i class="fas fa-spinner fa-spin"></i> Loading...
+                        </div>
+                    </div>
+                </div>
+            `,
+            width: '600px',
+            showCancelButton: true,
+            showConfirmButton: false,
+            cancelButtonText: 'Close',
+            didOpen: () => {
+                loadBrowsePathSqlite('');
+            }
+        });
+    }
+
+    function loadBrowsePathSqlite(path) {
+        if (path === undefined) {
+            path = document.getElementById('browsePath').value;
+        } else {
+            document.getElementById('browsePath').value = path;
+        }
+        
+        const formData = new FormData();
+        formData.append('action', 'browse_sqlite_files');
+        formData.append('path', path);
+        
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                renderBrowseContentSqlite(data.items, data.current_path);
+            } else {
+                document.getElementById('browseContent').innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                        <i class="fas fa-exclamation-triangle"></i> ${data.message || 'Error loading path'}
+                    </div>
+                `;
+            }
+        })
+        .catch(err => {
+            document.getElementById('browseContent').innerHTML = `
+                <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                    <i class="fas fa-exclamation-triangle"></i> Network error
+                </div>
+            `;
+        });
+    }
+
+    function renderBrowseContentSqlite(items, currentPath) {
+        let html = '';
+        
+        // Parent directory link
+        if (currentPath !== '') {
+            const parentPath = currentPath.split('/').slice(0, -1).join('/');
+            html += `
+                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePathSqlite('${parentPath}')">
+                    <i class="fas fa-level-up-alt" style="color: #888;"></i> <span style="color: #888;">..</span>
+                </div>
+            `;
+        }
+        
+        // Folders
+        items.folders.forEach(folder => {
+            const fullPath = currentPath ? currentPath + '/' + folder : folder;
+            html += `
+                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePathSqlite('${fullPath}')">
+                    <i class="fas fa-folder" style="color: #ffd700;"></i> ${folder}
+                </div>
+            `;
+        });
+        
+        // SQLite Files
+        items.files.forEach(file => {
+            const fullPath = currentPath ? currentPath + '/' + file : file;
+            html += `
+                <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">
+                    <div>
+                        <i class="fas fa-database" style="color: #2196F3;"></i> ${file}
+                    </div>
+                    <button onclick="selectSqliteFile('${fullPath}'); event.stopPropagation();" class="swal2-confirm swal2-styled" style="margin: 0; padding: 4px 12px; font-size: 0.85rem;">
+                        Select
+                    </button>
+                </div>
+            `;
+        });
+        
+        if (items.folders.length === 0 && items.files.length === 0) {
+            html = `
+                <div style="text-align: center; padding: 20px; color: #888;">
+                    <i class="fas fa-folder-open"></i> Empty folder
+                </div>
+            `;
+        }
+        
+        document.getElementById('browseContent').innerHTML = html;
+    }
+
+    function selectSqliteFile(filePath) {
+        Swal.fire({
+            title: 'Use this database?',
+            text: filePath,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, use it!',
+            cancelButtonText: 'Cancel'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                window.location.href = '?select_sqlite_file=' + encodeURIComponent(filePath) + '&external=1';
             }
         });
     }
@@ -7720,6 +8643,34 @@ let queryBuilder = null;
             }
         });
     }
-    </script>
+                    // Toggle Server Databases panel collapse/expand with state persisted in localStorage
+                    function toggleServerDbs() {
+                        const panel = document.getElementById('serverDbsPanel');
+                        const btn = document.getElementById('btnToggleServerDbs');
+                        if (!panel || !btn) return;
+                        const isHidden = panel.style.display === 'none';
+                        if (isHidden) {
+                            panel.style.display = '';
+                            btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                            localStorage.setItem('serverDbsCollapsed', '0');
+                        } else {
+                            panel.style.display = 'none';
+                            btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                            localStorage.setItem('serverDbsCollapsed', '1');
+                        }
+                    }
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const panel = document.getElementById('serverDbsPanel');
+                        const btn = document.getElementById('btnToggleServerDbs');
+                        if (!panel || !btn) return;
+                        const collapsed = localStorage.getItem('serverDbsCollapsed') === '1';
+                        if (collapsed) {
+                            panel.style.display = 'none';
+                            btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                        } else {
+                            btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                        }
+                    });
+                    </script>
 </body>
 </html>
