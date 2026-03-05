@@ -251,8 +251,6 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
               session_id(session_create_id());
               @session_start();
           }
-
-          // Note: client-side properties modal and helpers are injected in the HTML/JS section.
       }
       set_error_handler('session_error_handling_function');
       session_start();
@@ -526,53 +524,6 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
               }
           }
           echo json_encode($folders);
-          exit();
-      }
-
-      // get file/folder info
-      if (isset($_POST['type']) && $_POST['type'] == "get_info") {
-          $dir = isset($_POST['path']) ? $_POST['path'] : '';
-          $name = isset($_POST['name']) ? $_POST['name'] : '';
-          $rel = trim(($dir !== '' ? ($dir . '/') : '') . $name, '/');
-          $full = FM_ROOT_PATH . ($rel !== '' ? '/' . fm_clean_path($rel) : '');
-          $info = array('exists' => false);
-          if (file_exists($full)) {
-              $info['exists'] = true;
-              $info['is_dir'] = is_dir($full);
-              $info['is_file'] = is_file($full);
-              $info['size_raw'] = $info['is_file'] ? filesize($full) : 0;
-              $info['size'] = $info['size_raw'] ? fm_get_filesize($info['size_raw']) : '—';
-              $info['modified'] = date(FM_DATETIME_FORMAT, filemtime($full));
-              $perms = fileperms($full);
-              $info['perms'] = substr(sprintf('%o', $perms), -4);
-              // owner/group
-              $info['owner'] = '?'; $info['group'] = '?';
-              if (function_exists('posix_getpwuid') && function_exists('posix_getgrgid')) {
-                  try {
-                      $pw = posix_getpwuid(@fileowner($full)); if ($pw) $info['owner'] = $pw['name'];
-                      $gr = posix_getgrgid(@filegroup($full)); if ($gr) $info['group'] = $gr['name'];
-                  } catch (Exception $e) {}
-              }
-              // mime type
-              if ($info['is_file']){
-                  if (function_exists('finfo_open')){
-                      $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                      $info['mime'] = finfo_file($finfo, $full);
-                      finfo_close($finfo);
-                  } else {
-                      $info['mime'] = mime_content_type($full);
-                  }
-                  // image info
-                  if (in_array(strtolower(pathinfo($full, PATHINFO_EXTENSION)), array('jpg','jpeg','png','gif','webp','bmp','svg'))){
-                      $size = @getimagesize($full);
-                      if ($size) { $info['image_width'] = $size[0]; $info['image_height'] = $size[1]; }
-                      if (function_exists('exif_read_data')){
-                          try { $exif = @exif_read_data($full); if ($exif) $info['exif'] = $exif; } catch (Exception $e) {}
-                      }
-                  }
-              }
-          }
-          echo json_encode($info);
           exit();
       }
 
@@ -2273,7 +2224,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                            </button>
                            
                            <div class="btn-group" role="group">
-                               <button type="button" id="setupInitBtn" class="btn btn-info text-white">
+                               <button type="submit" name="action" value="init" class="btn btn-info text-white" onclick="return confirm('WARNING: Setup akan mengupload SEMUA file. Gunakan ini hanya jika FTP kosong. Lanjutkan?')">
                                    <i class="fa fa-cloud-upload me-2"></i> 2. Setup (Upload All)
                                </button>
                                <button type="submit" name="action" value="push" class="btn btn-success">
@@ -2848,21 +2799,6 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   $num_folders = count($folders);
   $all_files_size = 0;
   ?>
-  <div class="d-flex fm-wrapper" style="gap:16px;">
-      <aside id="fm-sidebar" class="fm-sidebar p-2" style="width:260px;min-width:180px;max-height:78vh;overflow:auto;border:1px solid rgba(0,0,0,0.06);background:var(--bs-body-bg);">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-              <strong style="font-size:0.95rem;">Folders</strong>
-              <button id="fm-refresh-tree" class="btn btn-sm btn-outline-secondary">⟳</button>
-          </div>
-          <div id="fm-tree-root">
-              <div id="fm-tree-pinned" style="margin-bottom:8px;">
-                  <strong style="font-size:0.85rem;display:flex;align-items:center;justify-content:space-between;">Pinned <span class="text-muted small">(<span id="fm-pinned-count">0</span>)</span></strong>
-                  <ul id="fm-tree-pinned-list" class="list-unstyled mb-1" style="padding-left:6px;margin-top:6px;"></ul>
-              </div>
-              <ul id="fm-tree" class="list-unstyled mb-0" style="padding-left:6px;"></ul>
-          </div>
-      </aside>
-      <div class="fm-main flex-grow-1" style="overflow:auto;">
   <form action="" method="post" class="pt-3" style="max-width:97vw !important">
       <input type="hidden" name="p" value="<?php echo fm_enc(FM_PATH) ?>">
       <input type="hidden" name="group" value="1">
@@ -3142,7 +3078,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   </div>
                   <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
-                      <img data-src="<?=$img_src?>" class="fm-lazy" alt="<?=fm_enc($f)?>" loading="lazy">
+                      <img src="<?=$img_src?>" loading="lazy">
                   <?php else: ?>
                       <div class="grid-icon"><i class="<?=$icon_class?>"></i></div>
                   <?php endif; ?>
@@ -3161,21 +3097,6 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       <!-- View Toggle -->
                       <div class="btn-group btn-group-sm" role="group">
                           <a href="#" class="btn btn-outline-primary" onclick="toggleView();return false;" title="Toggle View"><i class="fa fa-th-large" id="view-icon"></i></a>
-                          <select id="fm-grid-size" class="form-select form-select-sm ms-1" style="width:auto;">
-                              <option value="small">Small</option>
-                              <option value="medium" selected>Medium</option>
-                              <option value="large">Large</option>
-                          </select>
-                      </div>
-                      <!-- Search -->
-                      <div class="input-group input-group-sm ms-2" style="max-width:420px;">
-                          <input id="fm-search-input" type="text" class="form-control" placeholder="Search files & folders..." aria-label="Search">
-                          <button id="fm-search-btn" class="btn btn-outline-primary" title="Search"><i class="fa fa-search"></i></button>
-                          <button id="fm-search-opts-toggle" class="btn btn-outline-secondary" title="Options"><i class="fa fa-cog"></i></button>
-                      </div>
-                      <div id="fm-search-opts" class="d-none ms-2 align-items-center" style="gap:8px;">
-                          <label class="form-check form-check-inline mb-0"><input id="fm-search-recursive" class="form-check-input" type="checkbox"> Recursively</label>
-                          <label class="form-check form-check-inline mb-0"><input id="fm-search-content" class="form-check-input" type="checkbox"> Search content</label>
                       </div>
                       
                       <!-- Selection Actions -->
@@ -3217,137 +3138,31 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               <div class="col-12"><a href="https://tinyfilemanager.github.io" target="_blank" class="text-muted small">RFILE Manager <?php echo VERSION; ?></a></div>
           <?php endif; ?>
       </div>
-    </form>
-        </div>
-        <aside id="fm-preview" class="fm-preview p-3" style="width:340px;min-width:260px;border:1px solid rgba(0,0,0,0.06);background:var(--bs-body-bg);max-height:78vh;overflow:auto;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <strong style="font-size:0.95rem;">Details</strong>
-                <button id="fm-preview-close" class="btn btn-sm btn-outline-secondary">✕</button>
-            </div>
-            <div id="fm-preview-content" style="min-height:120px;">
-                <div class="text-muted">Select a file or folder to see details and preview.</div>
-            </div>
-            <div id="fm-preview-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-            </div>
-        </aside>
-    </div>
+  </form>
 
-    <!-- Sidebar tree + Drag & Drop enhancements: enable dragging items and dropping onto folders (table/grid) -->
+  <!-- Drag & Drop enhancements: enable dragging items and dropping onto folders (table/grid) -->
   <style>
       .fm-drop-target { outline: 2px dashed #3b82f6; background: rgba(59,130,246,0.06); }
       .fm-dragging { opacity: 0.6; }
       #main-grid .grid-item { user-select: none; }
-      .fm-preview .preview-image { max-width:100%; max-height:240px; display:block; margin-bottom:10px; }
-      .fm-preview .meta { font-size:0.9rem; color:var(--bs-body-color); }
-      tr[data-type].fm-selected, .grid-item.fm-selected { background: rgba(13,110,253,0.06); border-left:3px solid rgba(13,110,253,0.12); }
-    .fm-preview .meta-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px dashed rgba(0,0,0,0.04); }
-    /* Sidebar pinned styles */
-    #fm-tree-pinned { padding:6px; border-radius:6px; background: linear-gradient(180deg, rgba(250,250,250,0.6), transparent); }
-    #fm-tree-pinned-list li { padding:4px 6px; display:flex; align-items:center; justify-content:space-between; }
-    #fm-tree .list-unstyled li { padding:4px 6px; border-radius:4px; }
-    #fm-tree .list-unstyled li:hover { background: rgba(0,0,0,0.03); }
-    .fm-pin { cursor:pointer; color: rgba(0,0,0,0.35); margin-left:8px; }
-    .fm-pin.pinned { color: #d97706; transform: rotate(20deg); }
-    .fm-tree-toggle { cursor: pointer; margin-right:6px; color: rgba(0,0,0,0.45); }
-    /* Grid sizes */
-    #main-grid.grid-size-small .grid-item{ width:84px; padding:8px; }
-    #main-grid.grid-size-small .grid-name{ font-size:0.72rem }
-    #main-grid.grid-size-small .grid-icon i{ font-size:28px }
-
-    #main-grid.grid-size-medium .grid-item{ width:120px; padding:10px }
-    #main-grid.grid-size-medium .grid-name{ font-size:0.85rem }
-    #main-grid.grid-size-medium .grid-icon i{ font-size:36px }
-
-    #main-grid.grid-size-large .grid-item{ width:160px; padding:12px }
-    #main-grid.grid-size-large .grid-name{ font-size:0.95rem }
-    #main-grid.grid-size-large .grid-icon i{ font-size:44px }
-
-    /* thumbnail image fit */
-    #main-grid .grid-item img.fm-lazy{ display:block; width:100%; height:100px; object-fit:cover; border-radius:6px; }
-    .fm-marquee { position:fixed; pointer-events:none; z-index:99998; border:1px dashed rgba(13,110,253,0.8); background: rgba(13,110,253,0.06); }
-    body.fm-drag-selecting { user-select: none; }
   </style>
 
   <script>
   (function(){
-      // SweetAlert Helper Functions
-      function swAlert(title, message, icon = 'info') {
-          return Swal.fire({
-              title: title,
-              text: message,
-              icon: icon,
-              confirmButtonText: 'OK',
-              allowOutsideClick: false,
-              allowEscapeKey: true,
-              customClass: {
-                  popup: 'swal-custom-popup',
-                  confirmButton: 'btn btn-primary'
-              }
-          });
-      }
-
-      function swConfirm(title, message, confirmText = 'Yes', denyText = 'No') {
-          return Swal.fire({
-              title: title,
-              text: message,
-              icon: 'warning',
-              showDenyButton: true,
-              confirmButtonText: confirmText,
-              denyButtonText: denyText,
-              allowOutsideClick: false,
-              allowEscapeKey: true,
-              customClass: {
-                  popup: 'swal-custom-popup',
-                  confirmButton: 'btn btn-danger',
-                  denyButton: 'btn btn-secondary'
-              }
-          });
-      }
-
-      function swPrompt(title, inputLabel, currentValue = '') {
-          return Swal.fire({
-              title: title,
-              input: 'text',
-              inputLabel: inputLabel,
-              inputValue: currentValue,
-              inputPlaceholder: currentValue,
-              showCancelButton: true,
-              confirmButtonText: 'OK',
-              cancelButtonText: 'Cancel',
-              allowOutsideClick: false,
-              allowEscapeKey: true,
-              inputValidator: (value) => {
-                  if (!value || value === currentValue) {
-                      return value ? null : 'Name required!';
-                  }
-                  return null;
-              },
-              customClass: {
-                  popup: 'swal-custom-popup',
-                  confirmButton: 'btn btn-primary',
-                  cancelButton: 'btn btn-secondary'
-              }
-          });
-      }
-
       document.addEventListener('DOMContentLoaded', function(){
           const tokenInput = document.querySelector('input[name="token"]');
           const token = tokenInput ? tokenInput.value : '';
 
           function moveItemAjax(name, dest, token, cb){
-              showToast('Moving "'+name+'" → '+dest, 'info');
               const form = new FormData();
               form.append('move_from', name);
               form.append('move_to', dest);
               form.append('token', token);
               const url = window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>';
-              // make cancelable via AbortController and register to transfer queue
-              const controller = new AbortController();
-              const tId = registerTransfer({ type: 'move', name: name, dest: dest, controller: controller });
-              fetch(url, { method: 'POST', body: form, credentials: 'same-origin', signal: controller.signal })
+              fetch(url, { method: 'POST', body: form, credentials: 'same-origin' })
               .then(r => r.text())
-              .then(t => { updateTransferProgress(tId, 100); showToast('Moved "'+name+'"', 'success'); completeTransfer(tId); cb(true, t); })
-              .catch(e => { if (e.name === 'AbortError'){ showToast('Move cancelled: '+name, 'warning'); } else { showToast('Move failed: '+e.message, 'danger'); } completeTransfer(tId); cb(false, e.message); });
+              .then(t => cb(true, t))
+              .catch(e => cb(false, e.message));
           }
 
           function uploadFilesToFolder(files, dest, token){
@@ -3362,531 +3177,9 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   .then(json => {
                       setTimeout(()=>{ try{ location.reload(); }catch(e){} }, 300);
                   })
-                  .catch(e=>{ swAlert('Upload Error', 'Upload error: '+e.message, 'error'); });
+                  .catch(e=>{ alert('Upload error: '+e.message); });
               });
           }
-
-          // Preview / Details pane logic
-          function clearPreview(){
-              const wrapper = document.getElementById('fm-preview-content');
-              const actions = document.getElementById('fm-preview-actions');
-              if (wrapper) wrapper.innerHTML = '<div class="text-muted">Select a file or folder to see details and preview.</div>';
-              if (actions) actions.innerHTML = '';
-              document.querySelectorAll('[data-type].fm-selected').forEach(n=>n.classList.remove('fm-selected'));
-          }
-
-          function showPreviewFromEl(el){
-              if (!el) return; 
-              // Find element that has data-type (tr or .grid-item)
-              const item = el.dataset && el.dataset.type ? el : el.closest('[data-type]');
-              if (!item) return;
-              document.querySelectorAll('[data-type].fm-selected').forEach(n=>n.classList.remove('fm-selected'));
-              item.classList.add('fm-selected');
-
-              const type = item.dataset.type || 'file';
-              const name = item.dataset.name || '';
-              const path = item.dataset.path || '';
-              const ext = (item.dataset.ext||'').toLowerCase();
-
-              const wrapper = document.getElementById('fm-preview-content');
-              const actions = document.getElementById('fm-preview-actions');
-              if (!wrapper) return;
-              wrapper.innerHTML = '<div class="spinner-border text-primary" role="status"></div>';
-              actions.innerHTML = '';
-
-              // Build preview
-              setTimeout(function(){
-                  let html = '';
-                  if (type === 'file'){
-                      // image preview
-                      let imgSrc = '';
-                      const imgTag = item.querySelector('img');
-                      const previewAnchor = item.querySelector('a[data-preview-image]');
-                      if (imgTag) imgSrc = imgTag.src;
-                      else if (previewAnchor) imgSrc = previewAnchor.getAttribute('data-preview-image');
-
-                      if (imgSrc && (ext==='png' || ext==='jpg' || ext==='jpeg' || ext==='gif' || ext==='webp' || ext==='svg' || ext==='bmp')){
-                          html += '<img class="preview-image" src="'+imgSrc+'">';
-                      } else {
-                          html += '<div style="font-size:48px;color:var(--bs-secondary);margin-bottom:8px;"><i class="fa fa-file-o"></i></div>';
-                      }
-
-                      html += '<div class="meta"><div class="meta-row"><strong>'+name+'</strong><span class="text-muted">'+ext.toUpperCase()+'</span></div>';
-
-                      // Try to read size/modified from nearby cells (table) or data attributes
-                      let sizeText = '';
-                      let modText = '';
-                      if (item.tagName.toLowerCase() === 'tr'){
-                          const orderCells = item.querySelectorAll('td[data-order]');
-                          if (orderCells && orderCells.length>=1) sizeText = orderCells[0].innerText || '';
-                          if (orderCells && orderCells.length>=2) modText = orderCells[1].innerText || '';
-                      } else {
-                          // grid item - try to find next sibling in DOM for size info (not present)
-                      }
-                      html += '<div class="meta-row"><span class="text-muted">Size</span><strong>'+ (sizeText||'—') +'</strong></div>';
-                      html += '<div class="meta-row"><span class="text-muted">Modified</span><strong>'+ (modText||'—') +'</strong></div>';
-                      html += '</div>';
-
-                      wrapper.innerHTML = html;
-
-                      // Actions
-                      const openBtn = document.createElement('a');
-                      openBtn.className = 'btn btn-sm btn-outline-primary';
-                      openBtn.href = '?p='+encodeURIComponent(path)+'&view='+encodeURIComponent(name);
-                      openBtn.target = '_blank';
-                      openBtn.textContent = 'Open';
-                      actions.appendChild(openBtn);
-
-                      const dlBtn = document.createElement('a');
-                      dlBtn.className = 'btn btn-sm btn-outline-secondary';
-                      dlBtn.href = '?p='+encodeURIComponent(path)+'&download='+encodeURIComponent(name);
-                      dlBtn.textContent = 'Download';
-                      actions.appendChild(dlBtn);
-
-                      const textExts = ['txt','css','js','php','html','md','json','xml','sql','py','java','c','cpp','h'];
-                      if (textExts.includes(ext)){
-                          const editBtn = document.createElement('a');
-                          editBtn.className = 'btn btn-sm btn-outline-success';
-                          editBtn.href = '?p='+encodeURIComponent(path)+'&edit='+encodeURIComponent(name);
-                          editBtn.textContent = 'Edit';
-                          actions.appendChild(editBtn);
-                      }
-
-                  } else if (type === 'folder'){
-                      let html2 = '<div class="meta"><div class="meta-row"><strong>'+name+'</strong><span class="text-muted">Folder</span></div>';
-                      html2 += '<div class="meta-row"><span class="text-muted">Path</span><strong>'+(path?path:'/')+'</strong></div>';
-                      html2 += '</div>';
-                      wrapper.innerHTML = html2;
-                      const openBtn = document.createElement('a');
-                      openBtn.className = 'btn btn-sm btn-outline-primary';
-                      openBtn.href = '?p='+encodeURIComponent((path?path:'')+'/'+name);
-                      openBtn.textContent = 'Open';
-                      actions.appendChild(openBtn);
-                  }
-              }, 80);
-          }
-
-          function attachPreviewHandlers(){
-              let lastSelectedIndex = null;
-
-              function getSiblingsInContainer(el){
-                  // Items in same container (table tbody or grid parent)
-                  const parent = el.parentElement;
-                  return Array.from(parent.querySelectorAll('[data-type]'));
-              }
-
-              // helper to sync checkbox within an item
-              function syncCheckboxFor(el){
-                  const cb = el.querySelector('input[name="file[]"]');
-                  if (cb) cb.checked = el.classList.contains('fm-selected');
-              }
-
-              // unified click handler for selection + preview
-              function itemClickHandler(e){
-                  if (e.target.closest('.context-menu-trigger') || e.target.closest('input') || e.target.closest('a') || e.target.closest('.grid-check')) return; // ignore clicks on actions
-                  const el = this;
-                  const siblings = getSiblingsInContainer(el);
-                  const idx = siblings.indexOf(el);
-
-                  if (e.shiftKey && lastSelectedIndex !== null && lastSelectedIndex >= 0){
-                      const start = Math.min(lastSelectedIndex, idx);
-                      const end = Math.max(lastSelectedIndex, idx);
-                      siblings.slice(start, end+1).forEach(n=>{ n.classList.add('fm-selected'); syncCheckboxFor(n); });
-                  } else if (e.ctrlKey || e.metaKey){
-                      el.classList.toggle('fm-selected'); syncCheckboxFor(el);
-                  } else {
-                      document.querySelectorAll('[data-type].fm-selected').forEach(n=>{ n.classList.remove('fm-selected'); syncCheckboxFor(n); });
-                      el.classList.add('fm-selected'); syncCheckboxFor(el);
-                  }
-
-                  lastSelectedIndex = idx;
-                  showPreviewFromEl(el);
-              }
-
-              // attach to table rows and grid items
-              document.querySelectorAll('[data-type]').forEach(item=>{
-                  item.addEventListener('click', itemClickHandler);
-
-                  // double-click inline rename for name cells
-                  const nameCell = item.querySelector('.filename') || item.querySelector('.grid-name');
-                  if (nameCell){
-                      nameCell.addEventListener('dblclick', function(ev){
-                          ev.stopPropagation();
-                          const parent = item;
-                          const oldName = parent.dataset.name;
-                          const path = parent.dataset.path || '';
-                          const input = document.createElement('input');
-                          input.type = 'text';
-                          input.value = oldName;
-                          input.className = 'form-control form-control-sm';
-                          // hide nameCell content
-                          nameCell.style.display = 'none';
-                          parent.insertBefore(input, nameCell.nextSibling);
-                          input.focus(); input.select();
-
-                          function finishRename(commit){
-                              const newName = input.value.trim();
-                              input.remove();
-                              nameCell.style.display = '';
-                              if (!commit) return;
-                              if (!newName || newName === oldName) return;
-                              const fd = new FormData();
-                              fd.append('rename_from', oldName);
-                              fd.append('rename_to', newName);
-                              fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                              fetch(window.location.pathname + '?p=' + encodeURIComponent(path||FM_CURRENT_PATH), { method: 'POST', body: fd, credentials: 'same-origin' })
-                              .then(r=>r.text()).then(t=>location.reload()).catch(err=>swAlert('Rename Failed', 'Rename failed: '+err.message, 'error'));
-                          }
-
-                          input.addEventListener('blur', function(){ finishRename(true); });
-                          input.addEventListener('keydown', function(ke){ if (ke.key === 'Enter'){ finishRename(true); } else if (ke.key === 'Escape'){ finishRename(false); } });
-                      });
-                  }
-              });
-
-              const close = document.getElementById('fm-preview-close');
-              if (close) close.addEventListener('click', function(){ clearPreview(); });
-          }
-
-          // Marquee (drag-to-select) implementation
-          function setupMarqueeSelection(){
-              const container = document.querySelector('.fm-main') || document.body;
-              let marquee = null;
-              let startX = 0, startY = 0;
-
-              function rectsIntersect(a,b){
-                  return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-              }
-
-              container.addEventListener('mousedown', function(e){
-                  if (e.button !== 0) return;
-                  if (e.target.closest('a, input, button, textarea, select, .context-menu-trigger, .grid-check')) return;
-                  startX = e.pageX; startY = e.pageY;
-                  marquee = document.createElement('div'); marquee.className = 'fm-marquee';
-                  marquee.style.left = startX + 'px'; marquee.style.top = startY + 'px'; marquee.style.width = '0px'; marquee.style.height = '0px';
-                  document.body.appendChild(marquee);
-                  document.body.classList.add('fm-drag-selecting');
-
-                  function onMove(ev){
-                      const x = Math.min(ev.pageX, startX);
-                      const y = Math.min(ev.pageY, startY);
-                      const w = Math.abs(ev.pageX - startX);
-                      const h = Math.abs(ev.pageY - startY);
-                      marquee.style.left = x + 'px'; marquee.style.top = y + 'px'; marquee.style.width = w + 'px'; marquee.style.height = h + 'px';
-                      const rect = marquee.getBoundingClientRect();
-                      document.querySelectorAll('[data-type]').forEach(it=>{
-                          const ir = it.getBoundingClientRect();
-                          if (rectsIntersect(rect, ir)){
-                              it.classList.add('fm-selected');
-                          } else {
-                              // if not holding modifier keys, clear selection of items outside marquee
-                              if (!ev.shiftKey && !ev.ctrlKey && !ev.metaKey) it.classList.remove('fm-selected');
-                          }
-                      });
-                  }
-
-                  function onUp(ev){
-                      document.removeEventListener('mousemove', onMove);
-                      document.removeEventListener('mouseup', onUp);
-                      if (marquee){ marquee.remove(); marquee = null; }
-                      document.body.classList.remove('fm-drag-selecting');
-                      // sync checkboxes
-                      document.querySelectorAll('[data-type]').forEach(it=>{ const cb = it.querySelector('input[name="file[]"]'); if (cb) cb.checked = it.classList.contains('fm-selected'); });
-                  }
-
-                  document.addEventListener('mousemove', onMove);
-                  document.addEventListener('mouseup', onUp);
-              });
-          }
-
-          // Context menu implementation
-          let clipboard = { action: null, items: [] };
-          function initContextMenu(){
-              // create menu element
-              let menu = document.createElement('div');
-              menu.id = 'fm-context-menu';
-              menu.style.position = 'fixed';
-              menu.style.zIndex = 99999;
-              menu.style.minWidth = '180px';
-              menu.style.background = 'var(--bs-body-bg)';
-              menu.style.border = '1px solid rgba(0,0,0,0.08)';
-              menu.style.boxShadow = '0 4px 12px rgba(0,0,0,0.06)';
-              menu.style.display = 'none';
-              menu.style.padding = '6px 4px';
-              menu.style.borderRadius = '6px';
-              menu.innerHTML = `
-                  <div class="fm-cm-item" data-act="open"><i class="fa fa-folder-open" style="width:16px;margin-right:6px;display:inline-block"></i>Open</div>
-                  <div class="fm-cm-item" data-act="preview"><i class="fa fa-eye" style="width:16px;margin-right:6px;display:inline-block"></i>Preview</div>
-                  <div class="fm-cm-item" data-act="download"><i class="fa fa-download" style="width:16px;margin-right:6px;display:inline-block"></i>Download</div>
-                  <div class="fm-cm-item" data-act="link"><i class="fa fa-link" style="width:16px;margin-right:6px;display:inline-block"></i>Direct Link</div>
-                  <div class="fm-cm-sep" style="height:1px;background:rgba(0,0,0,0.04);margin:6px 0;"></div>
-                  <div class="fm-cm-item" data-act="create-file"><i class="fa fa-file-o" style="width:16px;margin-right:6px;display:inline-block"></i>Create File</div>
-                  <div class="fm-cm-item" data-act="create-folder"><i class="fa fa-folder" style="width:16px;margin-right:6px;display:inline-block"></i>Create Folder</div>
-                  <div class="fm-cm-sep" style="height:1px;background:rgba(0,0,0,0.04);margin:6px 0;"></div>
-                  <div class="fm-cm-item" data-act="rename"><i class="fa fa-pencil-square-o" style="width:16px;margin-right:6px;display:inline-block"></i>Rename</div>
-                  <div class="fm-cm-item" data-act="move"><i class="fa fa-arrow-right" style="width:16px;margin-right:6px;display:inline-block"></i>Move</div>
-                  <div class="fm-cm-item" data-act="extract" style="display:none"><i class="fa fa-folder-open" style="width:16px;margin-right:6px;display:inline-block"></i>Extract</div>
-                  <div class="fm-cm-item" data-act="delete" style="color:#ff4444"><i class="fa fa-trash-o" style="width:16px;margin-right:6px;display:inline-block"></i>Delete</div>
-                  <div class="fm-cm-sep" style="height:1px;background:rgba(0,0,0,0.04);margin:6px 0;"></div>
-                  <div class="fm-cm-item" data-act="copy"><i class="fa fa-files-o" style="width:16px;margin-right:6px;display:inline-block"></i>Copy</div>
-                  <div class="fm-cm-item" data-act="cut"><i class="fa fa-cut" style="width:16px;margin-right:6px;display:inline-block"></i>Cut</div>
-                  <div class="fm-cm-item" data-act="paste"><i class="fa fa-paste" style="width:16px;margin-right:6px;display:inline-block"></i>Paste</div>
-                  <div class="fm-cm-sep" style="height:1px;background:rgba(0,0,0,0.04);margin:6px 0;"></div>
-                  <div class="fm-cm-item" data-act="properties"><i class="fa fa-info-circle" style="width:16px;margin-right:6px;display:inline-block"></i>Properties</div>
-              `;
-              document.body.appendChild(menu);
-
-              // basic styles for items
-              const style = document.createElement('style');
-              style.innerHTML = `
-                  #fm-context-menu .fm-cm-item{padding:8px 10px;cursor:pointer;border-radius:4px;font-size:0.95rem;display:flex;align-items:center}
-                  #fm-context-menu .fm-cm-item:hover{background:rgba(0,0,0,0.04)}
-                  #fm-context-menu .fm-cm-item[aria-disabled="true"]{opacity:0.45;pointer-events:none;cursor:not-allowed}
-              `;
-              document.head.appendChild(style);
-
-              let currentTarget = null;
-
-              function showEmptySpaceMenu(x, y) {
-                  currentTarget = null;
-                  menu.style.left = x + 'px';
-                  menu.style.top = y + 'px';
-
-                  // Show all menu items, but disable those that require a selected item
-                  menu.querySelectorAll('.fm-cm-item').forEach(item => {
-                      const act = item.dataset.act;
-                      item.style.display = 'flex';
-                      if (['open','preview','rename','move','delete','copy','cut','properties','extract'].includes(act)){
-                          item.setAttribute('aria-disabled','true');
-                          item.style.opacity = '0.45';
-                          item.style.pointerEvents = 'none';
-                      } else {
-                          item.removeAttribute('aria-disabled');
-                          item.style.opacity = '';
-                          item.style.pointerEvents = '';
-                      }
-                  });
-
-                  // Show separators
-                  menu.querySelectorAll('.fm-cm-sep').forEach(sep => { sep.style.display = 'block'; });
-
-                  // Paste only enabled if clipboard has items
-                  const paste = menu.querySelector('[data-act="paste"]');
-                  if (paste){
-                      if (!clipboard.items || !clipboard.items.length){
-                          paste.setAttribute('aria-disabled','true');
-                          paste.style.opacity = '0.45'; paste.style.pointerEvents = 'none';
-                      } else {
-                          paste.removeAttribute('aria-disabled'); paste.style.opacity=''; paste.style.pointerEvents='';
-                      }
-                  }
-
-                  menu.style.display = 'block';
-              }
-
-              function showMenu(x,y,target){
-                  currentTarget = target;
-                  menu.style.left = x + 'px';
-                  menu.style.top = y + 'px';
-                  
-                  // Show/hide items based on type
-                  const type = target.dataset.type;
-                  const ext = (target.dataset.ext || '').toLowerCase();
-                  const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz'];
-                  const isArchive = archiveExts.includes(ext);
-                  
-                  // Show preview only for files
-                  menu.querySelector('[data-act="preview"]').style.display = type === 'file' ? 'flex' : 'none';
-                  
-                  // Show download only for files
-                  menu.querySelector('[data-act="download"]').style.display = type === 'file' ? 'flex' : 'none';
-                  
-                  // Show extract only for archive files
-                  menu.querySelector('[data-act="extract"]').style.display = (type === 'file' && isArchive) ? 'flex' : 'none';
-                  
-                  // enable/disable paste
-                  const paste = menu.querySelector('[data-act="paste"]');
-                  if (!clipboard.items.length) paste.setAttribute('aria-disabled','true'); else paste.removeAttribute('aria-disabled');
-                  
-                  menu.style.display = 'block';
-              }
-
-              function hideMenu(){ menu.style.display = 'none'; currentTarget = null; }
-
-              document.addEventListener('click', function(e){
-                  if (!e.target.closest('#fm-context-menu')) hideMenu();
-              });
-
-              document.addEventListener('contextmenu', function(e){
-                  // Allow native menu for editable controls
-                  try{
-                      const tag = (e.target && e.target.tagName || '').toLowerCase();
-                      const isEditable = (e.target && e.target.isContentEditable) || tag === 'input' || tag === 'textarea' || tag === 'select';
-                      if (isEditable) return; // keep native for form controls
-                  }catch(err){ }
-
-                  e.preventDefault();
-                  const el = e.target.closest('[data-type]');
-                  if (el){
-                      // Clicked on a file/folder item
-                      showMenu(e.clientX, e.clientY, el);
-                  } else {
-                      // Clicked anywhere else -> treat as empty-space in file manager
-                      showEmptySpaceMenu(e.clientX, e.clientY);
-                  }
-              });
-
-              // handle context-menu-trigger clicks (ellipsis button)
-              document.addEventListener('click', function(e){
-                  const trigger = e.target.closest('.context-menu-trigger');
-                  if (!trigger) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const el = trigger.closest('[data-type]');
-                  if (el){
-                      const rect = trigger.getBoundingClientRect();
-                      showMenu(rect.left + window.scrollX, rect.bottom + window.scrollY + 6, el);
-                  }
-              });
-
-              // handle menu actions
-              menu.addEventListener('click', async function(e){
-                  const act = e.target.closest('.fm-cm-item')?.dataset?.act;
-                  if (!act) return;
-                  const itemEl = e.target.closest('.fm-cm-item');
-                  if (itemEl && itemEl.getAttribute('aria-disabled') === 'true') return;
-                  
-                  hideMenu();
-                  
-                  // Handle create actions (work even when currentTarget is null)
-                  if (act === 'create-file' || act === 'create-folder'){
-                      const isFolder = (act === 'create-folder');
-                      const itemType = isFolder ? 'Folder' : 'File';
-                      const dirPath = currentTarget ? (currentTarget.dataset.type === 'folder' ? (currentTarget.dataset.path ? currentTarget.dataset.path + '/' + currentTarget.dataset.name : currentTarget.dataset.name) : currentTarget.dataset.path) : (FM_CURRENT_PATH || '');
-                      
-                      const result = await swPrompt(`Create ${itemType}`, `Enter ${itemType.toLowerCase()} name:`, '');
-                      if (result.isConfirmed && result.value && result.value.trim()){
-                          const fd = new FormData();
-                          fd.append('newfilename', result.value.trim());
-                          fd.append('newfile', isFolder ? 'folder' : 'file');
-                          fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(dirPath), { method: 'POST', body: fd, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>{ try{ location.reload(); }catch(e){} }).catch(err=>swAlert('Create Failed', `Failed to create ${itemType.toLowerCase()}: `+err.message, 'error'));
-                      }
-                      return;
-                  }
-                  
-                  // Other actions require currentTarget
-                  if (!currentTarget) return;
-                  
-                  const type = currentTarget.dataset.type;
-                  const name = currentTarget.dataset.name;
-                  const path = currentTarget.dataset.path || '';
-                  
-                  if (act === 'open'){
-                      if (type === 'folder') window.location.href = '?p=' + encodeURIComponent((path?path:'') + '/' + name);
-                      else window.open('?p='+encodeURIComponent(path)+'&view='+encodeURIComponent(name),'_blank');
-                  } else if (act === 'preview'){
-                      // show preview modal
-                      try{
-                          const ext = (currentTarget.dataset.ext || '').toLowerCase();
-                          preview_file(
-                              (path ? '?p=' + encodeURIComponent(path) + '&view=' : '?view=') + encodeURIComponent(name),
-                              ext,
-                              name
-                          );
-                      }catch(err){ console.error('Preview error:', err); }
-                  } else if (act === 'download'){
-                      window.location.href = '?p='+encodeURIComponent(path)+'&download='+encodeURIComponent(name);
-                  } else if (act === 'link'){
-                      const fullPath = (path?path+'/':'') + name;
-                      const directUrl = window.fm_root_url + (path ? '/' + path : '') + '/' + name + (type === 'folder' ? '/' : '');
-                      // Copy to clipboard or open in new tab
-                      if (navigator.clipboard){
-                          navigator.clipboard.writeText(directUrl).then(()=>showToast('Link copied to clipboard','success')).catch(err=>console.error(err));
-                      } else {
-                          window.open(directUrl, '_blank');
-                      }
-                  } else if (act === 'create-file' || act === 'create-folder'){
-                      // Get the directory path (for files, use their parent directory)
-                      const dirPath = (type === 'folder') ? path : (path ? path : FM_CURRENT_PATH || '');
-                      const isFolder = (act === 'create-folder');
-                      const itemType = isFolder ? 'Folder' : 'File';
-                      
-                      const result = await swPrompt(`Create ${itemType}`, `Enter ${itemType.toLowerCase()} name:`, '');
-                      if (result.isConfirmed && result.value && result.value.trim()){
-                          const fd = new FormData();
-                          fd.append('newfilename', result.value.trim());
-                          fd.append('newfile', isFolder ? 'folder' : 'file');
-                          fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(dirPath), { method: 'POST', body: fd, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>{ try{ location.reload(); }catch(e){} }).catch(err=>swAlert('Create Failed', `Failed to create ${itemType.toLowerCase()}: `+err.message, 'error'));
-                      }
-                  } else if (act === 'rename'){
-                      const result = await swPrompt('Rename', 'New name:', name);
-                      if (result.isConfirmed && result.value && result.value !== name){
-                          const fd = new FormData();
-                          fd.append('rename_from', name);
-                          fd.append('rename_to', result.value);
-                          fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(path), { method: 'POST', body: fd, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>{ try{ location.reload(); }catch(e){} }).catch(err=>swAlert('Rename Failed', 'Rename failed: '+err.message, 'error'));
-                      }
-                  } else if (act === 'move'){
-                      // Use existing move dialog or create simple prompt
-                      try{
-                          if(typeof move === 'function'){
-                              move(path, name);
-                          }
-                      }catch(err){ console.error('Move error:', err); }
-                  } else if (act === 'extract'){
-                      try{
-                          if(typeof extract === 'function'){
-                              extract(path, name);
-                          }
-                      }catch(err){ console.error('Extract error:', err); }
-                  } else if (act === 'delete'){
-                      const result = await swConfirm('Delete', 'Delete "'+name+'"?', 'Delete', 'Cancel');
-                      if (result.isConfirmed){
-                          const fd2 = new FormData();
-                          fd2.append('file[]', name);
-                          fd2.append('delete', '1');
-                          fd2.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(path), { method: 'POST', body: fd2, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>{ try{ location.reload(); }catch(e){} }).catch(err=>swAlert('Delete Failed', 'Delete failed: '+err.message, 'error'));
-                      }
-                  } else if (act === 'copy' || act === 'cut'){
-                      clipboard.action = act;
-                      clipboard.items = [{ type, name, path }];
-                  } else if (act === 'paste'){
-                      if (!clipboard.items.length) return;
-                      // perform copy/move of first item for now
-                      const it = clipboard.items[0];
-                      const dest = path || '';
-                      if (clipboard.action === 'copy'){
-                          // use existing server copy action if available (use 'copy' form fields)
-                          const fd = new FormData();
-                          fd.append('copy_from', it.name);
-                          fd.append('copy_to', dest + '/' + it.name);
-                          fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(dest), { method: 'POST', body: fd, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>location.reload()).catch(err=>swAlert('Copy Failed', 'Copy failed: '+err.message, 'error'));
-                      } else if (clipboard.action === 'cut'){
-                          const fd = new FormData();
-                          fd.append('move_from', it.name);
-                          fd.append('move_to', dest + '/' + it.name);
-                          fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                          fetch(window.location.pathname + '?p='+encodeURIComponent(dest), { method: 'POST', body: fd, credentials: 'same-origin' })
-                          .then(r=>r.text()).then(t=>location.reload()).catch(err=>swAlert('Move Failed', 'Move failed: '+err.message, 'error'));
-                      }
-                      clipboard = { action: null, items: [] };
-                  } else if (act === 'properties'){
-                      showPropertiesFromEl(currentTarget);
-                  }
-              });
-
-          }
-
 
           function enableDragDrop(){
               const rows = document.querySelectorAll('tr[data-type]');
@@ -3912,110 +3205,6 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       const basePath = this.dataset.path || '';
                       const dest = basePath ? basePath + '/' + targetName : targetName;
                       if (files && files.length){
-                          function uploadFilesToFolder(files, dest, token){
-                              Array.from(files).forEach(file=>{
-                                  const fd = new FormData();
-                                  fd.append('file', file);
-                                  fd.append('fullpath', dest + '/' + file.name);
-                                  fd.append('token', token);
-                                  const url = window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>';
-                                  // register transfer and create xhr so it can be cancelled
-                                  const tId = registerTransfer({ type: 'upload', name: file.name, size: file.size });
-                                  const xhr = new XMLHttpRequest();
-                                  xhr.open('POST', url, true);
-                                  xhr.withCredentials = true;
-                                  xhr.upload.onprogress = function(evt){
-                                      if (evt.lengthComputable){
-                                          const pct = Math.round((evt.loaded / evt.total) * 100);
-                                          updateTransferProgress(tId, pct);
-                                      }
-                                  };
-                                  xhr.onload = function(){
-                                      if (xhr.status >= 200 && xhr.status < 300){
-                                          updateTransferProgress(tId, 100);
-                                          showToast('Uploaded: '+file.name, 'success');
-                                          setTimeout(()=>{ try{ location.reload(); }catch(e){} }, 500);
-                                      } else {
-                                          showToast('Upload failed: '+file.name, 'danger');
-                                      }
-                                      completeTransfer(tId);
-                                  };
-                                  xhr.onerror = function(){ showToast('Upload error: '+file.name, 'danger'); completeTransfer(tId); };
-                                  // expose abort handle
-                                  registerTransferHandle(tId, { xhr: xhr });
-                                  xhr.send(fd);
-                              });
-                          }
-
-                          // Transfer queue UI and helpers
-                          const _fm_transfers = {};
-                          function ensureTransferContainer(){
-                              if (document.getElementById('fm-transfer-queue')) return document.getElementById('fm-transfer-queue');
-                              const c = document.createElement('div'); c.id = 'fm-transfer-queue';
-                              c.style.position = 'fixed'; c.style.left = '16px'; c.style.bottom = '16px'; c.style.zIndex = 999999; c.style.maxWidth = '420px';
-                              document.body.appendChild(c);
-                              return c;
-                          }
-
-                          function registerTransfer(meta){
-                              const id = 'tr-'+Math.random().toString(36).slice(2,9);
-                              const container = ensureTransferContainer();
-                              const el = document.createElement('div'); el.id = id; el.className = 'fm-transfer-item';
-                              el.style.background = 'var(--bs-body-bg)'; el.style.border = '1px solid rgba(0,0,0,0.06)'; el.style.padding='8px'; el.style.marginTop='8px'; el.style.borderRadius='6px';
-                              el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-weight:600">${meta.name}</div><div><button data-act="cancel" class="btn btn-sm btn-outline-danger">Cancel</button></div></div><div class="fm-transfer-bar" style="height:8px;background:rgba(0,0,0,0.06);border-radius:6px;margin-top:8px"><div class="fm-transfer-progress" style="height:100%;width:0%;background:linear-gradient(90deg,#0d6efd,#0ea5e9);border-radius:6px"></div></div>`;
-                              container.appendChild(el);
-                              _fm_transfers[id] = { meta: meta, el: el, handle: null };
-                              // cancel handler
-                              el.querySelector('button[data-act="cancel"]').addEventListener('click', function(){
-                                  cancelTransfer(id);
-                              });
-                              return id;
-                          }
-
-                          function registerTransferHandle(id, handle){ if (_fm_transfers[id]) _fm_transfers[id].handle = handle; }
-
-                          function updateTransferProgress(id, pct){ const t = _fm_transfers[id]; if (!t) return; const bar = t.el.querySelector('.fm-transfer-progress'); if (bar) bar.style.width = (pct||0)+'%'; }
-
-                          function completeTransfer(id){ const t = _fm_transfers[id]; if (!t) return; setTimeout(()=>{ try{ t.el.remove(); delete _fm_transfers[id]; }catch(e){} }, 800); }
-
-                          function cancelTransfer(id){ const t = _fm_transfers[id]; if (!t) return; try{
-                              if (t.handle && t.handle.xhr){ t.handle.xhr.abort(); }
-                              if (t.meta && t.meta.controller){ t.meta.controller.abort(); }
-                          }catch(e){}
-                              // remove UI immediately
-                              try{ t.el.remove(); }catch(e){}; delete _fm_transfers[id];
-                          }
-
-                          // Toasts
-                          function ensureToastContainer(){
-                              if (document.getElementById('fm-toasts')) return document.getElementById('fm-toasts');
-                              const c = document.createElement('div'); c.id = 'fm-toasts';
-                              c.style.position = 'fixed'; c.style.right = '16px'; c.style.top = '16px'; c.style.zIndex = 999999; c.style.maxWidth = '320px';
-                              document.body.appendChild(c);
-                              return c;
-                          }
-
-                          function showToast(msg, type='info', progress=null){
-                              const container = ensureToastContainer();
-                              const id = 't-'+Math.random().toString(36).slice(2,9);
-                              const el = document.createElement('div'); el.id = id; el.className = 'fm-toast';
-                              el.style.background = 'var(--bs-body-bg)'; el.style.border = '1px solid rgba(0,0,0,0.06)'; el.style.padding = '8px 10px'; el.style.marginTop = '8px'; el.style.borderRadius = '6px'; el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.06)';
-                              el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:0.95rem">'+msg+'</div></div>';
-                              if (progress !== null){
-                                  const bar = document.createElement('div'); bar.style.height='6px'; bar.style.background='rgba(0,0,0,0.06)'; bar.style.borderRadius='4px'; bar.style.marginTop='8px';
-                                  const inner = document.createElement('div'); inner.style.height='100%'; inner.style.width = (progress||0)+'%'; inner.style.background = 'linear-gradient(90deg,#0d6efd,#0ea5e9)'; inner.style.borderRadius='4px'; bar.appendChild(inner);
-                                  el.appendChild(bar);
-                              }
-                              container.appendChild(el);
-                              if (progress === null){ setTimeout(()=>{ try{ el.remove(); }catch(e){} }, 4000); }
-                              return id;
-                          }
-
-                          function updateToastProgress(id, pct){
-                              const el = document.getElementById(id); if (!el) return;
-                              const bar = el.querySelector('div > div');
-                              if (bar) bar.style.width = pct + '%';
-                          }
                           uploadFilesToFolder(files, dest, token);
                           return;
                       }
@@ -4023,254 +3212,45 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                           try{ payload = JSON.parse(payload); }catch(e){ payload = null; }
                       }
                       if (payload){
-                          moveItemAjax(payload.name, dest, token, function(success,res){ if(success){ try{ location.reload(); }catch(e){} } else { swAlert('Move Failed', 'Move failed: '+res, 'error'); } });
+                          moveItemAjax(payload.name, dest, token, function(success, res){ if(success){ try{ location.reload(); }catch(e){} } else { alert('Move failed: '+res); } });
+                      }
+                  });
+              });
+
+              // Grid view
+              const gridItems = document.querySelectorAll('#main-grid .grid-item');
+              gridItems.forEach(item=>{
+                  item.setAttribute('draggable','true');
+                  item.addEventListener('dragstart', function(ev){ ev.dataTransfer.setData('application/json', JSON.stringify({ name: this.dataset.name, type: this.dataset.type, path: this.dataset.path })); this.classList.add('fm-dragging'); });
+                  item.addEventListener('dragend', function(){ this.classList.remove('fm-dragging'); });
+              });
+
+              const gridFolderTargets = document.querySelectorAll('#main-grid .grid-item[data-type="folder"]');
+              gridFolderTargets.forEach(t=>{
+                  t.addEventListener('dragover', function(ev){ ev.preventDefault(); this.classList.add('fm-drop-target'); ev.dataTransfer.dropEffect='move'; });
+                  t.addEventListener('dragleave', function(ev){ this.classList.remove('fm-drop-target'); });
+                  t.addEventListener('drop', function(ev){
+                      ev.preventDefault(); this.classList.remove('fm-drop-target');
+                      let payload = ev.dataTransfer.getData('application/json');
+                      const files = ev.dataTransfer.files;
+                      const targetName = this.dataset.name;
+                      const basePath = this.dataset.path || '';
+                      const dest = basePath ? basePath + '/' + targetName : targetName;
+                      if (files && files.length){
+                          uploadFilesToFolder(files, dest, token);
+                          return;
+                      }
+                      if (payload){
+                          try{ payload = JSON.parse(payload); }catch(e){ payload = null; }
+                      }
+                      if (payload){
+                          moveItemAjax(payload.name, dest, token, function(success,res){ if(success){ try{ location.reload(); }catch(e){} } else { alert('Move failed: '+res); } });
                       }
                   });
               });
           }
 
-          // Sidebar tree
-          function renderTreeNode(parentUl, node){
-              const li = document.createElement('li');
-              li.style.padding = '4px 6px';
-              li.dataset.path = node.path || '';
-              li.dataset.name = node.name || '';
-              const hasChildren = node.hasChildren || false;
-              const toggle = document.createElement('span');
-              toggle.className = 'fm-tree-toggle';
-              toggle.textContent = hasChildren ? '▸' : '•';
-              const a = document.createElement('a');
-              a.href = '?p=' + encodeURIComponent(node.path || '');
-              a.textContent = node.name;
-              a.style.marginLeft = '4px';
-              a.style.textDecoration = 'none';
-              a.style.color = 'inherit';
-
-              const pin = document.createElement('i');
-              pin.className = 'fa fa-thumb-tack fm-pin';
-              pin.title = 'Pin/Unpin folder';
-              pin.style.marginLeft = '6px';
-              pin.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); togglePin(node.path || '', node.name || ''); renderPinnedSection(); });
-
-              li.appendChild(toggle);
-              li.appendChild(a);
-              li.appendChild(pin);
-              if (hasChildren) {
-                  const sub = document.createElement('ul');
-                  sub.className = 'list-unstyled ms-3';
-                  sub.style.display = 'none';
-                  li.appendChild(sub);
-                  toggle.addEventListener('click', function(e){
-                      e.preventDefault();
-                      if (sub.childElementCount === 0) {
-                          fetchFolders(node.path, sub);
-                      }
-                      sub.style.display = sub.style.display === 'none' ? 'block' : 'none';
-                      toggle.textContent = toggle.textContent === '▸' ? '▾' : '▸';
-                  });
-              }
-              parentUl.appendChild(li);
-          }
-
-          function fetchFolders(path, container){
-              const form = new FormData();
-              form.append('ajax', '1');
-              form.append('type', 'get_folders');
-              form.append('path', path || '');
-              form.append('token', token);
-              fetch(window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>', { method: 'POST', body: form, credentials: 'same-origin' })
-              .then(r=>r.json())
-              .then(list=>{
-                  container.innerHTML = '';
-                  // sort alphabetically
-                  list.sort((a,b)=>a.name.localeCompare(b.name, undefined, {sensitivity:'base'}));
-                  // Render
-                  list.forEach(item=>{
-                      // We'll assume folders may have children; set hasChildren true to allow expand
-                      item.hasChildren = true;
-                      renderTreeNode(container, item);
-                  });
-              }).catch(e=>{
-                  console.error('Failed to load folders', e);
-              });
-          }
-
-          function enableSidebar(){
-              const treeRoot = document.getElementById('fm-tree');
-              const refresh = document.getElementById('fm-refresh-tree');
-              if (!treeRoot) return;
-              // load root
-              fetchFolders('', treeRoot);
-              refresh && refresh.addEventListener('click', function(){ fetchFolders('', treeRoot); });
-          }
-
-              // Current path for keyboard/paste defaults
-              const FM_CURRENT_PATH = '<?php echo fm_enc(FM_PATH); ?>';
-
-              // Helper: collect selected items (by .fm-selected or checked inputs)
-              function getSelectedItems(){
-                  const out = [];
-                  // prioritized: explicit selected elements
-                  document.querySelectorAll('[data-type].fm-selected').forEach(el=>{
-                      out.push({ type: el.dataset.type, name: el.dataset.name, path: el.dataset.path||'' });
-                  });
-                  if (out.length) return out;
-                  // fallback: checked inputs
-                  document.querySelectorAll('input[name="file[]"]:checked').forEach(cb=>{
-                      const row = cb.closest('[data-type]');
-                      if (row) out.push({ type: row.dataset.type, name: row.dataset.name, path: row.dataset.path||'' });
-                  });
-                  return out;
-              }
-
-              // Keyboard actions
-              function performDeleteSelection(){
-                  const items = getSelectedItems();
-                  if (!items.length) return;
-                  if (!confirm('Delete selected item(s)?')) return;
-                  const fd = new FormData();
-                  items.forEach(it=> fd.append('file[]', it.name));
-                  fd.append('delete', '1');
-                  fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                  fetch(window.location.pathname + '?p=' + encodeURIComponent(items[0].path || FM_CURRENT_PATH), { method: 'POST', body: fd, credentials: 'same-origin' })
-                  .then(r=>r.text()).then(t=>location.reload()).catch(err=>alert('Delete failed: '+err.message));
-              }
-
-              async function performRenameShortcut(){
-                  const items = getSelectedItems();
-                  if (items.length !== 1) { swAlert('Info', 'Select a single item to rename'); return; }
-                  const it = items[0];
-                  const result = await swPrompt('Rename', 'New name:', it.name);
-                  if (!result.isConfirmed || !result.value || result.value === it.name) return;
-                  const fd = new FormData();
-                  fd.append('rename_from', it.name);
-                  fd.append('rename_to', result.value);
-                  fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                  fetch(window.location.pathname + '?p=' + encodeURIComponent(it.path || FM_CURRENT_PATH), { method: 'POST', body: fd, credentials: 'same-origin' })
-                  .then(r=>r.text()).then(t=>location.reload()).catch(err=>swAlert('Rename Failed', 'Rename failed: '+err.message, 'error'));
-              }
-
-              function performOpenActive(){
-                  const items = getSelectedItems();
-                  if (!items.length) return;
-                  const it = items[0];
-                  if (it.type === 'folder'){
-                      window.location.href = '?p=' + encodeURIComponent((it.path?it.path:'') + '/' + it.name);
-                  } else {
-                      window.open('?p=' + encodeURIComponent(it.path || FM_CURRENT_PATH) + '&view=' + encodeURIComponent(it.name), '_blank');
-                  }
-              }
-
-              function performCopy(){
-                  const items = getSelectedItems();
-                  if (!items.length) return; clipboard.action = 'copy'; clipboard.items = items; swAlert('Success', 'Copied '+items.length+' item(s) to clipboard', 'success');
-              }
-
-              function performCut(){
-                  const items = getSelectedItems();
-                  if (!items.length) return; clipboard.action = 'cut'; clipboard.items = items; swAlert('Success', 'Cut '+items.length+' item(s) to clipboard', 'success');
-              }
-
-              function performPaste(){
-                  if (!clipboard.items.length) return; // nothing to paste
-                  // determine dest: selected folder or current path
-                  let dest = FM_CURRENT_PATH;
-                  const sel = document.querySelector('[data-type].fm-selected');
-                  if (sel && sel.dataset.type === 'folder') dest = (sel.dataset.path?sel.dataset.path:'') + '/' + sel.dataset.name;
-                  // operate on first item for simplicity
-                  const it = clipboard.items[0];
-                  if (clipboard.action === 'copy'){
-                      const fd = new FormData(); fd.append('copy_from', it.name); fd.append('copy_to', dest + '/' + it.name); fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                      fetch(window.location.pathname + '?p=' + encodeURIComponent(dest), { method: 'POST', body: fd, credentials: 'same-origin' }).then(r=>r.text()).then(t=>location.reload()).catch(err=>alert('Copy failed: '+err.message));
-                  } else if (clipboard.action === 'cut'){
-                      const fd = new FormData(); fd.append('move_from', it.name); fd.append('move_to', dest + '/' + it.name); fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                      fetch(window.location.pathname + '?p=' + encodeURIComponent(dest), { method: 'POST', body: fd, credentials: 'same-origin' }).then(r=>r.text()).then(t=>location.reload()).catch(err=>alert('Move failed: '+err.message));
-                  }
-                  clipboard = { action: null, items: [] };
-              }
-
-              // Key bindings
-              document.addEventListener('keydown', function(e){
-                  // Ignore if focus is on input/textarea
-                  const tag = document.activeElement && document.activeElement.tagName.toLowerCase();
-                  if (tag === 'input' || tag === 'textarea') return;
-                  if ((e.ctrlKey || e.metaKey) && !e.shiftKey){
-                      const k = e.key.toLowerCase();
-                      if (k === 'c'){ e.preventDefault(); performCopy(); }
-                      else if (k === 'x'){ e.preventDefault(); performCut(); }
-                      else if (k === 'v'){ e.preventDefault(); performPaste(); }
-                      return;
-                  }
-                  if (e.key === 'F2'){ e.preventDefault(); performRenameShortcut(); }
-                  else if (e.key === 'Delete'){ e.preventDefault(); performDeleteSelection(); }
-                  else if (e.key === 'Enter'){ e.preventDefault(); performOpenActive(); }
-              });
-
-              // grid size selector handler
-              const gridSizeSelect = document.getElementById('fm-grid-size');
-              if (gridSizeSelect){ gridSizeSelect.addEventListener('change', function(){ setGridSize(this.value, true); }); }
-
-              // initialize lazy load
-              try{ initLazyLoad(); }catch(e){}
-              
-              // Search UI
-              const searchInput = document.getElementById('fm-search-input');
-              const searchBtn = document.getElementById('fm-search-btn');
-              const searchOptsToggle = document.getElementById('fm-search-opts-toggle');
-              const searchOpts = document.getElementById('fm-search-opts');
-              const searchRecursive = document.getElementById('fm-search-recursive');
-              const searchContent = document.getElementById('fm-search-content');
-              const searchDebounce = debounce(function(q){ if (!q || q.length < 2) { clearSearchResults(); return; } performSearch(q, { recursive: searchRecursive.checked, content: searchContent.checked }); }, 350);
-              if (searchInput){ searchInput.addEventListener('input', function(){ searchDebounce(this.value); }); searchInput.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ performSearch(this.value, { recursive: searchRecursive.checked, content: searchContent.checked }); } }); }
-              if (searchBtn) searchBtn.addEventListener('click', function(){ performSearch(searchInput.value, { recursive: searchRecursive.checked, content: searchContent.checked }); });
-              if (searchOptsToggle) searchOptsToggle.addEventListener('click', function(){ searchOpts.classList.toggle('d-none'); });
-
-              function clearSearchResults(){ const el = document.getElementById('fm-search-results'); if (el) el.remove(); }
-
-              function renderSearchResults(list){ clearSearchResults(); const container = document.createElement('div'); container.id = 'fm-search-results'; container.style.position='absolute'; container.style.left='50%'; container.style.transform='translateX(-50%)'; container.style.top='72px'; container.style.zIndex=99999; container.style.maxWidth='920px'; container.style.width='90%'; container.style.background='var(--bs-body-bg)'; container.style.border='1px solid rgba(0,0,0,0.06)'; container.style.borderRadius='8px'; container.style.boxShadow='0 6px 24px rgba(0,0,0,0.08)'; container.style.padding='10px';
-                  if (!list || !list.length){ container.innerHTML = '<div class="text-muted px-2 py-3">No results</div>'; document.body.appendChild(container); return; }
-                  const ul = document.createElement('div'); ul.className = 'list-group list-group-flush';
-                  list.forEach(item=>{
-                      const row = document.createElement('a'); row.href = '#'; row.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
-                      const left = document.createElement('div'); left.innerHTML = '<div><strong>'+escapeHtml(item.name)+'</strong><div class="text-muted small">'+escapeHtml(item.path || '')+'</div></div>';
-                      const right = document.createElement('div'); right.innerHTML = '<span class="badge bg-light text-muted">'+item.type+'</span>';
-                      row.appendChild(left); row.appendChild(right);
-                      row.addEventListener('click', function(e){ e.preventDefault(); clearSearchResults(); if (item.type === 'folder') { window.location.href = '?p='+encodeURIComponent((item.path?item.path:'') + '/' + item.name); } else { preview_file((item.path?(''+window.location.origin + '/'):'') + encodeURIComponent(item.name), '', item.name); } });
-                      ul.appendChild(row);
-                  });
-                  container.appendChild(ul); document.body.appendChild(container);
-              }
-
-              function performSearch(q, opts){
-                  if (!q || q.trim() === '') { clearSearchResults(); return; }
-                  const fd = new FormData(); fd.append('ajax','1'); fd.append('type','search'); fd.append('content', q); fd.append('path', '<?php echo fm_enc(FM_PATH); ?>'); fd.append('is_recursive', opts.recursive ? 'true' : 'false'); fd.append('is_content', opts.content ? 'true' : 'false'); fd.append('token', (document.querySelector('input[name="token"]')||{}).value || '');
-                  const id = showToast('Searching '+q, 'info', 0);
-                  fetch(window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>', { method: 'POST', body: fd, credentials: 'same-origin' })
-                  .then(r=>r.json()).then(js=>{ try{ updateToastProgress(id, 100); showToast('Search complete', 'success'); }catch(e){}; renderSearchResults(js); }).catch(e=>{ showToast('Search failed', 'danger'); });
-              }
-
-              function debounce(fn, wait){ let t=null; return function(){ clearTimeout(t); t=setTimeout(()=>fn.apply(this, arguments), wait); }; }
-
-              function escapeHtml(s){ return (s+'').replace(/[&<>\"]/g, function(m){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]; }); }
-
-              // Setup button handler for form submission
-              const setupInitBtn = document.getElementById('setupInitBtn');
-              if (setupInitBtn) {
-                  setupInitBtn.addEventListener('click', async function(e){
-                      const result = await swConfirm('Confirm Setup', 'WARNING: Setup akan mengupload SEMUA file. Gunakan ini hanya jika FTP kosong. Lanjutkan?', 'Setup', 'Cancel');
-                      if (result.isConfirmed) {
-                          const form = this.closest('form');
-                          const input = document.createElement('input');
-                          input.type = 'hidden';
-                          input.name = 'action';
-                          input.value = 'init';
-                          form.appendChild(input);
-                          form.submit();
-                      }
-                  });
-              }
-
-              try{ enableDragDrop(); enableSidebar(); attachPreviewHandlers(); initContextMenu(); setupMarqueeSelection(); }catch(e){ console.error('Init error', e); }
+          try{ enableDragDrop(); }catch(e){ console.error('DragDrop init error', e); }
       });
   })();
   </script>
@@ -5700,10 +4680,7 @@ function fm_foldersize($path) {
                   for ($i = 0; $i < $count; $i++) {
                       $parent = trim($parent . '/' . $exploded[$i], '/');
                       $parent_enc = urlencode($parent);
-                      $seg_name = fm_enc(fm_convert_win($exploded[$i]));
-                      $seg_path = fm_enc($parent);
-                      // Add class and data-path for interactive dropdown per segment
-                      $array[] = "<a href='?p={$parent_enc}' class='bc-seg' data-path='{$seg_path}'>" . $seg_name . "</a>";
+                      $array[] = "<a href='?p={$parent_enc}'>" . fm_enc(fm_convert_win($exploded[$i])) . "</a>";
                   }
                   $root_url .= $sep . implode($sep, $array);
               }
@@ -5962,68 +4939,6 @@ function fm_foldersize($path) {
                   });
               }
               initPathEditorEvents();
-              // Interactive breadcrumb per-segment dropdown
-              (function(){
-                  function closeExistingDropdown(){
-                      const ex = document.querySelector('.bc-dropdown');
-                      if(ex) ex.remove();
-                  }
-
-                  function createDropdown(anchor, items){
-                      closeExistingDropdown();
-                      const rect = anchor.getBoundingClientRect();
-                      const dd = document.createElement('div');
-                      dd.className = 'bc-dropdown card shadow p-1';
-                      dd.style.position = 'absolute';
-                      dd.style.zIndex = 9999;
-                      dd.style.minWidth = '220px';
-                      dd.style.left = (rect.left + window.scrollX) + 'px';
-                      dd.style.top = (rect.bottom + window.scrollY + 6) + 'px';
-                      dd.style.maxHeight = '260px';
-                      dd.style.overflow = 'auto';
-                      items.forEach(function(it){
-                          const el = document.createElement('div');
-                          el.className = 'p-2 bc-dropdown-item';
-                          el.style.cursor = 'pointer';
-                          el.innerHTML = "<i class='fa fa-folder text-primary'></i> <strong>" + it.name + "</strong> <div class='text-muted small'>" + (it.path || '') + "</div>";
-                          el.addEventListener('click', function(){ window.location.href = '?p=' + encodeURIComponent(it.path); });
-                          dd.appendChild(el);
-                      });
-                      document.body.appendChild(dd);
-                      // close on outside click
-                      setTimeout(()=>{
-                          document.addEventListener('click', function onDocClick(e){ if(!dd.contains(e.target) && e.target !== anchor){ closeExistingDropdown(); document.removeEventListener('click', onDocClick); } });
-                      }, 10);
-                  }
-
-                  function fetchAndShow(anchor, path){
-                      const form = new FormData();
-                      form.append('ajax', '1');
-                      form.append('type', 'get_folders');
-                      form.append('path', path);
-                      form.append('token', window.csrf || '');
-                      fetch(window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>', { method: 'POST', body: form, credentials: 'same-origin' })
-                      .then(r=>r.json())
-                      .then(list=>{
-                          if(Array.isArray(list) && list.length){
-                              // map to items with full path
-                              const items = list.map(function(it){ return { name: it.name, path: (path?path + '/':'') + it.name }; });
-                              createDropdown(anchor, items);
-                          } else {
-                              createDropdown(anchor, [{ name: '(empty)', path: path }]);
-                          }
-                      }).catch(e=>{ console.error('breadcrumb fetch', e); });
-                  }
-
-                  document.addEventListener('click', function(e){
-                      const a = e.target.closest && e.target.closest('.bc-seg');
-                      if(!a) return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const p = a.getAttribute('data-path') || '';
-                      fetchAndShow(a, p);
-                  });
-              })();
               </script>
 
               <div class="col-12 col-md-6">
@@ -6292,57 +5207,22 @@ function fm_foldersize($path) {
 
       <body class="fm-login-page <?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?>">
           <div id="wrapper" class="container-fluid">
-                      renderTreeNode(container, item);
+
           <?php
       }
 
       /**
        * Show page footer in Login Form
+       */
+      function fm_show_footer_login()
+      {
+          ?>
+          </div>
+          <?php print_external('js-bootstrap'); ?>
+      </body>
 
-          // Pinned folders helpers
-          function loadPinned(){
-              try{ const raw = localStorage.getItem('fm_pinned_folders'); return raw ? JSON.parse(raw) : []; }catch(e){ return []; }
-          }
-          function savePinned(list){ try{ localStorage.setItem('fm_pinned_folders', JSON.stringify(list)); }catch(e){} }
-          function togglePin(path, name){ if(!path) return; const list = loadPinned(); const idx = list.findIndex(i=>i.path===path); if (idx>=0) { list.splice(idx,1); } else { list.unshift({path:path, name:name}); if (list.length>12) list.length=12; } savePinned(list); }
-          function renderPinnedSection(){
-              const list = loadPinned();
-              const ul = document.getElementById('fm-tree-pinned-list');
-              const count = document.getElementById('fm-pinned-count');
-              if (!ul) return; ul.innerHTML='';
-              count && (count.textContent = list.length);
-              list.forEach((item, idx)=>{
-                  const li = document.createElement('li');
-                  li.dataset.type = 'folder';
-                  li.dataset.path = item.path || '';
-                  li.dataset.name = item.name || '';
-                  li.draggable = true;
-                  li.style.display = 'flex'; li.style.alignItems = 'center'; li.style.justifyContent = 'space-between';
-                  const a = document.createElement('a'); a.href = '?p='+encodeURIComponent(item.path||''); a.textContent = item.name; a.style.textDecoration='none'; a.style.color='inherit'; a.style.flex='1'; a.style.paddingRight='6px';
-                  const actions = document.createElement('div'); actions.style.display='flex'; actions.style.gap='6px'; actions.style.alignItems='center';
-                  const openNew = document.createElement('i'); openNew.className='fa fa-external-link'; openNew.title='Open in new tab'; openNew.style.cursor='pointer'; openNew.style.color='rgba(0,0,0,0.45)'; openNew.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); window.open('?p='+encodeURIComponent((item.path?item.path:'') + '/' + item.name),'_blank'); });
-                  const unpin = document.createElement('i'); unpin.className='fa fa-thumb-tack fm-pin pinned'; unpin.title='Unpin'; unpin.style.cursor='pointer'; unpin.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); togglePin(item.path,item.name); renderPinnedSection(); });
-                  actions.appendChild(openNew); actions.appendChild(unpin);
-                  li.appendChild(a); li.appendChild(actions); ul.appendChild(li);
+      </html>
 
-                  // drag handlers for reorder
-                  li.addEventListener('dragstart', function(e){ e.dataTransfer.setData('text/plain', item.path||''); li.classList.add('fm-dragging'); });
-                  li.addEventListener('dragend', function(e){ li.classList.remove('fm-dragging'); });
-                  li.addEventListener('dragover', function(e){ e.preventDefault(); li.style.background = 'rgba(13,110,253,0.06)'; });
-                  li.addEventListener('dragleave', function(e){ li.style.background = ''; });
-                  li.addEventListener('drop', function(e){ e.preventDefault(); li.style.background = ''; const srcPath = e.dataTransfer.getData('text/plain'); if (!srcPath) return; const arr = loadPinned(); const srcIdx = arr.findIndex(x=>x.path===srcPath); if (srcIdx<0) return; const destIdx = idx; const itemObj = arr.splice(srcIdx,1)[0]; arr.splice(destIdx,0,itemObj); savePinned(arr); renderPinnedSection(); });
-          }
-
-          function enableSidebar(){
-              const treeRoot = document.getElementById('fm-tree');
-              const refresh = document.getElementById('fm-refresh-tree');
-              if (!treeRoot) return;
-              // load root
-              fetchFolders('', treeRoot);
-              refresh && refresh.addEventListener('click', function(){ fetchFolders('', treeRoot); renderPinnedSection(); });
-              // render pinned
-              renderPinnedSection();
-          }
   <?php
       }
 
@@ -7372,7 +6252,49 @@ function fm_foldersize($path) {
               }
               
               /* CONTEXT MENU */
-
+              .context-menu {
+                  display: none;
+                  position: absolute;
+                  z-index: 10000;
+                  background: var(--bg-card);
+                  border: 1px solid var(--border-color);
+                  border-radius: 6px;
+                  box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+                  min-width: 180px;
+                  overflow: hidden;
+              }
+              .context-menu ul {
+                  list-style: none;
+                  padding: 0;
+                  margin: 0;
+              }
+              .context-menu ul li {
+                  padding: 0;
+                  margin: 0;
+              }
+              .context-menu ul li a {
+                  display: flex;
+                  padding: 10px 15px;
+                  text-decoration: none;
+                  color: var(--text-primary);
+                  font-size: 14px;
+                  align-items: center;
+                  gap: 10px;
+                  transition: background 0.2s;
+              }
+              .context-menu ul li a:hover {
+                  background: var(--bg-hover);
+                  color: var(--accent);
+              }
+              .context-menu i {
+                  width: 20px;
+                  text-align: center;
+              }
+              .context-menu-separator {
+                  height: 1px;
+                  background: var(--border-color);
+                  margin: 5px 0;
+              }
               
               /* Simple Text Editor Styles */
               .simple-text-editor {
@@ -8072,7 +6994,29 @@ function fm_foldersize($path) {
       function fm_show_footer()
       {
           ?>
+          <!-- Context Menu -->
+    <div id="context-menu" class="context-menu">
+        <ul>
+            <li><a href="#" id="cm-open"><i class="fa fa-folder-open"></i> <?php echo lng('Open') ?></a></li>
+            <li><a href="#" id="cm-preview"><i class="fa fa-eye"></i> Preview</a></li>
+            <li class="context-menu-separator"></li>
+            <li><a href="#" id="cm-rename"><i class="fa fa-pencil-square-o"></i> <?php echo lng('Rename') ?></a></li>
+            <li><a href="#" id="cm-copy"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?></a></li>
+            <li><a href="#" id="cm-move"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?></a></li>
+            <li><a href="#" id="cm-download"><i class="fa fa-download"></i> <?php echo lng('Download') ?></a></li>
+            <li><a href="#" id="cm-link"><i class="fa fa-link"></i> <?php echo lng('DirectLink') ?></a></li>
+            <li><a href="#" id="cm-extract"><i class="fa fa-folder-open"></i> Extract Archive</a></li>
+            <li class="context-menu-separator"></li>
+            <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
+        </ul>
+    </div>
 
+    <div id="body-context-menu" class="context-menu">
+        <ul>
+            <li><a href="#" id="body-context-new-file"><i class="fa fa-file-o"></i> <?php echo lng('File') ?></a></li>
+            <li><a href="#" id="body-context-new-folder"><i class="fa fa-folder"></i> <?php echo lng('Folder') ?></a></li>
+        </ul>
+    </div>
     </div>
     <script type="text/javascript">
         window.csrf = '<?php echo $_SESSION['token']; ?>';
@@ -8108,7 +7052,220 @@ function fm_foldersize($path) {
                   return new Function(code.replace(/[\r\t\n]/g, '')).apply(options)
               }
 
+              /* CONTEXT MENU LOGIC */
+              $(document).ready(function() {
+                  const $contextMenu = $('#context-menu');
+                  const $bodyContextMenu = $('#body-context-menu');
+                  const $wrapper = $('#wrapper');
 
+                  function hideAllContextMenus() {
+                      $contextMenu.hide();
+                      $bodyContextMenu.hide();
+                  }
+
+                  function showContextMenu(e, element) {
+                      hideAllContextMenus();
+                      if(e) e.preventDefault();
+                      
+                      let target = $(element);
+                      // If triggered by ellipsis inside, find parent
+                      if(!target.attr('data-type')) {
+                         target = target.closest('[data-type]');
+                      }
+                      
+                      const type = target.data('type');
+                      const path = target.data('path');
+                      const name = target.data('name');
+                      const ext = target.data('ext');
+                      const fullPath = (path ? path + '/' : '') + name;
+
+                      // Open
+                      if (type === 'folder') {
+                          $('#cm-open').attr('href', '?p=' + encodeURIComponent(fullPath)).parent().show();
+                          $('#cm-preview').parent().hide();
+                      } else {
+                          $('#cm-open').parent().hide();
+                          $('#cm-preview').parent().show();
+                          
+                          $('#cm-preview').off('click').on('click', function(evt) {
+                              evt.preventDefault();
+                              // Try to find the preview button/action
+                              const row = $('tr[data-name="'+name.replace(/"/g, '\\"')+'"]');
+                              const eyeBtn = row.find('.fa-eye').parent();
+                              const gridItem = $('.grid-item[data-name="'+name.replace(/"/g, '\\"')+'"]');
+
+                              if(eyeBtn.length) { 
+                                  eyeBtn.click(); 
+                              } else if (gridItem.length) {
+                                  gridItem.click();
+                              }
+                          });
+                      }
+
+                      // Direct Link
+                      const directUrl = window.fm_root_url + (path ? '/' + path : '') + '/' + name + (type === 'folder' ? '/' : '');
+                      $('#cm-link').attr('href', directUrl).attr('target', '_blank');
+
+                      // Rename
+                      $('#cm-rename').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           rename(path, name);
+                      });
+
+                      // Copy
+                      const copyLink = '?p=' + encodeURIComponent(path) + '&duplicate=' + encodeURIComponent(name) + '&token=' + window.csrf;
+                      $('#cm-copy').attr('href', copyLink);
+                      $('#cm-copy').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1029, '<?php echo lng("Copy"); ?>', name, copyLink);
+                      });
+
+                      // Move
+                      $('#cm-move').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           move(path, name);
+                      });
+
+                      // Download
+                      const dlLink = '?p=' + encodeURIComponent(path) + '&dl=' + encodeURIComponent(name);
+                      $('#cm-download').attr('href', dlLink);
+                      $('#cm-download').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1211, '<?php echo lng("Download"); ?>', name, dlLink);
+                      });
+
+                      // Delete
+                      const delLink = '?p=' + encodeURIComponent(path) + '&del=' + encodeURIComponent(name);
+                      $('#cm-delete').attr('href', delLink);
+                      $('#cm-delete').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           confirmDailog(evt, 1028, '<?php echo lng("Delete"); ?>', name, delLink);
+                      });
+
+                      // Extract Archive
+                      $('#cm-extract').off('click').on('click', function(evt) {
+                           evt.preventDefault();
+                           extract(path, name);
+                      });
+
+                      // Position
+                      let top, left;
+                      if (e && e.type === 'contextmenu') {
+                          top = e.pageY;
+                          left = e.pageX;
+                      } else {
+                          // Triggered by click on ellipsis (element is the trigger button or icon)
+                          const btn = $(element).closest('.context-menu-trigger');
+                          if (btn.length) {
+                              const rect = btn.offset();
+                              top = rect.top + 25;
+                              left = rect.left - 150;
+                          } else {
+                              top = 100; left = 100;
+                          }
+                      }
+                      
+                      // Boundary check
+                      if(left < 0) left = 10;
+                      
+                      $contextMenu.css({
+                          top: top + 'px',
+                          left: left + 'px'
+                      }).fadeIn(100);
+                  }
+
+                  function showBodyContextMenu(e) {
+                      hideAllContextMenus();
+                      const target = $(e.target);
+
+                      // allow native menu inside inputs, editor areas, modals, and context menus themselves
+                      if (
+                          target.closest('input, textarea, select, [contenteditable="true"], .editor-textarea, .modal, .swal2-container, #context-menu, #body-context-menu').length
+                      ) {
+                          return;
+                      }
+
+                      // only trigger within main wrapper area
+                      if (!$wrapper.length || (!target.closest('#wrapper').length && !$wrapper.is(target))) {
+                          return;
+                      }
+
+                      e.preventDefault();
+
+                      const viewportWidth = $(window).width();
+                      const viewportHeight = $(window).height();
+                      let left = e.pageX;
+                      let top = e.pageY;
+
+                      const menuWidth = $bodyContextMenu.outerWidth();
+                      const menuHeight = $bodyContextMenu.outerHeight();
+
+                      if (left + menuWidth > viewportWidth) {
+                          left = viewportWidth - menuWidth - 10;
+                      }
+                      if (top + menuHeight > viewportHeight + $(window).scrollTop()) {
+                          top = viewportHeight + $(window).scrollTop() - menuHeight - 10;
+                      }
+
+                      $bodyContextMenu.css({
+                          top: top + 'px',
+                          left: Math.max(left, 10) + 'px'
+                      }).fadeIn(100);
+                  }
+
+                  // Hide menu on click elsewhere
+                  $(document).on('click', function(e) {
+                      if (!$(e.target).closest('.context-menu').length) {
+                          hideAllContextMenus();
+                      }
+                  });
+
+                  $(window).on('scroll resize', hideAllContextMenus);
+
+                  // Right click handler
+                  $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
+                      e.preventDefault();
+                      showContextMenu(e, this);
+                  });
+                  
+                  // Ellipsis click handler
+                  $(document).on('click', '.context-menu-trigger', function(e) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      showContextMenu(null, this);
+                  });
+
+                  // Body/background context menu
+                  $(document).on('contextmenu', function(e) {
+                      if (
+                          $(e.target).closest('tr[data-type], .grid-item[data-type], .context-menu-trigger').length
+                      ) {
+                          return;
+                      }
+                      showBodyContextMenu(e);
+                  });
+
+                  function openCreateModal(type) {
+                      const selector = '#createNewItem input[name="newfile"][value="' + type + '"]';
+                      $(selector).prop('checked', true);
+                      $('#createNewItem').modal('show');
+                      setTimeout(function() {
+                          $('#newfilename').trigger('focus');
+                      }, 200);
+                  }
+
+                  $('#body-context-new-file').on('click', function(e) {
+                      e.preventDefault();
+                      hideAllContextMenus();
+                      openCreateModal('file');
+                  });
+
+                  $('#body-context-new-folder').on('click', function(e) {
+                      e.preventDefault();
+                      hideAllContextMenus();
+                      openCreateModal('folder');
+                  });
+              });
 
               function rename(e, t) {
                   if (t) {
@@ -9292,9 +8449,6 @@ function fm_foldersize($path) {
                   if (localStorage.getItem('fm_view') === 'grid') {
                       toggleView(false);
                   }
-                  // Restore grid size
-                  const gs = localStorage.getItem('fm_grid_size') || 'medium';
-                  setGridSize(gs, false);
                   
                   // Handle window resize for responsive behavior
                   $(window).on('resize', function() {
@@ -9335,34 +8489,6 @@ function fm_foldersize($path) {
                       table.addClass('list-view-hide');
                       icon.removeClass('fa-th-large').addClass('fa-list');
                       if(save) localStorage.setItem('fm_view', 'grid');
-                  }
-              }
-
-              function setGridSize(size, save=true){
-                  const grid = document.getElementById('main-grid');
-                  if (!grid) return;
-                  grid.classList.remove('grid-size-small','grid-size-medium','grid-size-large');
-                  grid.classList.add('grid-size-' + (size||'medium'));
-                  const select = document.getElementById('fm-grid-size'); if (select) select.value = size;
-                  if (save) localStorage.setItem('fm_grid_size', size);
-                  // ensure thumbnails are loaded appropriately
-                  initLazyLoad();
-              }
-
-              function initLazyLoad(){
-                  const lazyEls = [].slice.call(document.querySelectorAll('img.fm-lazy'));
-                  if ('IntersectionObserver' in window){
-                      const io = new IntersectionObserver(function(entries, observer){
-                          entries.forEach(entry=>{
-                              if (entry.isIntersecting){
-                                  const img = entry.target; img.src = img.getAttribute('data-src'); img.classList.remove('fm-lazy'); observer.unobserve(img);
-                              }
-                          });
-                      }, { rootMargin: '200px' });
-                      lazyEls.forEach(img=> io.observe(img));
-                  } else {
-                      // fallback: load all
-                      lazyEls.forEach(img=> img.src = img.getAttribute('data-src'));
                   }
               }
 
@@ -9789,105 +8915,6 @@ function fm_foldersize($path) {
               </script>
           <?php endif; ?>
           <div id="snackbar"></div>
-      <!-- Properties Modal + helper script inserted by assistant -->
-      <div class="modal fade" id="fm-properties-modal" tabindex="-1" aria-hidden="true">
-          <div class="modal-dialog modal-lg">
-              <div class="modal-content">
-                  <div class="modal-header">
-                      <h5 class="modal-title">Properties</h5>
-                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                  </div>
-                  <div class="modal-body">
-                      <div id="fm-properties-content">Loading...</div>
-                  </div>
-                  <div class="modal-footer">
-                      <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                      <button type="button" class="btn btn-primary" id="fm-properties-open">Open</button>
-                  </div>
-              </div>
-          </div>
-      </div>
-
-      <script>
-      (function(){
-          function showPropertiesFromEl(el){
-              if (!el) return;
-              var item = (el.dataset && el.dataset.type) ? el : el.closest('[data-type]');
-              if (!item) return;
-              var type = item.dataset.type || 'file';
-              var name = item.dataset.name || '';
-              var path = item.dataset.path || '';
-              var ext = (item.dataset.ext||'').toLowerCase();
-              var content = document.getElementById('fm-properties-content');
-              if (!content) return;
-              // Gather info from DOM where possible
-              var size = '—', modified = '—', perms = '—';
-              if (item.tagName && item.tagName.toLowerCase() === 'tr'){
-                  var tds = item.querySelectorAll('td');
-                  if (tds[2]) size = tds[2].innerText.trim();
-                  if (tds[3]) modified = tds[3].innerText.trim();
-              }
-              // Basic HTML
-              var html = '<div class="row"><div class="col-md-5">';
-              var img = item.querySelector('img');
-              if (img) html += '<img src="'+(img.src||img.getAttribute('data-src'))+'" style="max-width:100%;border-radius:6px;margin-bottom:8px">';
-              html += '</div><div class="col-md-7"><table class="table table-sm table-borderless"><tbody>';
-              html += '<tr><th>Name</th><td>'+name+'</td></tr>';
-              html += '<tr><th>Type</th><td>'+type+(ext?(' / '+ext):'')+'</td></tr>';
-              html += '<tr><th>Size</th><td>'+size+'</td></tr>';
-              html += '<tr><th>Modified</th><td>'+modified+'</td></tr>';
-              html += '<tr><th>Path</th><td>'+path+'</td></tr>';
-              html += '</tbody></table></div></div>';
-              content.innerHTML = '<div class="text-muted">Loading details…</div>';
-
-              var openBtn = document.getElementById('fm-properties-open');
-              if (openBtn) openBtn.onclick = function(){
-                  if (type === 'folder') window.location.href = '?p=' + encodeURIComponent((path?path:'') + '/' + name);
-                  else window.open('?p=' + encodeURIComponent(path || '') + '&view=' + encodeURIComponent(name), '_blank');
-              };
-
-              // fetch server metadata
-              try {
-                  var fd = new FormData();
-                  fd.append('ajax','1'); fd.append('type','get_info'); fd.append('path', path); fd.append('name', name);
-                  var tokenEl = document.querySelector('input[name="token"]');
-                  if (tokenEl) fd.append('token', tokenEl.value || '');
-                  fetch(window.location.pathname + '?p=' + encodeURIComponent(path||''), { method: 'POST', body: fd, credentials: 'same-origin' })
-                  .then(function(r){ return r.json(); })
-                  .then(function(js){
-                      if (!js || !js.exists){ content.innerHTML = '<div class="text-danger">Could not read properties.</div>'; return; }
-                      var html2 = '<div class="row"><div class="col-md-5">';
-                      var imgEl = item.querySelector('img');
-                      if (imgEl) html2 += '<img src="'+(imgEl.src||imgEl.getAttribute('data-src'))+'" style="max-width:100%;border-radius:6px;margin-bottom:8px">';
-                      html2 += '</div><div class="col-md-7"><table class="table table-sm table-borderless"><tbody>';
-                      html2 += '<tr><th>Name</th><td>'+name+'</td></tr>';
-                      html2 += '<tr><th>Type</th><td>'+(js.mime||type+(ext?(' / '+ext):''))+'</td></tr>';
-                      html2 += '<tr><th>Size</th><td>'+(js.size||'—')+'</td></tr>';
-                      html2 += '<tr><th>Modified</th><td>'+(js.modified||'—')+'</td></tr>';
-                      html2 += '<tr><th>Permissions</th><td>'+(js.perms||'—')+'</td></tr>';
-                      html2 += '<tr><th>Owner</th><td>'+(js.owner||'—')+'</td></tr>';
-                      html2 += '<tr><th>Group</th><td>'+(js.group||'—')+'</td></tr>';
-                      if (js.image_width){ html2 += '<tr><th>Dimensions</th><td>'+js.image_width+' × '+js.image_height+'</td></tr>'; }
-                      html2 += '<tr><th>Path</th><td>'+(path||'/')+'/'+name+'</td></tr>';
-                      html2 += '</tbody></table></div></div>';
-                      content.innerHTML = html2;
-                      // show modal
-                      if (typeof bootstrap !== 'undefined' && bootstrap.Modal){ var modal = new bootstrap.Modal(document.getElementById('fm-properties-modal')); modal.show(); }
-                      else if (window.jQuery && $('#fm-properties-modal').modal){ $('#fm-properties-modal').modal('show'); }
-                  }).catch(function(e){ content.innerHTML = '<div class="text-danger">Error loading properties.</div>'; });
-              } catch (e){ content.innerHTML = '<div class="text-danger">Error preparing request.</div>'; }
-          }
-
-          // expose to global for usage by context menu / UI
-          window.fmShowProperties = showPropertiesFromEl;
-          // optional: auto-bind elements with data-action="properties"
-          document.addEventListener('click', function(ev){
-              var t = ev.target.closest && ev.target.closest('[data-action="properties"]');
-              if (t) { ev.preventDefault(); showPropertiesFromEl(t); }
-          });
-      })();
-      </script>
-
       </body>
 
       </html>
@@ -10028,5 +9055,3 @@ function fm_foldersize($path) {
       }
 
   ?>
-
-
