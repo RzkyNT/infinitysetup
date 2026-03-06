@@ -401,6 +401,21 @@ class JsonDatabase {
     }
     
     /**
+     * Duplicate row
+     */
+    public function duplicate_row($table, $pkVal) {
+        if (!isset($this->data[$table])) return false;
+        foreach ($this->data[$table] as $row) {
+            if (isset($row['id']) && $row['id'] == $pkVal) {
+                $newRow = $row;
+                unset($newRow['id']); // Let insert re-generate it
+                return $this->insert($table, $newRow);
+            }
+        }
+        return false;
+    }
+    
+    /**
      * UPDATE query
      * For flat structure, updates key-value pair
      */
@@ -1126,7 +1141,10 @@ if ($is_logged_in) {
                 );
             } catch (Exception $e) {
                 error_log("Adminer reconnect with DB error: " . $e->getMessage());
-                // Tetap gunakan koneksi tanpa database
+                // Jika gagal konek ke DB, reset state agar tidak crash di query selanjutnya
+                $_SESSION['db_name'] = '';
+                $hasSelectedDatabase = false;
+                $DB_NAME = '';
             }
         }
         
@@ -1766,6 +1784,31 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
         }
         exit;
+    }
+    // --- DUPLICATE ROW ---
+    elseif ($action === 'duplicate_row') {
+        $pk = $_POST['pk'] ?? null;
+        $val = $_POST['val'] ?? null;
+        try {
+            if ($pk && $val) {
+                if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                    $jsonDb->duplicate_row($table, $val);
+                } else {
+                    // SQL Mode: Get columns excluding auto_increment
+                    $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
+                    $cols = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                    $colStr = "`" . implode("`, `", $cols) . "`";
+                    
+                    $sql = "INSERT INTO `$table` ($colStr) SELECT $colStr FROM `$table` WHERE `$pk` = ?";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([$val]);
+                }
+                $msg = "Row duplicated successfully.";
+            }
+            redirect("?table=$table&view=data&msg=" . urlencode($msg));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
     }
     // --- SAVE ROW ---
     elseif ($action === 'save_row') {
@@ -3339,6 +3382,13 @@ if ($is_logged_in && $currentTable) {
         }
     }
 }
+
+$colTypesMap = [];
+if (!empty($tableStructure)) {
+    foreach ($tableStructure as $cs) {
+        $colTypesMap[$cs['Field']] = strtolower($cs['Type']);
+    }
+}
 ?>
 <!doctype html>
 <html lang="en">
@@ -3349,10 +3399,13 @@ if ($is_logged_in && $currentTable) {
     <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css') ?>">
     <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2-dark.min.css', 'https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css') ?>"> <!-- SweetAlert2 Dark Theme -->
     <link href="<?= get_asset_url('assets/vendor/tom-select/tom-select.bootstrap5.min.css', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.bootstrap5.min.css') ?>" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
     <script src="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2.all.min.js', 'https://cdn.jsdelivr.net/npm/sweetalert2@11') ?>"></script>
     <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="<?= get_asset_url('assets/vendor/mermaid/mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js') ?>"></script>
     <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script>
         /**
  * Advanced Filters Component
@@ -3364,6 +3417,7 @@ class AdvancedFilters {
         this.container = document.getElementById(containerId);
         this.table = options.table || '';
         this.columns = options.columns || [];
+        this.columnTypes = options.columnTypes || {};
         this.filters = [];
         this.tomSelectInstances = [];
         
@@ -3466,6 +3520,11 @@ class AdvancedFilters {
                 sortField: { field: "text", direction: "asc" }
             });
             this.tomSelectInstances.push(ts);
+            
+            // Handle column change
+            ts.on('change', (value) => {
+                this.updateValueInput(filterDiv, filterDiv.querySelector('.af-operator').value);
+            });
         }
         
         // Handle operator change
@@ -3479,6 +3538,8 @@ class AdvancedFilters {
     
     updateValueInput(filterDiv, operator) {
         const valueContainer = filterDiv.querySelector('.af-value-container');
+        const column = filterDiv.querySelector('.af-column')?.value;
+        const type = this.columnTypes[column] || '';
         
         if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
             // No value needed
@@ -3490,6 +3551,10 @@ class AdvancedFilters {
                 <span style="color:var(--text-secondary);">to</span>
                 <input type="text" class="af-value-2 form-control" placeholder="To" style="flex:1; background:var(--bg-input);">
             `;
+            if (type.includes('date') || type.includes('timestamp')) {
+                this.initFlatpickrOn(valueContainer.querySelector('.af-value'), type);
+                this.initFlatpickrOn(valueContainer.querySelector('.af-value-2'), type);
+            }
         } else if (operator === 'IN' || operator === 'NOT IN') {
             // Textarea for list
             valueContainer.innerHTML = `
@@ -3500,7 +3565,21 @@ class AdvancedFilters {
             valueContainer.innerHTML = `
                 <input type="text" class="af-value form-control" placeholder="Value" style="flex:1; background:var(--bg-input);">
             `;
+            if (type.includes('date') || type.includes('timestamp')) {
+                this.initFlatpickrOn(valueContainer.querySelector('.af-value'), type);
+            }
         }
+    }
+    
+    initFlatpickrOn(el, type) {
+        if (!el) return;
+        flatpickr(el, {
+            theme: 'dark',
+            enableTime: type.includes('datetime') || type.includes('timestamp'),
+            enableSeconds: type.includes('datetime') || type.includes('timestamp'),
+            dateFormat: type.includes('datetime') || type.includes('timestamp') ? "Y-m-d H:i:S" : "Y-m-d",
+            allowInput: true
+        });
     }
     
     removeFilter(index) {
@@ -3939,18 +4018,57 @@ let advancedFilters = null;
             });
         }
     
+        // --- SIDEBAR PINNING ---
+        const PIN_STORAGE_KEY = 'adminer_pinned_tables';
+        window.togglePin = function(tableName) {
+            let pinned = JSON.parse(localStorage.getItem(PIN_STORAGE_KEY) || '[]');
+            if (pinned.includes(tableName)) {
+                pinned = pinned.filter(t => t !== tableName);
+            } else {
+                pinned.push(tableName);
+            }
+            localStorage.setItem(PIN_STORAGE_KEY, JSON.stringify(pinned));
+            renderPinnedTables();
+        };
+
+        function renderPinnedTables() {
+            const pinnedSection = document.getElementById('pinned-tables-section');
+            const pinnedList = document.getElementById('pinned-tables-list');
+            const pinned = JSON.parse(localStorage.getItem(PIN_STORAGE_KEY) || '[]');
+            
+            pinnedList.innerHTML = '';
+            pinnedSection.style.display = pinned.length > 0 ? 'block' : 'none';
+
+            // Reset visibility in main list
+            document.querySelectorAll('.nav-item-wrapper').forEach(wrapper => {
+                wrapper.classList.remove('pinned');
+                const btn = wrapper.querySelector('.pin-btn');
+                const table = wrapper.getAttribute('data-table');
+                if (pinned.includes(table)) {
+                    wrapper.classList.add('pinned');
+                    btn.classList.add('active');
+                    
+                    // Clone to pinned list
+                    const clone = wrapper.cloneNode(true);
+                    clone.classList.remove('pinned');
+                    clone.querySelector('.pin-btn').classList.add('active');
+                    pinnedList.appendChild(clone);
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+        renderPinnedTables();
+
         // --- TABLE SEARCH (Sidebar) ---
         const tableSearchInput = document.getElementById('tableSearch');
         if (tableSearchInput) {
-            const navList = document.querySelector('.nav-list');
-            const tableItems = navList.querySelectorAll('.nav-item');
             tableSearchInput.addEventListener('keyup', function() {
                 const searchTerm = this.value.toLowerCase();
-                tableItems.forEach(item => {
-                    // Skip dashboard link
-                    if (item.getAttribute('href') === '?') return;
-                    const tableName = item.textContent.toLowerCase();
-                    item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
+                // Search in both main list and pinned list
+                document.querySelectorAll('.nav-item-wrapper').forEach(wrapper => {
+                    const tableName = wrapper.getAttribute('data-table').toLowerCase();
+                    wrapper.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
                 });
             });
         }
@@ -4243,27 +4361,80 @@ let advancedFilters = null;
     }
 
     // Initialize TomSelect for Searchable Dropdowns (Global)
+    // Initialize TomSelect and Flatpickr for Global Components
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('form select.form-select').forEach((el) => {
             initTomSelect(el);
         });
+        document.querySelectorAll('.flatpickr-date, .flatpickr-datetime').forEach((el) => {
+            initFlatpickr(el);
+        });
     });
+
+    function initFlatpickr(el) {
+        if (!el || el._flatpickr) return;
+        const config = {
+            theme: 'dark',
+            dateFormat: "Y-m-d",
+            allowInput: true
+        };
+        if (el.classList.contains('flatpickr-datetime')) {
+            config.enableTime = true;
+            config.enableSeconds = true;
+            config.dateFormat = "Y-m-d H:i:S";
+        }
+        flatpickr(el, config);
+    }
 
     // --- INLINE EDITING ---
     function makeCellEditable(td) {
         if (td.querySelector('input')) return; // Already editing
         
-        const originalContent = td.innerText;
-        const originalHtml = td.innerHTML;
+        const originalContent = td.innerText.trim();
         const pk = td.getAttribute('data-pk');
         const col = td.getAttribute('data-col');
+        const type = td.getAttribute('data-type') || '';
         const table = td.closest('table').getAttribute('data-table');
         
         if(!pk || !col) return;
 
         td.classList.add('editing');
-        td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
-        td.querySelector('input').focus();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-control';
+        input.style.cssText = 'min-width:100px; padding:2px 5px; height:auto;';
+        input.value = originalContent === 'NULL' ? '' : originalContent;
+        
+        td.innerHTML = '';
+        td.appendChild(input);
+        input.focus();
+
+        const onSave = () => {
+            saveCellData(input, table, col, pk, originalContent);
+        };
+
+        if (type.includes('date') || type.includes('timestamp')) {
+            flatpickr(input, {
+                enableTime: type.includes('datetime') || type.includes('timestamp'),
+                enableSeconds: type.includes('datetime') || type.includes('timestamp'),
+                dateFormat: type.includes('datetime') || type.includes('timestamp') ? "Y-m-d H:i:S" : "Y-m-d",
+                defaultDate: originalContent === 'NULL' ? null : originalContent,
+                theme: 'dark',
+                onClose: () => {
+                    setTimeout(onSave, 100);
+                }
+            }).open();
+        } else {
+            input.onblur = onSave;
+            input.onkeydown = (e) => { 
+                if(e.key === 'Enter') {
+                    input.blur();
+                } else if (e.key === 'Escape') {
+                    td.innerHTML = originalContent;
+                    td.classList.remove('editing');
+                }
+            };
+        }
     }
 
     function saveCellData(input, table, col, pk, original) {
@@ -4924,6 +5095,44 @@ let advancedFilters = null;
             updateImportStatus(`An error occurred: ${error.message}`, 'danger');
         }
     }
+
+    // --- DIAGRAM FULLSCREEN HELPER ---
+    window.toggleFullscreenDiagram = function(el) {
+        if (!document.fullscreenElement) {
+            const requestMethod = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+            if (requestMethod) {
+                requestMethod.call(el).catch(err => {
+                    el.parentElement.requestFullscreen();
+                });
+            } else {
+                el.parentElement.requestFullscreen();
+            }
+            el.style.maxHeight = 'none';
+            if (el.tagName === 'IMG') {
+                el.style.height = '100vh';
+                el.style.width = '100vw';
+                el.style.objectFit = 'contain';
+                el.style.background = '#000';
+            } else {
+                el.style.background = '#000';
+            }
+        } else {
+            document.exitFullscreen();
+        }
+    };
+
+    document.addEventListener('fullscreenchange', () => {
+        if (!document.fullscreenElement) {
+            document.querySelectorAll('.mermaid, .erd-img').forEach(el => {
+                el.style.maxHeight = '600px';
+                el.style.background = el.tagName === 'IMG' ? '#fff' : '#080808';
+                if (el.tagName === 'IMG') {
+                    el.style.height = 'auto';
+                    el.style.width = '100%';
+                }
+            });
+        }
+    });
 </script>
     <style>
         :root {
@@ -5542,14 +5751,31 @@ let advancedFilters = null;
             <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
+            
+            <div id="pinned-tables-section" style="display:none;">
+                <div class="nav-header"><span><i class="fas fa-thumbtack"></i> Pinned Tables</span></div>
+                <div id="pinned-tables-list"></div>
+            </div>
+
             <div class="nav-header"><span>Tables (<?=count($tables)?>)</span></div>
-            <?php foreach ($tables as $t): ?>
-                <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>">
-                    <i class="fas fa-table" style="width:20px; text-align:center;"></i> 
-                    <span><?=htmlspecialchars($t['Name'])?> <small>(<?=formatSize($t['Data_length'] + $t['Index_length'])?>)</small></span>
-                </a>
-            <?php endforeach; ?>
+            <div id="sidebar-tables-list">
+                <?php foreach ($tables as $t): ?>
+                    <div class="nav-item-wrapper" data-table="<?=htmlspecialchars($t['Name'])?>" style="display:flex; align-items:center;">
+                        <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>" style="flex:1;">
+                            <i class="fas fa-table" style="width:20px; text-align:center;"></i> 
+                            <span><?=htmlspecialchars($t['Name'])?> <small>(<?=formatSize($t['Data_length'] + $t['Index_length'])?>)</small></span>
+                        </a>
+                        <button type="button" class="pin-btn" onclick="togglePin('<?=htmlspecialchars($t['Name'])?>')" title="Pin Table" style="background:none; border:none; color:var(--text-secondary); cursor:pointer; padding:10px; opacity:0; transition:opacity 0.2s;">
+                            <i class="fas fa-thumbtack"></i>
+                        </button>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         </div>
+        <style>
+            .nav-item-wrapper:hover .pin-btn { opacity: 1 !important; }
+            .pin-btn.active { color: var(--accent) !important; opacity: 1 !important; }
+        </style>
         <div class="sidebar-toggle" id="sidebarToggle">
             <i class="fas fa-angle-left"></i>
         </div>
@@ -5591,20 +5817,62 @@ let advancedFilters = null;
 
             <?php 
             $dbMode = $_SESSION['db_mode'] ?? 'sql';
-            if (!$hasSelectedDatabase && $dbMode === 'sql'): 
+            if (!$currentTable): 
             ?>
-                <div class="card">
-                    <h3>Pilih Database</h3>
-                    <p style="color:var(--text-secondary); line-height:1.6;">
-                        Kredensial sudah disimpan. Silakan pilih database dari dropdown di sidebar atau kelola daftar database
-                        melalui modul manajemen di bawah.
-                    </p>
+                <!-- System Health Dashboard -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:15px; margin-bottom:20px;">
+                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
+                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(0, 123, 255, 0.1); color:#007bff; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
+                            <i class="fab fa-php"></i>
+                        </div>
+                        <div>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">PHP Version</div>
+                            <div style="font-size:1.1rem; font-weight:bold;"><?= PHP_VERSION ?></div>
+                        </div>
+                    </div>
+                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
+                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(16, 185, 129, 0.1); color:var(--success); display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
+                            <i class="fas fa-upload"></i>
+                        </div>
+                        <div>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Max Upload</div>
+                            <div style="font-size:1.1rem; font-weight:bold;"><?= ini_get('upload_max_filesize') ?></div>
+                        </div>
+                    </div>
+                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
+                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(251, 191, 36, 0.1); color:#fbbf24; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                        <div>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Server Time</div>
+                            <div style="font-size:1.1rem; font-weight:bold;"><?= date('H:i:s') ?></div>
+                        </div>
+                    </div>
+                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
+                        <div style="width:45px; height:45px; border-radius:10px; background:<?=isset($pdo)?'rgba(16, 185, 129, 0.1)':'rgba(239, 68, 68, 0.1)'?>; color:<?=isset($pdo)?'var(--success)':'var(--danger)'?>; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
+                            <i class="fas fa-plug"></i>
+                        </div>
+                        <div>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Status</div>
+                            <div style="font-size:1.1rem; font-weight:bold;"><?= isset($pdo) ? 'Active' : 'Disconnected' ?></div>
+                        </div>
+                    </div>
                 </div>
+
+                <?php if ($dbMode === 'sql' && !$hasSelectedDatabase): ?>
+                    <div class="card">
+                        <h3>Pilih Database</h3>
+                        <p style="color:var(--text-secondary); line-height:1.6;">
+                            Kredensial sudah disimpan. Silakan pilih database dari dropdown di sidebar atau kelola daftar database
+                            melalui modul manajemen di bawah.
+                        </p>
+                    </div>
+                <?php endif; ?>
             <?php endif; ?>
 
                 <?php 
                 $configList = load_config($configFile)['databases'] ?? [];
-                if (should_show_managed_database_list($hostProfile)): ?>
+                if (should_show_managed_database_list($hostProfile) && !$currentTable && $view === 'structure'): ?>
                 <!-- MANAGEMENT UI -->
                 <div class="card">
                     <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
@@ -5894,7 +6162,14 @@ let advancedFilters = null;
                                         <td>
                                             <?php if($primaryKey):
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy Row"><i class="fas fa-copy"></i></a><?php 
+                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
+                                                ?><form method="POST" style="display:inline; margin-right:5px;">
+                                                    <input type="hidden" name="action" value="duplicate_row">
+                                                    <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                    <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
+                                                    <input type="hidden" name="val" value="<?=htmlspecialchars($row[$primaryKey])?>">
+                                                    <button type="submit" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0;" title="Quick Duplicate"><i class="fas fa-clone"></i></button>
+                                                </form><?php
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
                                             else:
                                                 ?><span style="opacity:0.3">-</span><?php 
@@ -5962,7 +6237,7 @@ let advancedFilters = null;
                                                 $targetTable = substr($key, 0, -3) . 's'; // simple pluralization
                                                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
                                             }
-                                            ?><td data-col="<?=htmlspecialchars($key)?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
+                                            ?><td data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
                                         endforeach; ?>
                                     </tr>
                                 <?php endforeach; ?>
@@ -5994,7 +6269,8 @@ let advancedFilters = null;
 function openToolsModal() {
     Swal.fire({
         title: '<span style="color:var(--text-primary)">Generator Tools</span>',
-        html: `
+        background: 'var(--bg-card)',
+        color: 'var(--text-primary)',
             <div class="swal2-tabs">
                 <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
                 <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
@@ -6339,14 +6615,16 @@ async function generatePhpHash() {
                     <!-- INDEXES SECTION -->
                     <?php
                         $indexes = [];
-                        try {
-                            $stmt = $pdo->query("SHOW INDEX FROM `$currentTable`");
-                            while ($row = $stmt->fetch()) {
-                                $name = $row['Key_name'];
-                                $indexes[$name]['type'] = ($name == 'PRIMARY') ? 'PRIMARY' : (($row['Non_unique'] == 0) ? 'UNIQUE' : 'INDEX');
-                                $indexes[$name]['columns'][] = $row['Column_name'];
-                            }
-                        } catch(Exception $e) {}
+                        $isSqlMode = (($_SESSION['db_mode'] ?? 'sql') === 'sql');
+                        if ($isSqlMode && $hasSelectedDatabase) :
+                            try {
+                                $stmt = $pdo->query("SHOW INDEX FROM `$currentTable`");
+                                while ($row = $stmt->fetch()) {
+                                    $name = $row['Key_name'];
+                                    $indexes[$name]['type'] = ($name == 'PRIMARY') ? 'PRIMARY' : (($row['Non_unique'] == 0) ? 'UNIQUE' : 'INDEX');
+                                    $indexes[$name]['columns'][] = $row['Column_name'];
+                                }
+                            } catch(Exception $e) {}
                     ?>
                     <div class="card" style="margin-top: 20px;">
                         <h3>Indexes</h3>
@@ -6393,30 +6671,34 @@ async function generatePhpHash() {
                             <button type="submit" class="btn btn-primary">Add Index</button>
                         </form>
                     </div>
+                    <?php endif; ?>
 
                     <!-- FOREIGN KEYS SECTION -->
                     <?php
                         $fks = [];
-                        try {
-                            $stmt = $pdo->query("
-                                SELECT 
-                                    CONSTRAINT_NAME, 
-                                    COLUMN_NAME, 
-                                    REFERENCED_TABLE_NAME, 
-                                    REFERENCED_COLUMN_NAME
-                                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                                WHERE 
-                                    TABLE_SCHEMA = '$DB_NAME' AND 
-                                    TABLE_NAME = '$currentTable' AND 
-                                    REFERENCED_TABLE_NAME IS NOT NULL
-                            ");
-                            $fks = $stmt->fetchAll();
-                        } catch(Exception $e) {}
-                        
-                        // Get all tables for dropdown
-                        $allTables = [];
-                        $stmt = $pdo->query("SHOW TABLES");
-                        while ($r = $stmt->fetch(PDO::FETCH_NUM)) $allTables[] = $r[0];
+                        if ($isSqlMode && $hasSelectedDatabase) :
+                            try {
+                                $stmt = $pdo->query("
+                                    SELECT 
+                                        CONSTRAINT_NAME, 
+                                        COLUMN_NAME, 
+                                        REFERENCED_TABLE_NAME, 
+                                        REFERENCED_COLUMN_NAME
+                                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                                    WHERE 
+                                        TABLE_SCHEMA = '$DB_NAME' AND 
+                                        TABLE_NAME = '$currentTable' AND 
+                                        REFERENCED_TABLE_NAME IS NOT NULL
+                                ");
+                                $fks = $stmt->fetchAll();
+                            } catch(Exception $e) {}
+                            
+                            // Get all tables for dropdown
+                            $allTables = [];
+                            try {
+                                $stmt = $pdo->query("SHOW TABLES");
+                                while ($r = $stmt->fetch(PDO::FETCH_NUM)) $allTables[] = $r[0];
+                            } catch(Exception $e) {}
                     ?>
                     <div class="card" style="margin-top: 20px;" id="foreign-keys-section">
                         <h3>Foreign Keys</h3>
@@ -6486,6 +6768,7 @@ async function generatePhpHash() {
                             <button type="submit" class="btn btn-primary">Add FK</button>
                         </form>
                     </div>
+                    <?php endif; ?>
 
 <?php elseif ($view === 'structure_edit'):
                     $editCol = $_GET['col'] ?? null;
@@ -7009,12 +7292,12 @@ async function generatePhpHash() {
                                     }
                                     // DATE
                                     elseif ($type === 'date') {
-                                        $inputHtml = '<input type="date" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($val ?? '').'">';
+                                        $inputHtml = '<input type="text" name="data['.htmlspecialchars($field).']" class="form-control flatpickr-date" value="'.htmlspecialchars($val ?? '').'" placeholder="YYYY-MM-DD">';
                                     }
                                     // DATETIME / TIMESTAMP
                                     elseif (strpos($type, 'datetime') !== false || strpos($type, 'timestamp') !== false) {
-                                        $dtVal = $val ? date('Y-m-d\TH:i', strtotime($val)) : '';
-                                        $inputHtml = '<input type="datetime-local" name="data['.htmlspecialchars($field).']" class="form-control" value="'.htmlspecialchars($dtVal).'">';
+                                        // Use full format for flatpickr but keep internal value for display
+                                        $inputHtml = '<input type="text" name="data['.htmlspecialchars($field).']" class="form-control flatpickr-datetime" value="'.htmlspecialchars($val ?? '').'" placeholder="YYYY-MM-DD HH:MM:SS">';
                                     }
                                     // NUMBERS
                                     elseif (preg_match('/(int|decimal|float|double|numeric|real)/', $type)) {
@@ -7413,7 +7696,10 @@ async function generatePhpHash() {
                         <h3 style="margin:0;">Relationship Map</h3>
                         <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid diagram of foreign keys</span>
                     </div>
-                    <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
+                    <div style="position:relative;">
+                        <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:10px; top:10px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
+                        <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
+                    </div>
                 </div>
                 <?php endif; ?>
 
@@ -7424,14 +7710,18 @@ async function generatePhpHash() {
                         <span style="font-size:0.85rem; color:var(--text-secondary);">PlantUML (primary) with Mermaid fallback</span>
                     </div>
                     <?php if ($plantumlDiagramEncoded): ?>
-                        <div style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:10px; text-align:center;">
-                            <img src="https://www.plantuml.com/plantuml/svg/<?= htmlspecialchars($plantumlDiagramEncoded) ?>" alt="PlantUML ERD" style="width:100%; max-height:600px; object-fit:contain; background:#fff;">
+                        <div style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:10px; text-align:center; position:relative;">
+                            <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:15px; top:15px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
+                            <img src="https://www.plantuml.com/plantuml/svg/<?= htmlspecialchars($plantumlDiagramEncoded) ?>" alt="PlantUML ERD" class="erd-img" style="width:100%; max-height:600px; object-fit:contain; background:#fff;">
                         </div>
                         <?php if ($erdDiagram): ?>
                             <details style="margin-top:10px;">
                                 <summary style="cursor:pointer; color:#0d6efd;">Show Mermaid fallback</summary>
-                                <pre class="mermaid" style="margin-top:10px; background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
-                            </details>
+                                <div style="position:relative;">
+                                    <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:10px; top:10px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
+                                    <pre class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
+                                </div>
+            </details>
                         <?php endif; ?>
                     <?php elseif ($erdDiagram): ?>
                         <pre class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
@@ -8633,14 +8923,33 @@ let queryBuilder = null;
                     document.addEventListener('DOMContentLoaded', function() {
                         const panel = document.getElementById('serverDbsPanel');
                         const btn = document.getElementById('btnToggleServerDbs');
-                        if (!panel || !btn) return;
-                        const collapsed = localStorage.getItem('serverDbsCollapsed') === '1';
-                        if (collapsed) {
-                            panel.style.display = 'none';
-                            btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
-                        } else {
-                            btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                        if (panel && btn) {
+                            const collapsed = localStorage.getItem('serverDbsCollapsed') === '1';
+                            if (collapsed) {
+                                panel.style.display = 'none';
+                                btn.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                            } else {
+                                btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
+                            }
                         }
+
+                        // Initialize Query Builder & Advanced Filters if in SQL view
+                        <?php if ($view === 'sql' && $currentTable && !empty($tableColumns)): ?>
+                        if (document.getElementById('advanced-filters-container')) {
+                            advancedFilters = new AdvancedFilters('advanced-filters-container', {
+                                table: <?= json_encode($currentTable) ?>,
+                                columns: <?= json_encode($tableColumns) ?>,
+                                columnTypes: <?= json_encode($colTypesMap) ?>
+                            });
+                        }
+                        
+                        if (document.getElementById('query-builder-container')) {
+                            queryBuilder = new QueryBuilder('query-builder-container', {
+                                table: <?= json_encode($currentTable) ?>,
+                                columns: <?= json_encode($tableColumns) ?>
+                            });
+                        }
+                        <?php endif; ?>
                     });
 
                     function switchSqlTab(tabId) {
