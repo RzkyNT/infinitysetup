@@ -807,1156 +807,6 @@ function render_db_setup($defaults = [], $error = '', $success = '')
         </style>    
     </head>
     <body>
-<script>
-    // Global SweetAlert Helpers
-    function saConfirmLink(e, text) {
-        e.preventDefault();
-        const href = e.currentTarget.getAttribute('href');
-        Swal.fire({
-            title: 'Are you sure?',
-            text: text,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#3085d6',
-            cancelButtonColor: '#d33',
-            confirmButtonText: 'Yes, proceed!'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                window.location.href = href;
-            }
-        });
-    }
-
-    function saConfirmForm(e, text) {
-        e.preventDefault();
-        const form = e.target;
-        Swal.fire({
-            title: 'Are you sure?',
-            text: text,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#d33', // Red for destructive actions
-            cancelButtonColor: '#3085d6',
-            confirmButtonText: 'Yes, do it!'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                form.submit();
-            }
-        });
-    }
-
-    // --- THEME TOGGLE ---
-    function toggleTheme() {
-        const root = document.documentElement;
-        const current = root.getAttribute('data-theme');
-        const next = current === 'light' ? 'dark' : 'light';
-        root.setAttribute('data-theme', next);
-        localStorage.setItem('adminer_theme', next);
-        updateThemeColors(next);
-    }
-
-    function updateThemeColors(theme) {
-        const root = document.documentElement;
-        if (theme === 'light') {
-            root.style.setProperty('--bg-body', '#f5f5f5');
-            root.style.setProperty('--bg-sidebar', '#ffffff');
-            root.style.setProperty('--bg-card', '#ffffff');
-            root.style.setProperty('--bg-hover', '#f0f0f0');
-            root.style.setProperty('--bg-input', '#ffffff');
-            root.style.setProperty('--border-color', '#dddddd');
-            root.style.setProperty('--text-primary', '#333333');
-            root.style.setProperty('--text-secondary', '#666666');
-            root.style.setProperty('--text-primary', '#333333');
-            root.style.setProperty('--dark-gray', '#ccc');
-        } else {
-            // Revert to dark defaults
-            root.style.setProperty('--bg-body', '#050505');
-            root.style.setProperty('--bg-sidebar', '#0f0f0f');
-            root.style.setProperty('--bg-card', '#141414');
-            root.style.setProperty('--bg-hover', '#1f1f1f');
-            root.style.setProperty('--bg-input', '#1a1a1a');
-            root.style.setProperty('--border-color', '#333333');
-            root.style.setProperty('--text-primary', '#e0e0e0');
-            root.style.setProperty('--text-secondary', '#888888');
-            root.style.setProperty('--dark-gray', '#222');
-        }
-    }
-    
-    // Init Theme
-    const savedTheme = localStorage.getItem('adminer_theme') || 'dark';
-    document.documentElement.setAttribute('data-theme', savedTheme);
-    updateThemeColors(savedTheme);
-
-    // --- BULK ACTIONS (DATA VIEW) ---
-    function updateBulkBtn() {
-        const checked = document.querySelectorAll('.row-checkbox:checked').length > 0;
-        const select = document.getElementById('bulkActionSelect');
-        const btn = document.getElementById('bulkApplyBtn');
-        if(select && btn) {
-            select.style.display = checked ? 'block' : 'none';
-            btn.style.display = checked ? 'block' : 'none';
-        }
-    }
-
-    function toggleSelectAll(source) {
-        document.querySelectorAll('.row-checkbox').forEach(cb => {
-            cb.checked = source.checked;
-        });
-        updateBulkBtn();
-    }
-
-    function submitBulkAction() {
-        const select = document.getElementById('bulkActionSelect');
-        const form = document.getElementById('bulkForm');
-        const action = select.value;
-        
-        if (!action) return;
-        
-        if (action === 'delete') {
-            form.querySelector('input[name="action"]').value = 'bulk_delete';
-            Swal.fire({
-                title: 'Delete selected rows?',
-                text: "You won't be able to revert this!",
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#d33',
-                confirmButtonText: 'Yes, delete!'
-            }).then((result) => {
-                if (result.isConfirmed) form.submit();
-            });
-        } else {
-            // Export actions
-            form.querySelector('input[name="action"]').value = action;
-            form.submit(); // Direct submit for download
-        }
-    }
-
-    // --- SIDEBAR TOGGLE & PERSISTENCE ---
-    const sidebar = document.getElementById('sidebar');
-    const mainContent = document.querySelector('.main-content');
-    const sidebarToggle = document.getElementById('sidebarToggle');
-    const toggleIcon = sidebarToggle.querySelector('i');
-    const SIDEBAR_STORAGE_KEY = 'adminer_sidebar_collapsed';
-
-    function setSidebarState(collapsed) {
-        if (collapsed) {
-            sidebar.classList.add('collapsed');
-            mainContent.classList.add('sidebar-collapsed');
-            toggleIcon.classList.remove('fa-angle-left');
-            toggleIcon.classList.add('fa-angle-right');
-        } else {
-            sidebar.classList.remove('collapsed');
-            mainContent.classList.remove('sidebar-collapsed');
-            toggleIcon.classList.remove('fa-angle-right');
-            toggleIcon.classList.add('fa-angle-left');
-        }
-        localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed);
-    }
-
-    // Initialize Sidebar State
-    const storedState = localStorage.getItem(SIDEBAR_STORAGE_KEY);
-    const isSmallScreen = window.innerWidth <= 768;
-    // Default: Collapsed on small screens, Expanded on large (unless stored)
-    if (storedState === 'true' || (storedState === null && isSmallScreen)) {
-        setSidebarState(true);
-    } else {
-        setSidebarState(false);
-    }
-
-    sidebarToggle.addEventListener('click', () => {
-        setSidebarState(!sidebar.classList.contains('collapsed'));
-    });
-
-    // --- TABLE SEARCH (Sidebar) ---
-    const tableSearchInput = document.getElementById('tableSearch');
-    if (tableSearchInput) {
-        const navList = document.querySelector('.nav-list');
-        const tableItems = navList.querySelectorAll('.nav-item');
-        tableSearchInput.addEventListener('keyup', function() {
-            const searchTerm = this.value.toLowerCase();
-            tableItems.forEach(item => {
-                // Skip dashboard link
-                if (item.getAttribute('href') === '?') return;
-                const tableName = item.textContent.toLowerCase();
-                item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
-            });
-        });
-    }
-
-    // --- REALTIME PAGE FILTER ---
-    const pageFilterInput = document.getElementById('pageFilterInput');
-    if (pageFilterInput) {
-        pageFilterInput.addEventListener('keyup', function() {
-            const term = this.value.toLowerCase();
-            const rows = document.querySelectorAll('tbody tr');
-            rows.forEach(row => {
-                // Ignore rows that are just 'No data' messages
-                if (row.cells.length === 1 && row.textContent.trim() === 'No data found') return;
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(term) ? '' : 'none';
-            });
-        });
-    }
-
-    // --- COLUMN VISIBILITY ---
-    // Inject CSS for the show class
-    const style = document.createElement('style');
-    style.innerHTML = '#colToggleDropdown.show { display: block !important; }';
-    document.head.appendChild(style);
-
-    function initColumnVisibility() {
-        const dropdown = document.getElementById('colToggleDropdown');
-        if (!dropdown) return;
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const tableName = urlParams.get('table');
-        if (!tableName) return;
-        
-        const storageKey = 'adminer_hidecols_' + tableName;
-        let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
-
-        // Get all headers that have data-col attribute
-        const headers = document.querySelectorAll('th[data-col]');
-        
-        headers.forEach(th => {
-            const colName = th.getAttribute('data-col');
-            const isHidden = hiddenCols.includes(colName);
-            
-            // Create Checkbox UI
-            const div = document.createElement('div');
-            div.style.padding = '4px 0';
-            div.innerHTML = `
-                <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
-                    <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
-                    <span style="font-size:0.9rem;">${colName}</span>
-                </label>
-            `;
-            dropdown.appendChild(div);
-            
-            const checkbox = div.querySelector('input');
-            checkbox.addEventListener('change', (e) => {
-                toggleColumn(colName, e.target.checked);
-            });
-
-            // Apply initial state
-            if (isHidden) {
-                toggleColumn(colName, false);
-            }
-        });
-
-        function toggleColumn(colName, show) {
-            // Toggle Header
-            const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
-            if (th) th.style.display = show ? '' : 'none';
-
-            // Toggle Cells
-            const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
-            cells.forEach(td => td.style.display = show ? '' : 'none');
-            
-            // Update Storage
-            if (show) {
-                hiddenCols = hiddenCols.filter(c => c !== colName);
-            } else {
-                if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
-            }
-            localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
-        }
-    }
-    initColumnVisibility();
-
-    // Close dropdown when clicking outside
-    document.addEventListener('click', function(event) {
-        const dropdown = document.getElementById('colToggleDropdown');
-        const button = document.querySelector('button[onclick*="colToggleDropdown"]');
-        if (dropdown && button && !dropdown.contains(event.target) && !button.contains(event.target)) {
-            dropdown.classList.remove('show');
-        }
-    });
-
-    if (typeof mermaid !== 'undefined') {
-        mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
-    }
-
-    // Bulk table selection (init after DOM ready)
-    function updateSelectAllState() {
-        const selectAll = document.getElementById('selectAllTables');
-        if (!selectAll) return;
-        const cbs = Array.from(document.querySelectorAll('.table-checkbox'));
-        const checkedCount = cbs.filter(cb => cb.checked).length;
-        if (checkedCount === 0) {
-            selectAll.checked = false;
-            selectAll.indeterminate = false;
-        } else if (checkedCount === cbs.length) {
-            selectAll.checked = true;
-            selectAll.indeterminate = false;
-        } else {
-            selectAll.checked = false;
-            selectAll.indeterminate = true;
-        }
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-        const selectAllTables = document.getElementById('selectAllTables');
-        if (selectAllTables) {
-            selectAllTables.addEventListener('change', function() {
-                document.querySelectorAll('.table-checkbox').forEach(cb => cb.checked = selectAllTables.checked);
-            });
-        }
-        // Ensure individual checkboxes update the master checkbox state
-        document.querySelectorAll('.table-checkbox').forEach(cb => cb.addEventListener('change', updateSelectAllState));
-        // initialize state
-        updateSelectAllState();
-    });
-
-    function getSelectedTablesCount() {
-        return Array.from(document.querySelectorAll('.table-checkbox')).filter(cb => cb.checked).length;
-    }
-
-    window.confirmBulkTables = function() {
-        const form = document.getElementById('bulkTablesForm');
-        if (!form) return;
-        const action = form.querySelector('select[name=\"bulk_operation\"]').value;
-        const selectedCount = getSelectedTablesCount();
-        if (!action) {
-            Swal.fire('Missing', 'Pilih aksi bulk terlebih dahulu.', 'info');
-            return;
-        }
-        if (selectedCount === 0) {
-            Swal.fire('No tables', 'Pilih minimal satu tabel.', 'info');
-            return;
-        }
-        const actionLabel = {
-            drop: 'Drop',
-            truncate: 'Truncate',
-            optimize: 'Optimize',
-            export: 'Export'
-        }[action] || action;
-        Swal.fire({
-            title: `Confirm ${actionLabel}?`,
-            text: `Action will run on ${selectedCount} table(s).`,
-            icon: action === 'drop' || action === 'truncate' ? 'warning' : 'question',
-            showCancelButton: true,
-            confirmButtonColor: action === 'drop' ? '#d33' : '#3085d6',
-            cancelButtonColor: '#666',
-            confirmButtonText: 'Yes, run it'
-        }).then(result => {
-            if (result.isConfirmed) {
-                form.submit();
-            }
-        });
-    }
-
-    // --- CREATE TABLE HELPER ---
-    let colIndex = 0;
-    function addColRow() {
-        const tbody = document.getElementById('colList');
-        if (!tbody) return;
-        const index = colIndex++;
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td><input type="text" name="fields[${index}][name]" class="form-control" required placeholder="Column Name"></td>
-            <td>
-                <select name="fields[${index}][type]" class="form-select" style="background:var(--bg-input);">
-                    <option value="INT">INT</option>
-                    <option value="VARCHAR">VARCHAR</option>
-                    <option value="TEXT">TEXT</option>
-                    <option value="DATE">DATE</option>
-                    <option value="DATETIME">DATETIME</option>
-                    <option value="BOOLEAN">BOOLEAN</option>
-                    <option value="DECIMAL">DECIMAL</option>
-                    <option value="FLOAT">FLOAT</option>
-                    <option value="JSON">JSON</option>
-                </select>
-            </td>
-            <td><input type="text" name="fields[${index}][length]" class="form-control" placeholder="Len/Val"></td>
-            <td>
-                <select name="fields[${index}][default]" class="form-select" style="background:var(--bg-input);" onchange="toggleDefaultVal(this)">
-                    <option value="NONE">None</option>
-                    <option value="NULL">NULL</option>
-                    <option value="CURRENT_TIMESTAMP">Curr Timestamp</option>
-                    <option value="USER_DEFINED">As Defined:</option>
-                </select>
-                <input type="text" name="fields[${index}][default_val]" class="form-control" style="display:none; margin-top:5px;" placeholder="Value">
-            </td>
-            <td>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][null]" value="1"> Null</label>
-                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][ai]" value="1"> AI</label>
-                    <select name="fields[${index}][index]" class="form-select" style="width:auto; padding:2px; background:var(--bg-input);">
-                        <option value="">- Index -</option>
-                        <option value="PRI">Primary</option>
-                        <option value="UNI">Unique</option>
-                        <option value="IDX">Index</option>
-                    </select>
-                </div>
-            </td>
-            <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()"><i class="fas fa-times"></i></button></td>
-        `;
-        tbody.appendChild(tr);
-        
-        // Initialize TomSelect on new selects
-        tr.querySelectorAll('select.form-select').forEach(el => initTomSelect(el));
-    }
-    
-    function toggleDefaultVal(select) {
-        const input = select.nextElementSibling;
-        if(input) input.style.display = select.value === 'USER_DEFINED' ? 'block' : 'none';
-    }
-    
-    // Auto-add first row if table is empty on load
-    document.addEventListener('DOMContentLoaded', () => {
-        if(document.getElementById('colList') && document.getElementById('colList').children.length === 0) {
-            addColRow();
-        }
-    });
-
-    // Helper to init TomSelect with correct settings
-    function initTomSelect(el) {
-        if (el.tomselect) return; // Prevent double initialization
-        if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
-            new TomSelect(el, {
-                plugins: ['clear_button'],
-                maxOptions: 50,
-                sortField: { field: "text", direction: "asc" },
-                dropdownParent: 'body', // Fixes overflow/clipping issues
-                onDropdownOpen: function() {
-                    // Ensure z-index is higher than anything else
-                    const wrapper = this.dropdown;
-                    if(wrapper) wrapper.style.zIndex = "99999";
-                }
-            });
-        }
-    }
-
-    // --- COPY STRUCTURE FUNCTIONS ---
-    function copyAllTablesStructure() {
-        const formData = new FormData();
-        formData.append('action', 'get_all_tables_structure');
-
-        fetch('?', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                copyToClipboard(data.sql);
-            } else {
-                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
-            }
-        })
-        .catch(err => {
-            console.error(err);
-            Swal.fire('Error', 'Network error', 'error');
-        });
-    }
-
-    function copyTableStructure(tableName) {
-        const formData = new FormData();
-        formData.append('action', 'get_table_structure');
-        formData.append('table', tableName);
-
-        fetch('?', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                copyToClipboard(data.sql);
-            } else {
-                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
-            }
-        })
-        .catch(err => {
-            console.error(err);
-            Swal.fire('Error', 'Network error', 'error');
-        });
-    }
-
-    // Initialize TomSelect for Searchable Dropdowns (Global)
-    document.addEventListener('DOMContentLoaded', function() {
-        document.querySelectorAll('form select.form-select').forEach((el) => {
-            initTomSelect(el);
-        });
-    });
-
-    // --- INLINE EDITING ---
-    function makeCellEditable(td) {
-        if (td.querySelector('input')) return; // Already editing
-        
-        const originalContent = td.innerText;
-        const originalHtml = td.innerHTML;
-        const pk = td.getAttribute('data-pk');
-        const col = td.getAttribute('data-col');
-        const table = td.closest('table').getAttribute('data-table');
-        
-        if(!pk || !col) return;
-
-        td.classList.add('editing');
-        td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
-        td.querySelector('input').focus();
-    }
-
-    function saveCellData(input, table, col, pk, original) {
-        const newVal = input.value;
-        const td = input.parentElement;
-        
-        if (newVal === original) {
-            td.innerText = original;
-            td.classList.remove('editing');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('action', 'update_cell');
-        formData.append('table', table);
-        formData.append('column', col);
-        formData.append('id', pk);
-        formData.append('value', newVal);
-
-        fetch('?', {
-            method: 'POST',
-            body: formData
-        })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                td.innerText = newVal;
-                td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
-                setTimeout(() => td.style.backgroundColor = '', 1000);
-                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-                toast.fire({ icon: 'success', title: 'Saved' });
-            } else {
-                td.innerHTML = original; // Revert
-                Swal.fire('Error', data.message || 'Update failed', 'error');
-            }
-        })
-        .catch(err => {
-            td.innerHTML = original;
-            Swal.fire('Error', 'Network error', 'error');
-        })
-        .finally(() => {
-            td.classList.remove('editing');
-        });
-    }
-
-    // ===== GENERATOR TOOLS LOGIC =====
-    function openToolsModal() {
-        Swal.fire({
-            title: '<span style="color:var(--text-primary)">Generator Tools</span>',
-            html: `
-                <div class="swal2-tabs">
-                    <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
-                    <button onclick="switchToolTab(this, 'tool-md5')">MD5</button>
-                    <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
-                    <button onclick="switchToolTab(this, 'tool-uuid')">UUID</button>
-                    <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
-                </div>
-
-                <div id="tool-php-hash" class="swal2-tab-content active">
-                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
-                        Generate hash PHP (<b>Bcrypt</b>) sesuai format <code>$2y$10$...</code>. Cocok untuk database MySQL Native PHP atau Laravel.
-                    </p>
-                    
-                    <div class="tool-row">
-                        <input type="text" id="phpHashInput" class="swal2-input" placeholder="Masukkan password plain text..." autocomplete="off">
-                    </div>
-                    
-                    <div class="tool-row">
-                        <span class="tool-label">Result:</span>
-                        <div id="phpHashResult" class="tool-result" style="flex:1;">Hash will appear here...</div>
-                    </div>
-
-                    <div style="margin-top:15px; text-align:right;">
-                        <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
-                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
-                    </div>
-                </div>
-
-                <!-- MD5 GENERATOR -->
-                <div id="tool-md5" class="swal2-tab-content">
-                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
-                        Generate <b>MD5</b> Hash. (Not recommended for passwords).
-                    </p>
-                    
-                    <div class="tool-row">
-                        <input type="text" id="md5Input" class="swal2-input" placeholder="Enter text..." autocomplete="off">
-                    </div>
-                    
-                    <div class="tool-row">
-                        <span class="tool-label">Result:</span>
-                        <div id="md5Result" class="tool-result" style="flex:1;">Hash will appear here...</div>
-                    </div>
-
-                    <div style="margin-top:15px; text-align:right;">
-                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateMd5()">Generate MD5</button>
-                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('md5Result').innerText)">Copy</button>
-                    </div>
-                </div>
-
-                <!-- HASH GENERATOR -->
-                <div id="tool-hash" class="swal2-tab-content">
-                    <div class="tool-row">
-                        <select id="hashAlgo" class="swal2-select">
-                            <option value="SHA-1">SHA-1</option>
-                            <option value="SHA-256" selected>SHA-256</option>
-                            <option value="SHA-384">SHA-384</option>
-                            <option value="SHA-512">SHA-512</option>
-                        </select>
-                    </div>
-                    <textarea id="hashInput" class="swal2-textarea" placeholder="Enter text to hash..." rows="3"></textarea>
-                    <div class="tool-result" id="hashResult">Hash will appear here...</div>
-                    <div style="margin-top:10px; text-align:right;">
-                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateHash()">Hash It</button>
-                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('hashResult').innerText)">Copy</button>
-                    </div>
-                </div>
-
-                <!-- UUID GENERATOR -->
-                <div id="tool-uuid" class="swal2-tab-content">
-                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">Generate v4 Random UUIDs.</p>
-                    <div class="tool-result" id="uuidResult">Click Generate</div>
-                    <div style="margin-top:10px; text-align:right;">
-                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateUUID()">Generate</button>
-                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('uuidResult').innerText)">Copy</button>
-                    </div>
-                </div>
-
-                <!-- BASE64 ENCODER -->
-                <div id="tool-base64" class="swal2-tab-content">
-                    <textarea id="b64Input" class="swal2-textarea" placeholder="Enter string to encode/decode..." rows="3"></textarea>
-                    <div class="tool-row" style="margin-top:10px;">
-                        <button class="swal2-styled" style="background-color:#444; margin-right:5px;" onclick="doBase64('encode')">Encode</button>
-                        <button class="swal2-styled" style="background-color:#444;" onclick="doBase64('decode')">Decode</button>
-                    </div>
-                    <div class="tool-result" id="b64Result" style="margin-top:10px;">Result...</div>
-                    <div style="text-align:right; margin-top:5px;">
-                         <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('b64Result').innerText)">Copy</button>
-                    </div>
-                </div>
-            `,
-            showConfirmButton: false,
-            showCloseButton: true,
-            background: 'var(--bg-card)',
-            customClass: {
-                popup: 'dark-modal'
-            }
-        });
-    }
-
-    // --- Helper Functions for Tools ---
-    function switchToolTab(btn, targetId) {
-        // Update Buttons
-        const buttons = btn.parentElement.querySelectorAll('button');
-        buttons.forEach(b => b.classList.remove('active', 'active-tab'));
-        btn.classList.add('active');
-        btn.style.color = '#0d6efd';
-        buttons.forEach(b => { if(b !== btn) b.style.color = 'var(--text-secondary)'; });
-
-        // Update Content
-        const contents = document.querySelectorAll('.swal2-tab-content');
-        contents.forEach(c => c.style.display = 'none');
-        document.getElementById(targetId).style.display = 'block';
-    }
-
-    function generatePhpHash() {
-        const pass = document.getElementById('phpHashInput').value;
-        if(!pass) return Swal.showValidationMessage('Password empty');
-        
-        // Use the API endpoint defined at the top of adminer.php
-        fetch('?api=generate_php_hash', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'password=' + encodeURIComponent(pass)
-        })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                document.getElementById('phpHashResult').innerText = data.hash;
-            } else {
-                document.getElementById('phpHashResult').innerText = 'Error: ' + data.message;
-            }
-        })
-        .catch(err => {
-            document.getElementById('phpHashResult').innerText = 'Request Failed';
-        });
-    }
-
-    function generateMd5() {
-        const input = document.getElementById('md5Input').value;
-        if(!input) return;
-        
-        fetch('?api=generate_md5', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'input=' + encodeURIComponent(input)
-        })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                document.getElementById('md5Result').innerText = data.hash;
-            }
-        });
-    }
-
-    async function generateHash() {
-        const algo = document.getElementById('hashAlgo').value;
-        const text = document.getElementById('hashInput').value;
-        if(!text) return;
-        
-        const msgUint8 = new TextEncoder().encode(text);
-        const hashBuffer = await crypto.subtle.digest(algo, msgUint8);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        document.getElementById('hashResult').innerText = hashHex;
-    }
-
-    function generateUUID() {
-        const uuid = crypto.randomUUID();
-        document.getElementById('uuidResult').innerText = uuid;
-    }
-
-    function doBase64(action) {
-        const input = document.getElementById('b64Input').value;
-        const resEl = document.getElementById('b64Result');
-        try {
-            if(action === 'encode') resEl.innerText = btoa(input);
-            else resEl.innerText = atob(input);
-        } catch(e) {
-            resEl.innerText = 'Invalid Input';
-        }
-    }
-
-    function copyToClipboard(text) {
-        navigator.clipboard.writeText(text).then(() => {
-            const toast = Swal.mixin({
-                toast: true,
-                position: 'top-end',
-                showConfirmButton: false,
-                timer: 1500,
-                timerProgressBar: true,
-            });
-            toast.fire({ icon: 'success', title: 'Copied!' });
-        });
-    }
-
-    // Media Modal Functions
-    function showImageModal(src) {
-        Swal.fire({
-            imageUrl: src,
-            imageAlt: 'Image Preview',
-            showCloseButton: true,
-            showConfirmButton: false,
-            width: 'auto',
-            background: 'var(--bg-card)',
-            customClass: {
-                popup: 'dark-modal',
-                image: 'swal-image-preview'
-            }
-        });
-    }
-
-    function showVideoModal(src) {
-        Swal.fire({
-            html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
-            showCloseButton: true,
-            showConfirmButton: false,
-            width: 'auto',
-            background: 'var(--bg-card)',
-            customClass: {
-                popup: 'dark-modal'
-            }
-        });
-    }
-
-    // --- XLSX Export Logic ---
-    function handleExport(event) {
-        const formatSelect = document.getElementById('exportFormat');
-        if (formatSelect.value === 'xlsx') {
-            event.preventDefault(); // Prevent form submission
-            exportTableAsXLSX();
-            return false;
-        }
-        return true; // Allow other formats to submit normally
-    }
-
-        async function exportTableAsXLSX() {
-
-            const currentTable = "<?= htmlspecialchars($currentTable ?? '') ?>";
-
-            const filename = `${currentTable}_${new Date().toISOString().slice(0,10)}.xlsx`;
-
-    
-
-            try {
-
-                // Fetch full data as JSON using the existing export action
-
-                const formData = new FormData();
-
-                formData.append('action', 'export');
-
-                formData.append('table', currentTable);
-
-                formData.append('format', 'json'); // Request JSON data from the server
-
-            const response = await fetch('?', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const fetchedData = await response.json(); // Parse the JSON response
-            if (fetchedData.length === 0) {
-                Swal.fire('Info', 'No data to export for this table.', 'info');
-                return;
-            }
-            
-            // Create a new workbook
-            const wb = XLSX.utils.book_new();
-            const ws = XLSX.utils.json_to_sheet(fetchedData); // json to sheet
-
-            // Add the worksheet to the workbook
-            XLSX.utils.book_append_sheet(wb, ws, currentTable);
-            // Write the workbook to an XLSX file and trigger download
-            XLSX.writeFile(wb, filename);
-
-            const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-            toast.fire({ icon: 'success', title: 'Exported to XLSX!' });
-
-        } catch (error) {
-            console.error('Error exporting to XLSX:', error);
-            Swal.fire('Error', 'Failed to export to XLSX: ' + error.message, 'error');
-        }
-    }
-
-    async function downloadExcelTemplate() {
-        const currentTable = "<?= htmlspecialchars($currentTable ?? '') ?>";
-        const filename = `${currentTable}_template.xlsx`;
-
-        try {
-            // Fetch detailed column info
-            const formData = new FormData();
-            formData.append('action', 'get_table_columns');
-            formData.append('table', currentTable);
-
-            const response = await fetch('?', {
-                method: 'POST',
-                body: formData
-            });
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const result = await response.json();
-            
-            if (result.success) {
-                const columns = result.columns;
-                
-                // Prepare Headers and Data Sheet
-                const headers = [];
-                const dataSheetRows = []; // Transposed data for validation lists
-                const validations = [];
-                const colWidths = [];
-                
-                // We need to transpose FK values to columns in the Data sheet
-                // But first let's just collect them
-                const fkDataMap = {}; // colIndex -> array of values
-
-                columns.forEach((col, index) => {
-                    let headerName = col.name;
-                    if (col.required) headerName += ' *';
-                    headers.push(headerName);
-                    colWidths.push({ wch: Math.max(headerName.length + 5, 15) });
-
-                    if (col.fk_values && col.fk_values.length > 0) {
-                        fkDataMap[index] = col.fk_values;
-                    }
-                });
-
-                // Create Template Worksheet
-                const ws = XLSX.utils.aoa_to_sheet([headers]);
-                ws['!cols'] = colWidths;
-
-                // Add Comments (Rule Info)
-                // Note: SheetJS Community might strip comments on write, but we try.
-                // If comments fail, we rely on the header '*' and Data sheet.
-                for (let i = 0; i < columns.length; i++) {
-                    const col = columns[i];
-                    const cellRef = XLSX.utils.encode_cell({c: i, r: 0});
-                    
-                    let note = `Type: ${col.type}\n`;
-                    note += col.required ? "Required: YES\n" : "Required: NO\n";
-                    if (col.fk) {
-                        note += `Foreign Key: ${col.fk.table}.${col.fk.col}`;
-                    }
-                    
-                    if(!ws[cellRef].c) ws[cellRef].c = [];
-                    ws[cellRef].c.push({a: "Adminer", t: note});
-                    
-                    // Also add a cell comment property if supported by specific build
-                    if(!ws[cellRef].c) ws[cellRef].comment = { a:"Adminer", t: note }; 
-                }
-
-                // Create Data Sheet for Dropdowns
-                const dataWsData = [];
-                const dataSheetName = "Data";
-                
-                // Find max length of fk values to determine rows
-                let maxRows = 0;
-                Object.values(fkDataMap).forEach(arr => maxRows = Math.max(maxRows, arr.length));
-                
-                // Initialize Data Sheet with headers
-                const dataHeaders = [];
-                Object.keys(fkDataMap).forEach(idx => {
-                    dataHeaders.push(`${columns[idx].name} Values`);
-                });
-                if (dataHeaders.length > 0) {
-                    dataWsData.push(dataHeaders);
-                    
-                    for(let r=0; r < maxRows; r++) {
-                        const row = [];
-                        let colCounter = 0;
-                        Object.keys(fkDataMap).forEach(idx => {
-                            row.push(fkDataMap[idx][r] || "");
-                        });
-                        dataWsData.push(row);
-                    }
-                }
-
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, "Template");
-
-                if (dataHeaders.length > 0) {
-                    const dataWs = XLSX.utils.aoa_to_sheet(dataWsData);
-                    XLSX.utils.book_append_sheet(wb, dataWs, dataSheetName);
-                    
-                    // Add Data Validations
-                    // Only works if the sheet writer supports it. 
-                    // Ref: https://docs.sheetjs.com/docs/csf/features/validations
-                    // We map the template column index to the Data sheet column index
-                    let refColIdx = 0;
-                    Object.keys(fkDataMap).forEach(colIdx => {
-                        const valuesCount = fkDataMap[colIdx].length;
-                        if(valuesCount > 0) {
-                            // Column in Data Sheet (0-based)
-                            const dataColChar = XLSX.utils.encode_col(refColIdx); 
-                            const range = `'${dataSheetName}'!$${dataColChar}$2:$${dataColChar}$${valuesCount + 1}`;
-                            
-                            // Apply to Template Sheet Column (e.g., A2:A1000)
-                            const templateColChar = XLSX.utils.encode_col(parseInt(colIdx));
-                            
-                            // Validations
-                            if (!ws['!dataValidation']) ws['!dataValidation'] = [];
-                            ws['!dataValidation'].push({
-                                type: 'list',
-                                allowBlank: true,
-                                operator: 'between', 
-                                formula1: range,
-                                sqref: `${templateColChar}2:${templateColChar}1000`,
-                                showErrorMessage: true,
-                                errorTitle: "Invalid Value",
-                                error: "Please select a value from the list."
-                            });
-                           
-                           refColIdx++;
-                        }
-                    });
-                }
-
-                // Write File
-                XLSX.writeFile(wb, filename);
-
-                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-                toast.fire({ icon: 'success', title: 'Template downloaded!' });
-            } else {
-                throw new Error(result.message || 'Failed to fetch table columns.');
-            }
-        } catch (error) {
-            console.error('Error downloading template:', error);
-            Swal.fire('Error', 'Failed to download template: ' + error.message, 'error');
-        }
-    }
-
-    // --- XLSX Import Logic ---
-    let importDataPayload = null; // Store context for confirm
-
-    document.addEventListener('DOMContentLoaded', () => {
-        const excelImportForm = document.getElementById('excelImportForm');
-        if (excelImportForm) {
-            excelImportForm.addEventListener('submit', handleExcelImport);
-        }
-    });
-
-    function updateImportStatus(message, type = 'info') {
-        const statusDiv = document.getElementById('importStatus');
-        if (statusDiv) {
-            statusDiv.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
-        }
-    }
-
-    async function handleExcelImport(event) {
-        event.preventDefault();
-        updateImportStatus('Reading Excel file...', 'info');
-
-        const fileInput = document.getElementById('excelFile');
-        const file = fileInput.files[0];
-        if (!file) {
-            updateImportStatus('Please select an Excel file.', 'danger');
-            return;
-        }
-
-        const tableName = event.target.querySelector('input[name="table"]').value;
-        const importType = event.target.querySelector('input[name="importType"]:checked').value;
-        const primaryKeyCol = document.getElementById('primaryKeyCol').value;
-        const truncateTable = document.getElementById('truncateTable').checked;
-
-        if ((importType === 'update' || importType === 'upsert') && !primaryKeyCol) {
-            updateImportStatus('Primary Key Column is required for Update/Upsert import types.', 'danger');
-            return;
-        }
-
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, { type: 'array' });
-                const firstSheetName = workbook.SheetNames[0];
-                const worksheet = workbook.Sheets[firstSheetName];
-                
-                // Convert sheet to JSON. header:1 means first row is header.
-                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-                if (jsonData.length < 2) {
-                    updateImportStatus('Excel file is empty or only contains headers.', 'danger');
-                    return;
-                }
-
-                // Assume first row is headers
-                const headers = jsonData[0];
-                const rowsToImport = jsonData.slice(1); // Data rows
-
-                // Store basic payload info
-                importDataPayload = {
-                    action: 'import_excel',
-                    table: tableName,
-                    importType: importType,
-                    primaryKeyCol: primaryKeyCol,
-                    truncateTable: truncateTable,
-                    headers: headers
-                    // data will be grabbed from table on confirm
-                };
-
-                renderPreviewTable(headers, rowsToImport);
-                updateImportStatus('Preview loaded. Review data below before confirming.', 'success');
-
-            } catch (error) {
-                console.error('Error during Excel import:', error);
-                updateImportStatus(`An error occurred during import: ${error.message}`, 'danger');
-            }
-        };
-        reader.readAsArrayBuffer(file);
-    }
-
-    function renderPreviewTable(headers, data) {
-        const container = document.getElementById('importPreviewContainer');
-        const table = document.getElementById('previewTable');
-        const thead = table.querySelector('thead');
-        const tbody = table.querySelector('tbody');
-
-        container.style.display = 'block';
-        thead.innerHTML = '';
-        tbody.innerHTML = '';
-
-        // Headers
-        const trHead = document.createElement('tr');
-        headers.forEach(h => {
-            const th = document.createElement('th');
-            th.textContent = h;
-            trHead.appendChild(th);
-        });
-        thead.appendChild(trHead);
-
-        // Body
-        data.forEach(row => {
-            const tr = document.createElement('tr');
-            // Ensure row matches header length
-            for(let i=0; i < headers.length; i++) {
-                const td = document.createElement('td');
-                const val = (row[i] !== undefined && row[i] !== null) ? row[i] : "";
-                td.textContent = val;
-                td.setAttribute('contenteditable', 'true');
-                td.style.border = '1px solid #444'; // Visual cue
-                td.addEventListener('blur', function() {
-                    // Optional: Validation logic here
-                });
-                tr.appendChild(td);
-            }
-            tbody.appendChild(tr);
-        });
-    }
-
-    function cancelImport() {
-        document.getElementById('importPreviewContainer').style.display = 'none';
-        updateImportStatus('Import cancelled.');
-        importDataPayload = null;
-    }
-
-    async function confirmImport() {
-        if(!importDataPayload) return;
-
-        updateImportStatus('Sending data to server...', 'info');
-        
-        // Scrape data from table
-        const table = document.getElementById('previewTable');
-        const rows = table.querySelectorAll('tbody tr');
-        const finalData = [];
-
-        rows.forEach(tr => {
-            const rowData = [];
-            tr.querySelectorAll('td').forEach(td => {
-                rowData.push(td.textContent); // Text content from contenteditable
-            });
-            finalData.push(rowData);
-        });
-
-        importDataPayload.data = finalData;
-
-        try {
-            const response = await fetch('?', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json' 
-                },
-                body: JSON.stringify(importDataPayload)
-            });
-
-            // Handle non-JSON responses (fatal errors)
-            const text = await response.text();
-            let result;
-            try {
-                result = JSON.parse(text);
-            } catch (e) {
-                throw new Error('Server returned invalid JSON: ' + text.substring(0, 100) + '...');
-            }
-
-            if (result.success) {
-                updateImportStatus(`Import successful! ${result.insertedRows || 0} inserted, ${result.updatedRows || 0} updated.`, 'success');
-                document.getElementById('importPreviewContainer').style.display = 'none';
-            } else {
-                updateImportStatus(`Import failed: ${result.message || 'Unknown error.'}`, 'danger');
-            }
-
-        } catch (error) {
-            console.error('Error sending import data:', error);
-            updateImportStatus(`An error occurred: ${error.message}`, 'danger');
-        }
-    }
-</script>
         <div class="setup-card">
             <h1><i class="fas fa-database"></i> Adminer Setup</h1>
             <?php if ($error): ?><div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div><?php endif; ?>
@@ -3043,15 +1893,32 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'export') {
         $exportTable = $_POST['table'] ?? null; // If null, export all
         $format = $_POST['format'] ?? 'sql';
-        $filename = ($exportTable ? $exportTable : $_SESSION['db_name']) . "_" . date("Y-m-d_H-i-s");
+        $dbMode = $_SESSION['db_mode'] ?? 'sql';
+        
+        // Determine filename
+        if ($dbMode === 'json') {
+            $filename = ($exportTable ? $exportTable : 'json_export') . "_" . date("Y-m-d_H-i-s");
+        } elseif ($dbMode === 'sqlite') {
+            $filename = ($exportTable ? $exportTable : 'sqlite_export') . "_" . date("Y-m-d_H-i-s");
+        } else {
+            $filename = ($exportTable ? $exportTable : $_SESSION['db_name']) . "_" . date("Y-m-d_H-i-s");
+        }
 
         if ($format === 'csv') {
             header('Content-Type: text/csv');
             header("Content-disposition: attachment; filename=\"$filename.csv\"");
             $out = fopen('php://output', 'w');
             
-            // Only support single table export for CSV for simplicity
-            if ($exportTable) {
+            // Support JSON, SQLite, and SQL modes
+            if ($dbMode === 'json' && $exportTable) {
+                $data = $jsonDb->select($exportTable);
+                if (!empty($data)) {
+                    fputcsv($out, array_keys($data[0]));
+                    foreach ($data as $row) {
+                        fputcsv($out, $row);
+                    }
+                }
+            } elseif ($exportTable) {
                 $stmt = $pdo->query("SELECT * FROM `$exportTable`");
                 $first = true;
                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -3068,11 +1935,60 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             header("Content-disposition: attachment; filename=\"$filename.json\"");
             
             $data = [];
-            if ($exportTable) {
+            if ($dbMode === 'json' && $exportTable) {
+                $data = $jsonDb->select($exportTable);
+            } elseif ($exportTable) {
                 $stmt = $pdo->query("SELECT * FROM `$exportTable`");
                 $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
             echo json_encode($data, JSON_PRETTY_PRINT);
+        } elseif ($format === 'xlsx') {
+            // Excel export - support all modes
+            // Using simple XML format compatible with Excel
+            
+            $data = [];
+            if ($dbMode === 'json' && $exportTable) {
+                $data = $jsonDb->select($exportTable);
+            } elseif ($exportTable) {
+                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+            
+            if (!empty($data)) {
+                header('Content-Type: application/vnd.ms-excel');
+                header("Content-Disposition: attachment; filename=\"$filename.xls\"");
+                
+                echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+                echo '<?mso-application progid="Excel.Sheet"?>' . "\n";
+                echo '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"' . "\n";
+                echo ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' . "\n";
+                echo '<Worksheet ss:Name="' . htmlspecialchars($exportTable ?: 'Sheet1') . '">' . "\n";
+                echo '<Table>' . "\n";
+                
+                // Header row
+                $header = array_keys($data[0]);
+                echo '<Row>' . "\n";
+                foreach ($header as $col) {
+                    echo '<Cell><Data ss:Type="String">' . htmlspecialchars($col) . '</Data></Cell>' . "\n";
+                }
+                echo '</Row>' . "\n";
+                
+                // Data rows
+                foreach ($data as $row) {
+                    echo '<Row>' . "\n";
+                    foreach ($row as $val) {
+                        $type = is_numeric($val) ? 'Number' : 'String';
+                        $value = htmlspecialchars($val ?? '');
+                        echo '<Cell><Data ss:Type="' . $type . '">' . $value . '</Data></Cell>' . "\n";
+                    }
+                    echo '</Row>' . "\n";
+                }
+                
+                echo '</Table>' . "\n";
+                echo '</Worksheet>' . "\n";
+                echo '</Workbook>';
+            }
+            exit;
         } else {
             // SQL EXPORT (Default)
             header('Content-Type: application/octet-stream');
@@ -4254,8 +3170,58 @@ if ($is_logged_in && $currentTable) {
             $tableColumns = [];
             $tableData = [];
         }
-    } elseif (isset($pdo)) {
-        // SQL Mode
+    } elseif (($_SESSION['db_mode'] ?? 'sql') === 'sqlite' && isset($pdo)) {
+        // SQLite Mode
+        $stmt = $pdo->query("PRAGMA table_info(`$currentTable`)");
+        $pragmaResult = $stmt->fetchAll();
+        
+        // Convert SQLite PRAGMA result to MySQL DESCRIBE format
+        $tableStructure = [];
+        foreach ($pragmaResult as $col) {
+            $tableStructure[] = [
+                'Field' => $col['name'],
+                'Type' => $col['type'],
+                'Null' => $col['notnull'] ? 'NO' : 'YES',
+                'Key' => $col['pk'] ? 'PRI' : '',
+                'Default' => $col['dflt_value'],
+                'Extra' => ''
+            ];
+        }
+        $tableColumns = array_column($tableStructure, 'Field');
+
+        if ($view === 'data') {
+            $sql = "SELECT * FROM `$currentTable`";
+            $params = [];
+            
+            if ($searchVal !== '') {
+                $op = '=';
+                $val = $searchVal;
+                
+                if ($searchOp === 'LIKE') {
+                    $op = 'LIKE';
+                    $val = "%$searchVal%";
+                } elseif (in_array($searchOp, ['=', '!=', '>', '<', '>=', '<='])) {
+                    $op = $searchOp;
+                }
+                
+                if ($searchColumn && in_array($searchColumn, $tableColumns)) {
+                    $sql .= " WHERE `$searchColumn` $op ?";
+                    $params[] = $val;
+                }
+            }
+            
+            if ($orderBy && in_array($orderBy, $tableColumns)) {
+                $sql .= " ORDER BY `$orderBy` " . ($orderDir === 'DESC' ? 'DESC' : 'ASC');
+            }
+            
+            $sql .= " LIMIT $limit OFFSET $offset";
+            
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $tableData = $stmt->fetchAll();
+        }
+    } elseif (($_SESSION['db_mode'] ?? 'sql') === 'sql' && isset($pdo)) {
+        // SQL Mode (MySQL/MariaDB)
         $stmt = $pdo->query("DESCRIBE `$currentTable`");
         $tableStructure = $stmt->fetchAll();
         $tableColumns = array_column($tableStructure, 'Field');
@@ -4738,6 +3704,1156 @@ let advancedFilters = null;
             }
         }
     </script>
+    <script>
+    // Global SweetAlert Helpers
+    function saConfirmLink(e, text) {
+        e.preventDefault();
+        const href = e.currentTarget.getAttribute('href');
+        Swal.fire({
+            title: 'Are you sure?',
+            text: text,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#3085d6',
+            cancelButtonColor: '#d33',
+            confirmButtonText: 'Yes, proceed!'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                window.location.href = href;
+            }
+        });
+    }
+
+    function saConfirmForm(e, text) {
+        e.preventDefault();
+        const form = e.target;
+        Swal.fire({
+            title: 'Are you sure?',
+            text: text,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33', // Red for destructive actions
+            cancelButtonColor: '#3085d6',
+            confirmButtonText: 'Yes, do it!'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                form.submit();
+            }
+        });
+    }
+
+    // --- THEME TOGGLE ---
+    function toggleTheme() {
+        const root = document.documentElement;
+        const current = root.getAttribute('data-theme');
+        const next = current === 'light' ? 'dark' : 'light';
+        root.setAttribute('data-theme', next);
+        localStorage.setItem('adminer_theme', next);
+        updateThemeColors(next);
+    }
+
+    function updateThemeColors(theme) {
+        const root = document.documentElement;
+        if (theme === 'light') {
+            root.style.setProperty('--bg-body', '#f5f5f5');
+            root.style.setProperty('--bg-sidebar', '#ffffff');
+            root.style.setProperty('--bg-card', '#ffffff');
+            root.style.setProperty('--bg-hover', '#f0f0f0');
+            root.style.setProperty('--bg-input', '#ffffff');
+            root.style.setProperty('--border-color', '#dddddd');
+            root.style.setProperty('--text-primary', '#333333');
+            root.style.setProperty('--text-secondary', '#666666');
+            root.style.setProperty('--text-primary', '#333333');
+            root.style.setProperty('--dark-gray', '#ccc');
+        } else {
+            // Revert to dark defaults
+            root.style.setProperty('--bg-body', '#050505');
+            root.style.setProperty('--bg-sidebar', '#0f0f0f');
+            root.style.setProperty('--bg-card', '#141414');
+            root.style.setProperty('--bg-hover', '#1f1f1f');
+            root.style.setProperty('--bg-input', '#1a1a1a');
+            root.style.setProperty('--border-color', '#333333');
+            root.style.setProperty('--text-primary', '#e0e0e0');
+            root.style.setProperty('--text-secondary', '#888888');
+            root.style.setProperty('--dark-gray', '#222');
+        }
+    }
+    
+    // Init Theme
+    const savedTheme = localStorage.getItem('adminer_theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    updateThemeColors(savedTheme);
+
+    // --- BULK ACTIONS (DATA VIEW) ---
+    function updateBulkBtn() {
+        const checked = document.querySelectorAll('.row-checkbox:checked').length > 0;
+        const select = document.getElementById('bulkActionSelect');
+        const btn = document.getElementById('bulkApplyBtn');
+        if(select && btn) {
+            select.style.display = checked ? 'block' : 'none';
+            btn.style.display = checked ? 'block' : 'none';
+        }
+    }
+
+    function toggleSelectAll(source) {
+        document.querySelectorAll('.row-checkbox').forEach(cb => {
+            cb.checked = source.checked;
+        });
+        updateBulkBtn();
+    }
+
+    function submitBulkAction() {
+        const select = document.getElementById('bulkActionSelect');
+        const form = document.getElementById('bulkForm');
+        const action = select.value;
+        
+        if (!action) return;
+        
+        if (action === 'delete') {
+            form.querySelector('input[name="action"]').value = 'bulk_delete';
+            Swal.fire({
+                title: 'Delete selected rows?',
+                text: "You won't be able to revert this!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Yes, delete!'
+            }).then((result) => {
+                if (result.isConfirmed) form.submit();
+            });
+        } else {
+            // Export actions
+            form.querySelector('input[name="action"]').value = action;
+            form.submit(); // Direct submit for download
+        }
+    }
+
+    // --- SIDEBAR TOGGLE & PERSISTENCE ---
+    const sidebar = document.getElementById('sidebar');
+    const mainContent = document.querySelector('.main-content');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const toggleIcon = sidebarToggle.querySelector('i');
+    const SIDEBAR_STORAGE_KEY = 'adminer_sidebar_collapsed';
+
+    function setSidebarState(collapsed) {
+        if (collapsed) {
+            sidebar.classList.add('collapsed');
+            mainContent.classList.add('sidebar-collapsed');
+            toggleIcon.classList.remove('fa-angle-left');
+            toggleIcon.classList.add('fa-angle-right');
+        } else {
+            sidebar.classList.remove('collapsed');
+            mainContent.classList.remove('sidebar-collapsed');
+            toggleIcon.classList.remove('fa-angle-right');
+            toggleIcon.classList.add('fa-angle-left');
+        }
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed);
+    }
+
+    // Initialize Sidebar State
+    const storedState = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    const isSmallScreen = window.innerWidth <= 768;
+    // Default: Collapsed on small screens, Expanded on large (unless stored)
+    if (storedState === 'true' || (storedState === null && isSmallScreen)) {
+        setSidebarState(true);
+    } else {
+        setSidebarState(false);
+    }
+
+    sidebarToggle.addEventListener('click', () => {
+        setSidebarState(!sidebar.classList.contains('collapsed'));
+    });
+
+    // --- TABLE SEARCH (Sidebar) ---
+    const tableSearchInput = document.getElementById('tableSearch');
+    if (tableSearchInput) {
+        const navList = document.querySelector('.nav-list');
+        const tableItems = navList.querySelectorAll('.nav-item');
+        tableSearchInput.addEventListener('keyup', function() {
+            const searchTerm = this.value.toLowerCase();
+            tableItems.forEach(item => {
+                // Skip dashboard link
+                if (item.getAttribute('href') === '?') return;
+                const tableName = item.textContent.toLowerCase();
+                item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
+            });
+        });
+    }
+
+    // --- REALTIME PAGE FILTER ---
+    const pageFilterInput = document.getElementById('pageFilterInput');
+    if (pageFilterInput) {
+        pageFilterInput.addEventListener('keyup', function() {
+            const term = this.value.toLowerCase();
+            const rows = document.querySelectorAll('tbody tr');
+            rows.forEach(row => {
+                // Ignore rows that are just 'No data' messages
+                if (row.cells.length === 1 && row.textContent.trim() === 'No data found') return;
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(term) ? '' : 'none';
+            });
+        });
+    }
+
+    // --- COLUMN VISIBILITY ---
+    // Inject CSS for the show class
+    const style = document.createElement('style');
+    style.innerHTML = '#colToggleDropdown.show { display: block !important; }';
+    document.head.appendChild(style);
+
+    function initColumnVisibility() {
+        const dropdown = document.getElementById('colToggleDropdown');
+        if (!dropdown) return;
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const tableName = urlParams.get('table');
+        if (!tableName) return;
+        
+        const storageKey = 'adminer_hidecols_' + tableName;
+        let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
+
+        // Get all headers that have data-col attribute
+        const headers = document.querySelectorAll('th[data-col]');
+        
+        headers.forEach(th => {
+            const colName = th.getAttribute('data-col');
+            const isHidden = hiddenCols.includes(colName);
+            
+            // Create Checkbox UI
+            const div = document.createElement('div');
+            div.style.padding = '4px 0';
+            div.innerHTML = `
+                <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
+                    <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
+                    <span style="font-size:0.9rem;">${colName}</span>
+                </label>
+            `;
+            dropdown.appendChild(div);
+            
+            const checkbox = div.querySelector('input');
+            checkbox.addEventListener('change', (e) => {
+                toggleColumn(colName, e.target.checked);
+            });
+
+            // Apply initial state
+            if (isHidden) {
+                toggleColumn(colName, false);
+            }
+        });
+
+        function toggleColumn(colName, show) {
+            // Toggle Header
+            const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
+            if (th) th.style.display = show ? '' : 'none';
+
+            // Toggle Cells
+            const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
+            cells.forEach(td => td.style.display = show ? '' : 'none');
+            
+            // Update Storage
+            if (show) {
+                hiddenCols = hiddenCols.filter(c => c !== colName);
+            } else {
+                if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
+            }
+            localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
+        }
+    }
+    initColumnVisibility();
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(event) {
+        const dropdown = document.getElementById('colToggleDropdown');
+        const button = document.querySelector('button[onclick*="colToggleDropdown"]');
+        if (dropdown && button && !dropdown.contains(event.target) && !button.contains(event.target)) {
+            dropdown.classList.remove('show');
+        }
+    });
+
+    if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+    }
+
+    // Bulk table selection (init after DOM ready)
+    function updateSelectAllState() {
+        const selectAll = document.getElementById('selectAllTables');
+        if (!selectAll) return;
+        const cbs = Array.from(document.querySelectorAll('.table-checkbox'));
+        const checkedCount = cbs.filter(cb => cb.checked).length;
+        if (checkedCount === 0) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        } else if (checkedCount === cbs.length) {
+            selectAll.checked = true;
+            selectAll.indeterminate = false;
+        } else {
+            selectAll.checked = false;
+            selectAll.indeterminate = true;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const selectAllTables = document.getElementById('selectAllTables');
+        if (selectAllTables) {
+            selectAllTables.addEventListener('change', function() {
+                document.querySelectorAll('.table-checkbox').forEach(cb => cb.checked = selectAllTables.checked);
+            });
+        }
+        // Ensure individual checkboxes update the master checkbox state
+        document.querySelectorAll('.table-checkbox').forEach(cb => cb.addEventListener('change', updateSelectAllState));
+        // initialize state
+        updateSelectAllState();
+    });
+
+    function getSelectedTablesCount() {
+        return Array.from(document.querySelectorAll('.table-checkbox')).filter(cb => cb.checked).length;
+    }
+
+    window.confirmBulkTables = function() {
+        const form = document.getElementById('bulkTablesForm');
+        if (!form) return;
+        const action = form.querySelector('select[name=\"bulk_operation\"]').value;
+        const selectedCount = getSelectedTablesCount();
+        if (!action) {
+            Swal.fire('Missing', 'Pilih aksi bulk terlebih dahulu.', 'info');
+            return;
+        }
+        if (selectedCount === 0) {
+            Swal.fire('No tables', 'Pilih minimal satu tabel.', 'info');
+            return;
+        }
+        const actionLabel = {
+            drop: 'Drop',
+            truncate: 'Truncate',
+            optimize: 'Optimize',
+            export: 'Export'
+        }[action] || action;
+        Swal.fire({
+            title: `Confirm ${actionLabel}?`,
+            text: `Action will run on ${selectedCount} table(s).`,
+            icon: action === 'drop' || action === 'truncate' ? 'warning' : 'question',
+            showCancelButton: true,
+            confirmButtonColor: action === 'drop' ? '#d33' : '#3085d6',
+            cancelButtonColor: '#666',
+            confirmButtonText: 'Yes, run it'
+        }).then(result => {
+            if (result.isConfirmed) {
+                form.submit();
+            }
+        });
+    }
+
+    // --- CREATE TABLE HELPER ---
+    let colIndex = 0;
+    function addColRow() {
+        const tbody = document.getElementById('colList');
+        if (!tbody) return;
+        const index = colIndex++;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><input type="text" name="fields[${index}][name]" class="form-control" required placeholder="Column Name"></td>
+            <td>
+                <select name="fields[${index}][type]" class="form-select" style="background:var(--bg-input);">
+                    <option value="INT">INT</option>
+                    <option value="VARCHAR">VARCHAR</option>
+                    <option value="TEXT">TEXT</option>
+                    <option value="DATE">DATE</option>
+                    <option value="DATETIME">DATETIME</option>
+                    <option value="BOOLEAN">BOOLEAN</option>
+                    <option value="DECIMAL">DECIMAL</option>
+                    <option value="FLOAT">FLOAT</option>
+                    <option value="JSON">JSON</option>
+                </select>
+            </td>
+            <td><input type="text" name="fields[${index}][length]" class="form-control" placeholder="Len/Val"></td>
+            <td>
+                <select name="fields[${index}][default]" class="form-select" style="background:var(--bg-input);" onchange="toggleDefaultVal(this)">
+                    <option value="NONE">None</option>
+                    <option value="NULL">NULL</option>
+                    <option value="CURRENT_TIMESTAMP">Curr Timestamp</option>
+                    <option value="USER_DEFINED">As Defined:</option>
+                </select>
+                <input type="text" name="fields[${index}][default_val]" class="form-control" style="display:none; margin-top:5px;" placeholder="Value">
+            </td>
+            <td>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][null]" value="1"> Null</label>
+                    <label style="color:var(--text-primary); cursor:pointer;"><input type="checkbox" name="fields[${index}][ai]" value="1"> AI</label>
+                    <select name="fields[${index}][index]" class="form-select" style="width:auto; padding:2px; background:var(--bg-input);">
+                        <option value="">- Index -</option>
+                        <option value="PRI">Primary</option>
+                        <option value="UNI">Unique</option>
+                        <option value="IDX">Index</option>
+                    </select>
+                </div>
+            </td>
+            <td><button type="button" class="btn btn-danger" onclick="this.closest('tr').remove()"><i class="fas fa-times"></i></button></td>
+        `;
+        tbody.appendChild(tr);
+        
+        // Initialize TomSelect on new selects
+        tr.querySelectorAll('select.form-select').forEach(el => initTomSelect(el));
+    }
+    
+    function toggleDefaultVal(select) {
+        const input = select.nextElementSibling;
+        if(input) input.style.display = select.value === 'USER_DEFINED' ? 'block' : 'none';
+    }
+    
+    // Auto-add first row if table is empty on load
+    document.addEventListener('DOMContentLoaded', () => {
+        if(document.getElementById('colList') && document.getElementById('colList').children.length === 0) {
+            addColRow();
+        }
+    });
+
+    // Helper to init TomSelect with correct settings
+    function initTomSelect(el) {
+        if (el.tomselect) return; // Prevent double initialization
+        if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
+            new TomSelect(el, {
+                plugins: ['clear_button'],
+                maxOptions: 50,
+                sortField: { field: "text", direction: "asc" },
+                dropdownParent: 'body', // Fixes overflow/clipping issues
+                onDropdownOpen: function() {
+                    // Ensure z-index is higher than anything else
+                    const wrapper = this.dropdown;
+                    if(wrapper) wrapper.style.zIndex = "99999";
+                }
+            });
+        }
+    }
+
+    // --- COPY STRUCTURE FUNCTIONS ---
+    function copyAllTablesStructure() {
+        const formData = new FormData();
+        formData.append('action', 'get_all_tables_structure');
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                copyToClipboard(data.sql);
+            } else {
+                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            Swal.fire('Error', 'Network error', 'error');
+        });
+    }
+
+    function copyTableStructure(tableName) {
+        const formData = new FormData();
+        formData.append('action', 'get_table_structure');
+        formData.append('table', tableName);
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                copyToClipboard(data.sql);
+            } else {
+                Swal.fire('Error', data.message || 'Failed to fetch structure', 'error');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            Swal.fire('Error', 'Network error', 'error');
+        });
+    }
+
+    // Initialize TomSelect for Searchable Dropdowns (Global)
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('form select.form-select').forEach((el) => {
+            initTomSelect(el);
+        });
+    });
+
+    // --- INLINE EDITING ---
+    function makeCellEditable(td) {
+        if (td.querySelector('input')) return; // Already editing
+        
+        const originalContent = td.innerText;
+        const originalHtml = td.innerHTML;
+        const pk = td.getAttribute('data-pk');
+        const col = td.getAttribute('data-col');
+        const table = td.closest('table').getAttribute('data-table');
+        
+        if(!pk || !col) return;
+
+        td.classList.add('editing');
+        td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
+        td.querySelector('input').focus();
+    }
+
+    function saveCellData(input, table, col, pk, original) {
+        const newVal = input.value;
+        const td = input.parentElement;
+        
+        if (newVal === original) {
+            td.innerText = original;
+            td.classList.remove('editing');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('action', 'update_cell');
+        formData.append('table', table);
+        formData.append('column', col);
+        formData.append('id', pk);
+        formData.append('value', newVal);
+
+        fetch('?', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                td.innerText = newVal;
+                td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
+                setTimeout(() => td.style.backgroundColor = '', 1000);
+                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                toast.fire({ icon: 'success', title: 'Saved' });
+            } else {
+                td.innerHTML = original; // Revert
+                Swal.fire('Error', data.message || 'Update failed', 'error');
+            }
+        })
+        .catch(err => {
+            td.innerHTML = original;
+            Swal.fire('Error', 'Network error', 'error');
+        })
+        .finally(() => {
+            td.classList.remove('editing');
+        });
+    }
+
+    // ===== GENERATOR TOOLS LOGIC =====
+    function openToolsModal() {
+        Swal.fire({
+            title: '<span style="color:var(--text-primary)">Generator Tools</span>',
+            html: `
+                <div class="swal2-tabs">
+                    <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
+                    <button onclick="switchToolTab(this, 'tool-md5')">MD5</button>
+                    <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
+                    <button onclick="switchToolTab(this, 'tool-uuid')">UUID</button>
+                    <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
+                </div>
+
+                <div id="tool-php-hash" class="swal2-tab-content active">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
+                        Generate hash PHP (<b>Bcrypt</b>) sesuai format <code>$2y$10$...</code>. Cocok untuk database MySQL Native PHP atau Laravel.
+                    </p>
+                    
+                    <div class="tool-row">
+                        <input type="text" id="phpHashInput" class="swal2-input" placeholder="Masukkan password plain text..." autocomplete="off">
+                    </div>
+                    
+                    <div class="tool-row">
+                        <span class="tool-label">Result:</span>
+                        <div id="phpHashResult" class="tool-result" style="flex:1;">Hash will appear here...</div>
+                    </div>
+
+                    <div style="margin-top:15px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- MD5 GENERATOR -->
+                <div id="tool-md5" class="swal2-tab-content">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
+                        Generate <b>MD5</b> Hash. (Not recommended for passwords).
+                    </p>
+                    
+                    <div class="tool-row">
+                        <input type="text" id="md5Input" class="swal2-input" placeholder="Enter text..." autocomplete="off">
+                    </div>
+                    
+                    <div class="tool-row">
+                        <span class="tool-label">Result:</span>
+                        <div id="md5Result" class="tool-result" style="flex:1;">Hash will appear here...</div>
+                    </div>
+
+                    <div style="margin-top:15px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateMd5()">Generate MD5</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('md5Result').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- HASH GENERATOR -->
+                <div id="tool-hash" class="swal2-tab-content">
+                    <div class="tool-row">
+                        <select id="hashAlgo" class="swal2-select">
+                            <option value="SHA-1">SHA-1</option>
+                            <option value="SHA-256" selected>SHA-256</option>
+                            <option value="SHA-384">SHA-384</option>
+                            <option value="SHA-512">SHA-512</option>
+                        </select>
+                    </div>
+                    <textarea id="hashInput" class="swal2-textarea" placeholder="Enter text to hash..." rows="3"></textarea>
+                    <div class="tool-result" id="hashResult">Hash will appear here...</div>
+                    <div style="margin-top:10px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateHash()">Hash It</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('hashResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- UUID GENERATOR -->
+                <div id="tool-uuid" class="swal2-tab-content">
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">Generate v4 Random UUIDs.</p>
+                    <div class="tool-result" id="uuidResult">Click Generate</div>
+                    <div style="margin-top:10px; text-align:right;">
+                        <button class="swal2-confirm swal2-styled" style="background-color:var(--accent); margin-right:5px;" onclick="generateUUID()">Generate</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('uuidResult').innerText)">Copy</button>
+                    </div>
+                </div>
+
+                <!-- BASE64 ENCODER -->
+                <div id="tool-base64" class="swal2-tab-content">
+                    <textarea id="b64Input" class="swal2-textarea" placeholder="Enter string to encode/decode..." rows="3"></textarea>
+                    <div class="tool-row" style="margin-top:10px;">
+                        <button class="swal2-styled" style="background-color:#444; margin-right:5px;" onclick="doBase64('encode')">Encode</button>
+                        <button class="swal2-styled" style="background-color:#444;" onclick="doBase64('decode')">Decode</button>
+                    </div>
+                    <div class="tool-result" id="b64Result" style="margin-top:10px;">Result...</div>
+                    <div style="text-align:right; margin-top:5px;">
+                         <button class="swal2-styled" style="background-color:#444;" onclick="copyToClipboard(document.getElementById('b64Result').innerText)">Copy</button>
+                    </div>
+                </div>
+            `,
+            showConfirmButton: false,
+            showCloseButton: true,
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal'
+            }
+        });
+    }
+
+    // --- Helper Functions for Tools ---
+    function switchToolTab(btn, targetId) {
+        // Update Buttons
+        const buttons = btn.parentElement.querySelectorAll('button');
+        buttons.forEach(b => b.classList.remove('active', 'active-tab'));
+        btn.classList.add('active');
+        btn.style.color = '#0d6efd';
+        buttons.forEach(b => { if(b !== btn) b.style.color = 'var(--text-secondary)'; });
+
+        // Update Content
+        const contents = document.querySelectorAll('.swal2-tab-content');
+        contents.forEach(c => c.style.display = 'none');
+        document.getElementById(targetId).style.display = 'block';
+    }
+
+    function generatePhpHash() {
+        const pass = document.getElementById('phpHashInput').value;
+        if(!pass) return Swal.showValidationMessage('Password empty');
+        
+        // Use the API endpoint defined at the top of adminer.php
+        fetch('?api=generate_php_hash', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'password=' + encodeURIComponent(pass)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                document.getElementById('phpHashResult').innerText = data.hash;
+            } else {
+                document.getElementById('phpHashResult').innerText = 'Error: ' + data.message;
+            }
+        })
+        .catch(err => {
+            document.getElementById('phpHashResult').innerText = 'Request Failed';
+        });
+    }
+
+    function generateMd5() {
+        const input = document.getElementById('md5Input').value;
+        if(!input) return;
+        
+        fetch('?api=generate_md5', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'input=' + encodeURIComponent(input)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                document.getElementById('md5Result').innerText = data.hash;
+            }
+        });
+    }
+
+    async function generateHash() {
+        const algo = document.getElementById('hashAlgo').value;
+        const text = document.getElementById('hashInput').value;
+        if(!text) return;
+        
+        const msgUint8 = new TextEncoder().encode(text);
+        const hashBuffer = await crypto.subtle.digest(algo, msgUint8);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        document.getElementById('hashResult').innerText = hashHex;
+    }
+
+    function generateUUID() {
+        const uuid = crypto.randomUUID();
+        document.getElementById('uuidResult').innerText = uuid;
+    }
+
+    function doBase64(action) {
+        const input = document.getElementById('b64Input').value;
+        const resEl = document.getElementById('b64Result');
+        try {
+            if(action === 'encode') resEl.innerText = btoa(input);
+            else resEl.innerText = atob(input);
+        } catch(e) {
+            resEl.innerText = 'Invalid Input';
+        }
+    }
+
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            const toast = Swal.mixin({
+                toast: true,
+                position: 'top-end',
+                showConfirmButton: false,
+                timer: 1500,
+                timerProgressBar: true,
+            });
+            toast.fire({ icon: 'success', title: 'Copied!' });
+        });
+    }
+
+    // Media Modal Functions
+    function showImageModal(src) {
+        Swal.fire({
+            imageUrl: src,
+            imageAlt: 'Image Preview',
+            showCloseButton: true,
+            showConfirmButton: false,
+            width: 'auto',
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal',
+                image: 'swal-image-preview'
+            }
+        });
+    }
+
+    function showVideoModal(src) {
+        Swal.fire({
+            html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
+            showCloseButton: true,
+            showConfirmButton: false,
+            width: 'auto',
+            background: 'var(--bg-card)',
+            customClass: {
+                popup: 'dark-modal'
+            }
+        });
+    }
+
+    // --- XLSX Export Logic ---
+    function handleExport(event) {
+        const formatSelect = document.getElementById('exportFormat');
+        if (formatSelect.value === 'xlsx') {
+            event.preventDefault(); // Prevent form submission
+            exportTableAsXLSX();
+            return false;
+        }
+        return true; // Allow other formats to submit normally
+    }
+
+        async function exportTableAsXLSX() {
+
+            const currentTable = "<?= htmlspecialchars($currentTable ?? '') ?>";
+
+            const filename = `${currentTable}_${new Date().toISOString().slice(0,10)}.xlsx`;
+
+    
+
+            try {
+
+                // Fetch full data as JSON using the existing export action
+
+                const formData = new FormData();
+
+                formData.append('action', 'export');
+
+                formData.append('table', currentTable);
+
+                formData.append('format', 'json'); // Request JSON data from the server
+
+            const response = await fetch('?', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const fetchedData = await response.json(); // Parse the JSON response
+            if (fetchedData.length === 0) {
+                Swal.fire('Info', 'No data to export for this table.', 'info');
+                return;
+            }
+            
+            // Create a new workbook
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet(fetchedData); // json to sheet
+
+            // Add the worksheet to the workbook
+            XLSX.utils.book_append_sheet(wb, ws, currentTable);
+            // Write the workbook to an XLSX file and trigger download
+            XLSX.writeFile(wb, filename);
+
+            const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+            toast.fire({ icon: 'success', title: 'Exported to XLSX!' });
+
+        } catch (error) {
+            console.error('Error exporting to XLSX:', error);
+            Swal.fire('Error', 'Failed to export to XLSX: ' + error.message, 'error');
+        }
+    }
+
+    async function downloadExcelTemplate() {
+        const currentTable = "<?= htmlspecialchars($currentTable ?? '') ?>";
+        const filename = `${currentTable}_template.xlsx`;
+
+        try {
+            // Fetch detailed column info
+            const formData = new FormData();
+            formData.append('action', 'get_table_columns');
+            formData.append('table', currentTable);
+
+            const response = await fetch('?', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.json();
+            
+            if (result.success) {
+                const columns = result.columns;
+                
+                // Prepare Headers and Data Sheet
+                const headers = [];
+                const dataSheetRows = []; // Transposed data for validation lists
+                const validations = [];
+                const colWidths = [];
+                
+                // We need to transpose FK values to columns in the Data sheet
+                // But first let's just collect them
+                const fkDataMap = {}; // colIndex -> array of values
+
+                columns.forEach((col, index) => {
+                    let headerName = col.name;
+                    if (col.required) headerName += ' *';
+                    headers.push(headerName);
+                    colWidths.push({ wch: Math.max(headerName.length + 5, 15) });
+
+                    if (col.fk_values && col.fk_values.length > 0) {
+                        fkDataMap[index] = col.fk_values;
+                    }
+                });
+
+                // Create Template Worksheet
+                const ws = XLSX.utils.aoa_to_sheet([headers]);
+                ws['!cols'] = colWidths;
+
+                // Add Comments (Rule Info)
+                // Note: SheetJS Community might strip comments on write, but we try.
+                // If comments fail, we rely on the header '*' and Data sheet.
+                for (let i = 0; i < columns.length; i++) {
+                    const col = columns[i];
+                    const cellRef = XLSX.utils.encode_cell({c: i, r: 0});
+                    
+                    let note = `Type: ${col.type}\n`;
+                    note += col.required ? "Required: YES\n" : "Required: NO\n";
+                    if (col.fk) {
+                        note += `Foreign Key: ${col.fk.table}.${col.fk.col}`;
+                    }
+                    
+                    if(!ws[cellRef].c) ws[cellRef].c = [];
+                    ws[cellRef].c.push({a: "Adminer", t: note});
+                    
+                    // Also add a cell comment property if supported by specific build
+                    if(!ws[cellRef].c) ws[cellRef].comment = { a:"Adminer", t: note }; 
+                }
+
+                // Create Data Sheet for Dropdowns
+                const dataWsData = [];
+                const dataSheetName = "Data";
+                
+                // Find max length of fk values to determine rows
+                let maxRows = 0;
+                Object.values(fkDataMap).forEach(arr => maxRows = Math.max(maxRows, arr.length));
+                
+                // Initialize Data Sheet with headers
+                const dataHeaders = [];
+                Object.keys(fkDataMap).forEach(idx => {
+                    dataHeaders.push(`${columns[idx].name} Values`);
+                });
+                if (dataHeaders.length > 0) {
+                    dataWsData.push(dataHeaders);
+                    
+                    for(let r=0; r < maxRows; r++) {
+                        const row = [];
+                        let colCounter = 0;
+                        Object.keys(fkDataMap).forEach(idx => {
+                            row.push(fkDataMap[idx][r] || "");
+                        });
+                        dataWsData.push(row);
+                    }
+                }
+
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Template");
+
+                if (dataHeaders.length > 0) {
+                    const dataWs = XLSX.utils.aoa_to_sheet(dataWsData);
+                    XLSX.utils.book_append_sheet(wb, dataWs, dataSheetName);
+                    
+                    // Add Data Validations
+                    // Only works if the sheet writer supports it. 
+                    // Ref: https://docs.sheetjs.com/docs/csf/features/validations
+                    // We map the template column index to the Data sheet column index
+                    let refColIdx = 0;
+                    Object.keys(fkDataMap).forEach(colIdx => {
+                        const valuesCount = fkDataMap[colIdx].length;
+                        if(valuesCount > 0) {
+                            // Column in Data Sheet (0-based)
+                            const dataColChar = XLSX.utils.encode_col(refColIdx); 
+                            const range = `'${dataSheetName}'!$${dataColChar}$2:$${dataColChar}$${valuesCount + 1}`;
+                            
+                            // Apply to Template Sheet Column (e.g., A2:A1000)
+                            const templateColChar = XLSX.utils.encode_col(parseInt(colIdx));
+                            
+                            // Validations
+                            if (!ws['!dataValidation']) ws['!dataValidation'] = [];
+                            ws['!dataValidation'].push({
+                                type: 'list',
+                                allowBlank: true,
+                                operator: 'between', 
+                                formula1: range,
+                                sqref: `${templateColChar}2:${templateColChar}1000`,
+                                showErrorMessage: true,
+                                errorTitle: "Invalid Value",
+                                error: "Please select a value from the list."
+                            });
+                           
+                           refColIdx++;
+                        }
+                    });
+                }
+
+                // Write File
+                XLSX.writeFile(wb, filename);
+
+                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                toast.fire({ icon: 'success', title: 'Template downloaded!' });
+            } else {
+                throw new Error(result.message || 'Failed to fetch table columns.');
+            }
+        } catch (error) {
+            console.error('Error downloading template:', error);
+            Swal.fire('Error', 'Failed to download template: ' + error.message, 'error');
+        }
+    }
+
+    // --- XLSX Import Logic ---
+    let importDataPayload = null; // Store context for confirm
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const excelImportForm = document.getElementById('excelImportForm');
+        if (excelImportForm) {
+            excelImportForm.addEventListener('submit', handleExcelImport);
+        }
+    });
+
+    function updateImportStatus(message, type = 'info') {
+        const statusDiv = document.getElementById('importStatus');
+        if (statusDiv) {
+            statusDiv.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+        }
+    }
+
+    async function handleExcelImport(event) {
+        event.preventDefault();
+        updateImportStatus('Reading Excel file...', 'info');
+
+        const fileInput = document.getElementById('excelFile');
+        const file = fileInput.files[0];
+        if (!file) {
+            updateImportStatus('Please select an Excel file.', 'danger');
+            return;
+        }
+
+        const tableName = event.target.querySelector('input[name="table"]').value;
+        const importType = event.target.querySelector('input[name="importType"]:checked').value;
+        const primaryKeyCol = document.getElementById('primaryKeyCol').value;
+        const truncateTable = document.getElementById('truncateTable').checked;
+
+        if ((importType === 'update' || importType === 'upsert') && !primaryKeyCol) {
+            updateImportStatus('Primary Key Column is required for Update/Upsert import types.', 'danger');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                // Convert sheet to JSON. header:1 means first row is header.
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+                if (jsonData.length < 2) {
+                    updateImportStatus('Excel file is empty or only contains headers.', 'danger');
+                    return;
+                }
+
+                // Assume first row is headers
+                const headers = jsonData[0];
+                const rowsToImport = jsonData.slice(1); // Data rows
+
+                // Store basic payload info
+                importDataPayload = {
+                    action: 'import_excel',
+                    table: tableName,
+                    importType: importType,
+                    primaryKeyCol: primaryKeyCol,
+                    truncateTable: truncateTable,
+                    headers: headers
+                    // data will be grabbed from table on confirm
+                };
+
+                renderPreviewTable(headers, rowsToImport);
+                updateImportStatus('Preview loaded. Review data below before confirming.', 'success');
+
+            } catch (error) {
+                console.error('Error during Excel import:', error);
+                updateImportStatus(`An error occurred during import: ${error.message}`, 'danger');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    function renderPreviewTable(headers, data) {
+        const container = document.getElementById('importPreviewContainer');
+        const table = document.getElementById('previewTable');
+        const thead = table.querySelector('thead');
+        const tbody = table.querySelector('tbody');
+
+        container.style.display = 'block';
+        thead.innerHTML = '';
+        tbody.innerHTML = '';
+
+        // Headers
+        const trHead = document.createElement('tr');
+        headers.forEach(h => {
+            const th = document.createElement('th');
+            th.textContent = h;
+            trHead.appendChild(th);
+        });
+        thead.appendChild(trHead);
+
+        // Body
+        data.forEach(row => {
+            const tr = document.createElement('tr');
+            // Ensure row matches header length
+            for(let i=0; i < headers.length; i++) {
+                const td = document.createElement('td');
+                const val = (row[i] !== undefined && row[i] !== null) ? row[i] : "";
+                td.textContent = val;
+                td.setAttribute('contenteditable', 'true');
+                td.style.border = '1px solid #444'; // Visual cue
+                td.addEventListener('blur', function() {
+                    // Optional: Validation logic here
+                });
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        });
+    }
+
+    function cancelImport() {
+        document.getElementById('importPreviewContainer').style.display = 'none';
+        updateImportStatus('Import cancelled.');
+        importDataPayload = null;
+    }
+
+    async function confirmImport() {
+        if(!importDataPayload) return;
+
+        updateImportStatus('Sending data to server...', 'info');
+        
+        // Scrape data from table
+        const table = document.getElementById('previewTable');
+        const rows = table.querySelectorAll('tbody tr');
+        const finalData = [];
+
+        rows.forEach(tr => {
+            const rowData = [];
+            tr.querySelectorAll('td').forEach(td => {
+                rowData.push(td.textContent); // Text content from contenteditable
+            });
+            finalData.push(rowData);
+        });
+
+        importDataPayload.data = finalData;
+
+        try {
+            const response = await fetch('?', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json' 
+                },
+                body: JSON.stringify(importDataPayload)
+            });
+
+            // Handle non-JSON responses (fatal errors)
+            const text = await response.text();
+            let result;
+            try {
+                result = JSON.parse(text);
+            } catch (e) {
+                throw new Error('Server returned invalid JSON: ' + text.substring(0, 100) + '...');
+            }
+
+            if (result.success) {
+                updateImportStatus(`Import successful! ${result.insertedRows || 0} inserted, ${result.updatedRows || 0} updated.`, 'success');
+                document.getElementById('importPreviewContainer').style.display = 'none';
+            } else {
+                updateImportStatus(`Import failed: ${result.message || 'Unknown error.'}`, 'danger');
+            }
+
+        } catch (error) {
+            console.error('Error sending import data:', error);
+            updateImportStatus(`An error occurred: ${error.message}`, 'danger');
+        }
+    }
+</script>
     <style>
         :root {
             --bg-body: #050505;
