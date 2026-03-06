@@ -2686,26 +2686,39 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        $pdo->beginTransaction();
         $insertedRows = 0;
         $updatedRows = 0;
 
         try {
             if ($truncateTable) {
+                // Disable FK checks to allow truncate
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
                 $pdo->exec("TRUNCATE TABLE `$tableName`");
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
             }
 
-            // Fetch actual column names from the database
+            $pdo->beginTransaction();
+
+            // Fetch actual column names and types from the database
             $stmt = $pdo->query("DESCRIBE `$tableName`");
-            $dbColumns = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            $dbColumnsInfo = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $dbColumns = array_column($dbColumnsInfo, 'Field');
+            $dbColumnTypes = [];
+            foreach ($dbColumnsInfo as $colInfo) {
+                $dbColumnTypes[$colInfo['Field']] = strtolower((string)$colInfo['Type']);
+            }
             
             // Map Excel headers to database columns
             $mappedHeaders = [];
             foreach ($headers as $excelCol) {
                 // Find a case-insensitive match in dbColumns
                 $found = false;
+                // Strip special characters like '*' often used in templates for required fields
+                $cleanExcel = strtolower(preg_replace('/[^a-z0-9]/i', '', (string)$excelCol));
+                
                 foreach ($dbColumns as $dbCol) {
-                    if (strcasecmp($excelCol, $dbCol) === 0) {
+                    $cleanDb = strtolower(preg_replace('/[^a-z0-9]/i', '', (string)$dbCol));
+                    if ($cleanExcel === $cleanDb || strcasecmp(trim((string)$excelCol), trim((string)$dbCol)) === 0) {
                         $mappedHeaders[] = $dbCol; // Use the actual DB column name
                         $found = true;
                         break;
@@ -2722,7 +2735,36 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newRow = [];
                 foreach ($mappedHeaders as $index => $dbCol) {
                     if ($dbCol !== null) {
-                        $newRow[$dbCol] = $row[$index] ?? null;
+                        $val = $row[$index] ?? null;
+
+                        // Handle Excel Serial Date conversion
+                        // Excel serials are numbers, usually between 10000 and 60000 for current ranges
+                        if ($val !== null && is_numeric($val) && $val > 0) {
+                            $type = $dbColumnTypes[$dbCol] ?? '';
+                            if (strpos($type, 'date') !== false || strpos($type, 'timestamp') !== false) {
+                                // Simple check: if it looks like a serial number (e.g. 39617)
+                                // and the destination is a date/time column
+                                if (preg_match('/^\d+(\.\d+)?$/', (string)$val)) {
+                                    try {
+                                        $fVal = (float)$val;
+                                        $base = new DateTime('1899-12-30');
+                                        $days = (int)$fVal;
+                                        $seconds = round(($fVal - $days) * 86400);
+                                        $base->modify("+$days days");
+                                        if ($seconds > 0) {
+                                            $base->modify("+$seconds seconds");
+                                            $val = $base->format(strpos($type, 'datetime') !== false ? 'Y-m-d H:i:s' : 'Y-m-d');
+                                        } else {
+                                            $val = $base->format('Y-m-d');
+                                        }
+                                    } catch (Exception $e) {
+                                        // Fallback to original value if conversion fails
+                                    }
+                                }
+                            }
+                        }
+
+                        $newRow[$dbCol] = $val;
                     }
                 }
                 if (!empty($newRow)) {
@@ -2731,49 +2773,75 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (empty($filteredData)) {
-                $pdo->rollBack();
+                if ($pdo->inTransaction()) $pdo->rollBack();
                 echo json_encode(['success' => false, 'message' => 'No mappable data rows found after header matching.']);
                 exit;
             }
 
-            $placeholders = implode(', ', array_fill(0, count($mappedHeaders), '?'));
-            $cols = implode('`, `', array_filter($mappedHeaders)); // Only use valid mapped columns
+            $validMappedHeaders = array_values(array_filter($mappedHeaders));
+            $placeholders = implode(', ', array_fill(0, count($validMappedHeaders), '?'));
+            $cols = implode('`, `', $validMappedHeaders);
 
             if ($importType === 'insert') {
                 $sql = "INSERT INTO `$tableName` (`$cols`) VALUES ($placeholders)";
                 $stmt = $pdo->prepare($sql);
             } elseif ($importType === 'update') {
                 // This assumes primaryKeyCol is in headers and dbColumns
-                if (!in_array($primaryKeyCol, $mappedHeaders)) {
-                    $pdo->rollBack();
+                if (!in_array($primaryKeyCol, $validMappedHeaders)) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
                     echo json_encode(['success' => false, 'message' => "Primary Key Column '$primaryKeyCol' not found in Excel headers or database table."]);
                     exit;
                 }
                 $setParts = [];
-                foreach (array_filter($mappedHeaders) as $col) {
+                foreach ($validMappedHeaders as $col) {
                     if ($col !== $primaryKeyCol) {
                         $setParts[] = "`$col` = ?";
                     }
                 }
                 if (empty($setParts)) {
-                    $pdo->rollBack();
+                    if ($pdo->inTransaction()) $pdo->rollBack();
                     echo json_encode(['success' => false, 'message' => 'No non-primary key columns found for update.']);
                     exit;
                 }
                 $sql = "UPDATE `$tableName` SET " . implode(', ', $setParts) . " WHERE `$primaryKeyCol` = ?";
                 $stmt = $pdo->prepare($sql);
             } elseif ($importType === 'upsert') {
-                // MySQL's ON DUPLICATE KEY UPDATE is a simple upsert
-                // This requires a PRIMARY KEY or UNIQUE index on the columns being updated for `ON DUPLICATE KEY UPDATE` to work
                 $updateParts = [];
-                foreach (array_filter($mappedHeaders) as $col) {
+                foreach ($validMappedHeaders as $col) {
                     $updateParts[] = "`$col` = VALUES(`$col`)";
                 }
                 $sql = "INSERT INTO `$tableName` (`$cols`) VALUES ($placeholders) ON DUPLICATE KEY UPDATE " . implode(', ', $updateParts);
                 $stmt = $pdo->prepare($sql);
             }
 
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
             foreach ($filteredData as $row) {
+                // Skip rows that are entirely empty
+                $hasContent = false;
+                foreach ($row as $val) {
+                    if ($val !== null && trim((string)$val) !== '') {
+                        $hasContent = true;
+                        break;
+                    }
+                }
+                if (!$hasContent) continue;
+
+                // Skip rows where username is empty (to avoid Duplicate Entry error for '')
+                // We check the 'username' key (normalized mapping)
+                $usernameVal = null;
+                foreach ($row as $k => $v) {
+                    $cleanKey = strtolower(preg_replace('/[^a-z0-9]/i', '', (string)$k));
+                    if ($cleanKey === 'username') {
+                        $usernameVal = $v;
+                        break;
+                    }
+                }
+                
+                // If username is found but empty, skip this row
+                if ($usernameVal !== null && trim((string)$usernameVal) === '') {
+                    continue;
+                }
+                
                 $values = array_values($row);
                 
                 if ($importType === 'update') {
@@ -2796,6 +2864,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     elseif ($affected === 2) $updatedRows++;
                 }
             }
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
 
             $pdo->commit();
             echo json_encode([
@@ -2806,7 +2875,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
 
         } catch (Exception $e) {
-            $pdo->rollBack();
+            if ($pdo && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             error_log("Excel Import Error: " . $e->getMessage());
             echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
         }
@@ -3829,137 +3900,137 @@ let advancedFilters = null;
     }
 
     // --- SIDEBAR TOGGLE & PERSISTENCE ---
-    const sidebar = document.getElementById('sidebar');
-    const mainContent = document.querySelector('.main-content');
-    const sidebarToggle = document.getElementById('sidebarToggle');
-    const toggleIcon = sidebarToggle.querySelector('i');
-    const SIDEBAR_STORAGE_KEY = 'adminer_sidebar_collapsed';
-
-    function setSidebarState(collapsed) {
-        if (collapsed) {
-            sidebar.classList.add('collapsed');
-            mainContent.classList.add('sidebar-collapsed');
-            toggleIcon.classList.remove('fa-angle-left');
-            toggleIcon.classList.add('fa-angle-right');
-        } else {
-            sidebar.classList.remove('collapsed');
-            mainContent.classList.remove('sidebar-collapsed');
-            toggleIcon.classList.remove('fa-angle-right');
-            toggleIcon.classList.add('fa-angle-left');
-        }
-        localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed);
-    }
-
-    // Initialize Sidebar State
-    const storedState = localStorage.getItem(SIDEBAR_STORAGE_KEY);
-    const isSmallScreen = window.innerWidth <= 768;
-    // Default: Collapsed on small screens, Expanded on large (unless stored)
-    if (storedState === 'true' || (storedState === null && isSmallScreen)) {
-        setSidebarState(true);
-    } else {
-        setSidebarState(false);
-    }
-
-    sidebarToggle.addEventListener('click', () => {
-        setSidebarState(!sidebar.classList.contains('collapsed'));
-    });
-
-    // --- TABLE SEARCH (Sidebar) ---
-    const tableSearchInput = document.getElementById('tableSearch');
-    if (tableSearchInput) {
-        const navList = document.querySelector('.nav-list');
-        const tableItems = navList.querySelectorAll('.nav-item');
-        tableSearchInput.addEventListener('keyup', function() {
-            const searchTerm = this.value.toLowerCase();
-            tableItems.forEach(item => {
-                // Skip dashboard link
-                if (item.getAttribute('href') === '?') return;
-                const tableName = item.textContent.toLowerCase();
-                item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
-            });
-        });
-    }
-
-    // --- REALTIME PAGE FILTER ---
-    const pageFilterInput = document.getElementById('pageFilterInput');
-    if (pageFilterInput) {
-        pageFilterInput.addEventListener('keyup', function() {
-            const term = this.value.toLowerCase();
-            const rows = document.querySelectorAll('tbody tr');
-            rows.forEach(row => {
-                // Ignore rows that are just 'No data' messages
-                if (row.cells.length === 1 && row.textContent.trim() === 'No data found') return;
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(term) ? '' : 'none';
-            });
-        });
-    }
-
-    // --- COLUMN VISIBILITY ---
-    // Inject CSS for the show class
-    const style = document.createElement('style');
-    style.innerHTML = '#colToggleDropdown.show { display: block !important; }';
-    document.head.appendChild(style);
-
-    function initColumnVisibility() {
-        const dropdown = document.getElementById('colToggleDropdown');
-        if (!dropdown) return;
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const tableName = urlParams.get('table');
-        if (!tableName) return;
+    document.addEventListener('DOMContentLoaded', () => {
+        const sidebar = document.getElementById('sidebar');
+        const mainContent = document.querySelector('.main-content');
+        const sidebarToggle = document.getElementById('sidebarToggle');
         
-        const storageKey = 'adminer_hidecols_' + tableName;
-        let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
-
-        // Get all headers that have data-col attribute
-        const headers = document.querySelectorAll('th[data-col]');
-        
-        headers.forEach(th => {
-            const colName = th.getAttribute('data-col');
-            const isHidden = hiddenCols.includes(colName);
-            
-            // Create Checkbox UI
-            const div = document.createElement('div');
-            div.style.padding = '4px 0';
-            div.innerHTML = `
-                <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
-                    <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
-                    <span style="font-size:0.9rem;">${colName}</span>
-                </label>
-            `;
-            dropdown.appendChild(div);
-            
-            const checkbox = div.querySelector('input');
-            checkbox.addEventListener('change', (e) => {
-                toggleColumn(colName, e.target.checked);
-            });
-
-            // Apply initial state
-            if (isHidden) {
-                toggleColumn(colName, false);
+        if (sidebar && mainContent && sidebarToggle) {
+            const toggleIcon = sidebarToggle.querySelector('i');
+            const SIDEBAR_STORAGE_KEY = 'adminer_sidebar_collapsed';
+    
+            function setSidebarState(collapsed) {
+                if (collapsed) {
+                    sidebar.classList.add('collapsed');
+                    mainContent.classList.add('sidebar-collapsed');
+                    toggleIcon.classList.remove('fa-angle-left');
+                    toggleIcon.classList.add('fa-angle-right');
+                } else {
+                    sidebar.classList.remove('collapsed');
+                    mainContent.classList.remove('sidebar-collapsed');
+                    toggleIcon.classList.remove('fa-angle-right');
+                    toggleIcon.classList.add('fa-angle-left');
+                }
+                localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed);
             }
-        });
-
-        function toggleColumn(colName, show) {
-            // Toggle Header
-            const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
-            if (th) th.style.display = show ? '' : 'none';
-
-            // Toggle Cells
-            const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
-            cells.forEach(td => td.style.display = show ? '' : 'none');
-            
-            // Update Storage
-            if (show) {
-                hiddenCols = hiddenCols.filter(c => c !== colName);
+    
+            // Initialize Sidebar State
+            const storedState = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+            const isSmallScreen = window.innerWidth <= 768;
+            // Default: Collapsed on small screens, Expanded on large (unless stored)
+            if (storedState === 'true' || (storedState === null && isSmallScreen)) {
+                setSidebarState(true);
             } else {
-                if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
+                setSidebarState(false);
             }
-            localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
+    
+            sidebarToggle.addEventListener('click', () => {
+                setSidebarState(!sidebar.classList.contains('collapsed'));
+            });
         }
-    }
-    initColumnVisibility();
+    
+        // --- TABLE SEARCH (Sidebar) ---
+        const tableSearchInput = document.getElementById('tableSearch');
+        if (tableSearchInput) {
+            const navList = document.querySelector('.nav-list');
+            const tableItems = navList.querySelectorAll('.nav-item');
+            tableSearchInput.addEventListener('keyup', function() {
+                const searchTerm = this.value.toLowerCase();
+                tableItems.forEach(item => {
+                    // Skip dashboard link
+                    if (item.getAttribute('href') === '?') return;
+                    const tableName = item.textContent.toLowerCase();
+                    item.style.display = tableName.includes(searchTerm) ? 'flex' : 'none';
+                });
+            });
+        }
+    
+        // --- REALTIME PAGE FILTER ---
+        const pageFilterInput = document.getElementById('pageFilterInput');
+        if (pageFilterInput) {
+            pageFilterInput.addEventListener('keyup', function() {
+                const term = this.value.toLowerCase();
+                const rows = document.querySelectorAll('tbody tr');
+                rows.forEach(row => {
+                    // Ignore rows that are just 'No data' messages
+                    if (row.cells.length === 1 && row.textContent.trim() === 'No data found') return;
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(term) ? '' : 'none';
+                });
+            });
+        }
+        
+        // --- COLUMN VISIBILITY ---
+        function initColumnVisibility() {
+            const dropdown = document.getElementById('colToggleDropdown');
+            if (!dropdown) return;
+    
+            const urlParams = new URLSearchParams(window.location.search);
+            const tableName = urlParams.get('table');
+            if (!tableName) return;
+            
+            const storageKey = 'adminer_hidecols_' + tableName;
+            let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    
+            // Get all headers that have data-col attribute
+            const headers = document.querySelectorAll('th[data-col]');
+            
+            headers.forEach(th => {
+                const colName = th.getAttribute('data-col');
+                const isHidden = hiddenCols.includes(colName);
+                
+                // Create Checkbox UI
+                const div = document.createElement('div');
+                div.style.padding = '4px 0';
+                div.innerHTML = `
+                    <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
+                        <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
+                        <span style="font-size:0.9rem;">${colName}</span>
+                    </label>
+                `;
+                dropdown.appendChild(div);
+                
+                const checkbox = div.querySelector('input');
+                checkbox.addEventListener('change', (e) => {
+                    toggleColumn(colName, e.target.checked);
+                });
+    
+                // Apply initial state
+                if (isHidden) {
+                    toggleColumn(colName, false);
+                }
+            });
+    
+            function toggleColumn(colName, show) {
+                // Toggle Header
+                const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
+                if (th) th.style.display = show ? '' : 'none';
+    
+                // Toggle Cells
+                const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
+                cells.forEach(td => td.style.display = show ? '' : 'none');
+                
+                // Update Storage
+                if (show) {
+                    hiddenCols = hiddenCols.filter(c => c !== colName);
+                } else {
+                    if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
+                }
+                localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
+            }
+        }
+        initColumnVisibility();
+    });
 
     // Close dropdown when clicking outside
     document.addEventListener('click', function(event) {
@@ -5588,167 +5659,6 @@ let advancedFilters = null;
                 </div>
                 <?php endif; ?>
                 
-                <?php if (should_show_server_database_panel($hostProfile) && !$currentTable): ?>
-                <div class="card">
-                    <div style="display:flex; align-items:center; justify-content:space-between;">
-                        <?php 
-                        $dbMode = $_SESSION['db_mode'] ?? 'sql';
-                        if ($dbMode === 'json') {
-                            echo '<h3 style="margin:0;"><i class="fas fa-file-code"></i> Available JSON Files</h3>';
-                        } elseif ($dbMode === 'sqlite') {
-                            echo '<h3 style="margin:0;"><i class="fas fa-database"></i> Available SQLite Files</h3>';
-                        } else {
-                            echo '<h3 style="margin:0;"><i class="fas fa-server"></i> Server Databases</h3>';
-                        }
-                        ?>
-                        <div>
-                            <button type="button" class="btn" id="btnToggleServerDbs" onclick="toggleServerDbs()" title="Collapse/Expand"><i class="fas fa-chevron-up"></i></button>
-                        </div>
-                    </div>
-                    <?php 
-                    if ($dbMode === 'json') {
-                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">JSON files in the json_db folder.</p>';
-                    } elseif ($dbMode === 'sqlite') {
-                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">SQLite database files in the sqlite_db folder.</p>';
-                    } else {
-                        echo '<p style="color:var(--text-secondary); margin-bottom:15px;">Databases actually existing on the connected server.</p>';
-                    }
-                    ?>
-
-                    <div id="serverDbsPanel">
-                    <div class="table-wrapper">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <?php 
-                                    $dbMode = $_SESSION['db_mode'] ?? 'sql';
-                                    if ($dbMode === 'json') {
-                                        echo '<th>File Name</th>';
-                                    } elseif ($dbMode === 'sqlite') {
-                                        echo '<th>File Name</th>';
-                                    } else {
-                                        echo '<th>Database Name</th>';
-                                    }
-                                    ?>
-                                    <th style="width:150px; text-align:right;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php 
-                                $dbMode = $_SESSION['db_mode'] ?? 'sql';
-                                
-                                if ($dbMode === 'json') {
-                                    // List JSON files
-                                    $jsonFiles = $jsonDb->listFiles();
-                                    $currentJsonFile = $_SESSION['json_file'] ?? '';
-                                    
-                                    if (empty($jsonFiles)) {
-                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No JSON files found. Click 'New' to create one.</td></tr>";
-                                    } else {
-                                        foreach ($jsonFiles as $file):
-                                            $isActive = ($file === $currentJsonFile);
-                                        ?>
-                                        <tr>
-                                            <td><?=htmlspecialchars($file)?></td>
-                                            <td style="text-align:right;">
-                                                <?php if(!$isActive): ?>
-                                                    <a href="?select_json_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-folder-open"></i></a>
-                                                <?php else: ?>
-                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
-                                                <?php endif; ?>
-                                                <button type="button" onclick="deleteJsonFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach;
-                                    }
-                                    
-                                } elseif ($dbMode === 'sqlite') {
-                                    // List SQLite files
-                                    $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.sqlite');
-                                    $sqliteFiles = array_map('basename', $sqliteFiles);
-                                    $currentSqliteFile = $_SESSION['sqlite_file'] ?? '';
-                                    
-                                    if (empty($sqliteFiles)) {
-                                        echo "<tr><td colspan='2' style='text-align:center; color:var(--text-secondary);'>No SQLite files found. Click 'New' to create one.</td></tr>";
-                                    } else {
-                                        foreach ($sqliteFiles as $file):
-                                            $isActive = ($file === $currentSqliteFile);
-                                        ?>
-                                        <tr>
-                                            <td><?=htmlspecialchars($file)?></td>
-                                            <td style="text-align:right;">
-                                                <?php if(!$isActive): ?>
-                                                    <a href="?select_sqlite_file=<?=urlencode($file)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use File"><i class="fas fa-database"></i></a>
-                                                <?php else: ?>
-                                                    <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
-                                                <?php endif; ?>
-                                                <button type="button" onclick="deleteSqliteFile('<?=htmlspecialchars($file)?>')" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Delete File"><i class="fas fa-trash"></i></button>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach;
-                                    }
-                                    
-                                } else {
-                                    // SQL Mode - List databases
-                                    $serverDbs = [];
-                                    try {
-                                        $stmt = $pdo->query("SHOW DATABASES");
-                                        $serverDbs = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                                    } catch (Exception $e) {
-                                        if ($e->getCode() == 1227 || stripos($e->getMessage(), '1227') !== false) {
-                                            echo "<tr><td colspan='2' style='color:var(--text-secondary); font-style:italic;'>Listing databases is disabled on this server (Access Denied). Use the 'Managed Database List' above to add your database manually.</td></tr>";
-                                        } else {
-                                            echo "<tr><td colspan='2' style='color:var(--danger);'>Error fetching databases: ".htmlspecialchars($e->getMessage())."</td></tr>";
-                                        }
-                                    }
-
-                                    $configList = load_config($configFile)['databases'] ?? [];
-                                    foreach ($serverDbs as $dbItem): 
-                                        $inList = in_array($dbItem, $configList);
-                                    ?>
-                                    <tr>
-                                        <td><?=htmlspecialchars($dbItem)?></td>
-                                        <td style="text-align:right;">
-                                            <?php if($dbItem !== ($_SESSION['db_name'] ?? '')): ?>
-                                                <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem;" title="Use Database"><i class="fas fa-gear"></i></a>
-                                            <?php else: ?>
-                                                <span style="font-size:0.75rem; background:var(--success); color:white; padding:4px 8px; border-radius:4px; margin-right:5px; display:inline-block;">Active</span>
-                                            <?php endif; ?>
-                                            <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP DATABASE ' . $dbItem . '? THIS DESTROYS ALL DATA!') ?>)' style="display:inline;">
-                                                <input type="hidden" name="action" value="drop_database_server">
-                                                <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                                <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Drop Database"><i class="fas fa-trash"></i></button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    <?php endforeach;
-                                }
-                                ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <?php if ($dbMode === 'sql'): ?>
-                    <form method="POST" style="margin-top:15px; display:flex; gap:10px; align-items:center;">
-                        <input type="hidden" name="action" value="create_database_server">
-                        <input type="text" name="name" class="form-control" placeholder="New Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
-                        <button type="submit" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create Database</button>
-                    </form>
-                    <?php elseif ($dbMode === 'json'): ?>
-                    <div style="margin-top:15px; display:flex; gap:10px;">
-                        <button type="button" onclick="createNewJsonFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New JSON File</button>
-                        <button type="button" onclick="browseJsonFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
-                    </div>
-                    <?php elseif ($dbMode === 'sqlite'): ?>
-                    <div style="margin-top:15px; display:flex; gap:10px;">
-                        <button type="button" onclick="createNewSqliteFile()" class="btn btn-primary"><i class="fas fa-plus-circle"></i> Create New SQLite File</button>
-                        <button type="button" onclick="browseSqliteFile()" class="btn" style="background:var(--accent);"><i class="fas fa-folder-open"></i> Browse External File</button>
-                    </div>
-                    <?php endif; ?>
-                    </div>
-                </div>
-                <?php endif; ?>
-                
             <?php if ($currentTable):
                 ?>
                 <!-- TABLE VIEW -->
@@ -7153,61 +7063,6 @@ async function generatePhpHash() {
 
             <?php else:
                 ?>
-                <!-- DASHBOARD -->
-                <?php if (should_show_managed_database_list($hostProfile)): ?>
-                <div class="card">
-                    <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
-                    <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
-                    
-                    <div class="table-wrapper">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Database Name</th>
-                                    <th style="width:100px; text-align:right;">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php 
-                                $configList = load_config($configFile)['databases'] ?? [];
-                                foreach ($configList as $dbItem): 
-                                     $isActive = ($dbItem === ($_SESSION['db_name'] ?? ''));
-                                ?>
-                                <tr style="<?= $isActive ? 'background:rgba(16, 185, 129, 0.1); color: var(--success)' : '' ?>">
-                                    <td>
-                                        <i class="fas fa-database" style="color:<?=$isActive ? 'var(--success)' : 'var(--accent)'?>; margin-right:8px;"></i> 
-                                        <?=htmlspecialchars($dbItem)?>
-                                        <?php if($isActive): ?>
-                                            <span style="font-size:0.75rem; background:var(--success); color:white; padding:2px 6px; border-radius:4px; margin-left:8px;">Active</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td style="text-align:right;">
-                                        <?php if(!$isActive): ?>
-                                            <a href="?select_db=<?=urlencode($dbItem)?>" class="btn btn-primary" style="padding:4px 8px; font-size:0.8rem; margin-right:5px;" title="Use Database"><i class="fas fa-gear"></i></a>
-                                        <?php endif; ?>
-                                        <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('Remove ' . $dbItem . ' from list?') ?>)' style="display:inline;">
-                                            <input type="hidden" name="action" value="remove_database_list">
-                                            <input type="hidden" name="name" value="<?=htmlspecialchars($dbItem)?>">
-                                            <button type="submit" class="btn btn-danger" style="padding:4px 8px; font-size:0.8rem;" title="Remove from list"><i class="fas fa-trash"></i></button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                                <?php if(empty($configList)): ?>
-                                    <tr><td colspan="2" style="text-align:center; color:var(--text-secondary);">No databases in list.</td></tr>
-                                <?php endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <form method="POST" style="margin-top:15px; display:flex; gap:10px;">
-                        <input type="hidden" name="action" value="add_database_list">
-                        <input type="text" name="name" class="form-control" placeholder="Database Name" required pattern="[A-Za-z0-9_$-]+" style="max-width:300px;">
-                        <button type="submit" class="btn btn-primary">Add to List</button>
-                    </form>
-                </div>
-                <?php endif; ?>
-
                 <div class="card">
                     <div style="display:flex; align-items:center; justify-content:space-between;">
                         <?php 
@@ -8787,6 +8642,15 @@ let queryBuilder = null;
                             btn.innerHTML = '<i class="fas fa-chevron-up"></i>';
                         }
                     });
+
+                    function switchSqlTab(tabId) {
+                        document.querySelectorAll('.sql-tab-content').forEach(el => el.classList.remove('active'));
+                        document.querySelectorAll('.sql-tab-btn').forEach(el => el.classList.remove('active'));
+                        
+                        document.getElementById(tabId).classList.add('active');
+                        const btn = document.querySelector(`button[onclick*="${tabId}"]`);
+                        if(btn) btn.classList.add('active');
+                    }
                     </script>
 </body>
 </html>
