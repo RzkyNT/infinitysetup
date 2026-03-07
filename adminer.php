@@ -2213,6 +2213,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $columns = [];
+            $referencedTablesData = [];
+            $uniqueRefTables = [];
+
             foreach ($rawCols as $col) {
                 // Exclude auto_increment columns
                 if (stripos($col['Extra'], 'auto_increment') !== false) {
@@ -2225,16 +2228,15 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fkData = [];
 
                 if ($fkInfo) {
-                    // Fetch allowed values (Limit 1000 to prevent overload)
                     $refTable = $fkInfo['table'];
                     $refCol = $fkInfo['col'];
+                    $uniqueRefTables[$refTable] = $refCol;
+                    
                     try {
-                        // Determine a display column if possible? For now, just use the PK/FK col
+                        // Fetch distinct values for the dropdown list (legacy support for simple dropdowns)
                         $stmtVal = $pdo->query("SELECT DISTINCT `$refCol` FROM `$refTable` ORDER BY `$refCol` LIMIT 1000");
                         $fkData = $stmtVal->fetchAll(PDO::FETCH_COLUMN);
-                    } catch (Exception $e) { 
-                        // If we can't read the ref table (permissions?), just skip values
-                    }
+                    } catch (Exception $e) { }
                 }
 
                 $columns[] = [
@@ -2245,8 +2247,22 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     'fk_values' => $fkData
                 ];
             }
+
+            // Fetch full data for unique referenced tables
+            foreach ($uniqueRefTables as $refTable => $refCol) {
+                try {
+                    $stmtFull = $pdo->query("SELECT * FROM `$refTable` LIMIT 500");
+                    $referencedTablesData[$refTable] = $stmtFull->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Exception $e) {
+                    $referencedTablesData[$refTable] = [];
+                }
+            }
             
-            echo json_encode(['success' => true, 'columns' => $columns]);
+            echo json_encode([
+                'success' => true, 
+                'columns' => $columns,
+                'referenced_tables' => $referencedTablesData
+            ]);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
@@ -4795,16 +4811,11 @@ let advancedFilters = null;
             
             if (result.success) {
                 const columns = result.columns;
+                const refTables = result.referenced_tables || {};
                 
-                // Prepare Headers and Data Sheet
                 const headers = [];
-                const dataSheetRows = []; // Transposed data for validation lists
-                const validations = [];
                 const colWidths = [];
-                
-                // We need to transpose FK values to columns in the Data sheet
-                // But first let's just collect them
-                const fkDataMap = {}; // colIndex -> array of values
+                const fkDataMap = {};
 
                 columns.forEach((col, index) => {
                     let headerName = col.name;
@@ -4817,13 +4828,14 @@ let advancedFilters = null;
                     }
                 });
 
-                // Create Template Worksheet
+                // Create Workbook
+                const wb = XLSX.utils.book_new();
+
+                // 1. Create Main Worksheet
                 const ws = XLSX.utils.aoa_to_sheet([headers]);
                 ws['!cols'] = colWidths;
 
-                // Add Comments (Rule Info)
-                // Note: SheetJS Community might strip comments on write, but we try.
-                // If comments fail, we rely on the header '*' and Data sheet.
+                // Add Comments
                 for (let i = 0; i < columns.length; i++) {
                     const col = columns[i];
                     const cellRef = XLSX.utils.encode_cell({c: i, r: 0});
@@ -4834,62 +4846,63 @@ let advancedFilters = null;
                         note += `Foreign Key: ${col.fk.table}.${col.fk.col}`;
                     }
                     
+                    if(!ws[cellRef]) ws[cellRef] = { t: 's', v: headers[i] };
                     if(!ws[cellRef].c) ws[cellRef].c = [];
                     ws[cellRef].c.push({a: "Adminer", t: note});
-                    
-                    // Also add a cell comment property if supported by specific build
-                    if(!ws[cellRef].c) ws[cellRef].comment = { a:"Adminer", t: note }; 
                 }
 
-                // Create Data Sheet for Dropdowns
-                const dataWsData = [];
-                const dataSheetName = "Data";
-                
-                // Find max length of fk values to determine rows
-                let maxRows = 0;
-                Object.values(fkDataMap).forEach(arr => maxRows = Math.max(maxRows, arr.length));
-                
-                // Initialize Data Sheet with headers
-                const dataHeaders = [];
-                Object.keys(fkDataMap).forEach(idx => {
-                    dataHeaders.push(`${columns[idx].name} Values`);
+                // Append main table sheet
+                XLSX.utils.book_append_sheet(wb, ws, currentTable || "Template");
+
+                // 2. Create Reference Sheets (one for each referenced table)
+                Object.keys(refTables).forEach(tableName => {
+                    const data = refTables[tableName];
+                    if (data && data.length > 0) {
+                        const refWs = XLSX.utils.json_to_sheet(data);
+                        // Add auto-width for ref sheets
+                        const refCols = Object.keys(data[0]).map(key => ({ 
+                            wch: Math.min(Math.max(key.length, 10), 30) 
+                        }));
+                        refWs['!cols'] = refCols;
+                        
+                        // Limit sheet name to 31 chars (Excel limit)
+                        const sheetName = tableName.substring(0, 31);
+                        XLSX.utils.book_append_sheet(wb, refWs, sheetName);
+                    }
                 });
-                if (dataHeaders.length > 0) {
-                    dataWsData.push(dataHeaders);
+
+                // 3. Validation Data sheet for legacy dropdowns
+                const validationSheetName = "Validations";
+                const dataVsData = [];
+                const dataVsHeaders = [];
+                Object.keys(fkDataMap).forEach(idx => {
+                    dataVsHeaders.push(`${columns[idx].name} Values`);
+                });
+
+                if (dataVsHeaders.length > 0) {
+                    dataVsData.push(dataVsHeaders);
+                    let maxRows = 0;
+                    Object.values(fkDataMap).forEach(arr => maxRows = Math.max(maxRows, arr.length));
                     
                     for(let r=0; r < maxRows; r++) {
                         const row = [];
-                        let colCounter = 0;
                         Object.keys(fkDataMap).forEach(idx => {
                             row.push(fkDataMap[idx][r] || "");
                         });
-                        dataWsData.push(row);
+                        dataVsData.push(row);
                     }
-                }
+                    const vWs = XLSX.utils.aoa_to_sheet(dataVsData);
+                    XLSX.utils.book_append_sheet(wb, vWs, validationSheetName);
 
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, "Template");
-
-                if (dataHeaders.length > 0) {
-                    const dataWs = XLSX.utils.aoa_to_sheet(dataWsData);
-                    XLSX.utils.book_append_sheet(wb, dataWs, dataSheetName);
-                    
-                    // Add Data Validations
-                    // Only works if the sheet writer supports it. 
-                    // Ref: https://docs.sheetjs.com/docs/csf/features/validations
-                    // We map the template column index to the Data sheet column index
+                    // Add Data Validations to the main sheet
                     let refColIdx = 0;
                     Object.keys(fkDataMap).forEach(colIdx => {
                         const valuesCount = fkDataMap[colIdx].length;
                         if(valuesCount > 0) {
-                            // Column in Data Sheet (0-based)
                             const dataColChar = XLSX.utils.encode_col(refColIdx); 
-                            const range = `'${dataSheetName}'!$${dataColChar}$2:$${dataColChar}$${valuesCount + 1}`;
-                            
-                            // Apply to Template Sheet Column (e.g., A2:A1000)
+                            const range = `'${validationSheetName}'!$${dataColChar}$2:$${dataColChar}$${valuesCount + 1}`;
                             const templateColChar = XLSX.utils.encode_col(parseInt(colIdx));
                             
-                            // Validations
                             if (!ws['!dataValidation']) ws['!dataValidation'] = [];
                             ws['!dataValidation'].push({
                                 type: 'list',
@@ -4902,7 +4915,7 @@ let advancedFilters = null;
                                 error: "Please select a value from the list."
                             });
                            
-                           refColIdx++;
+                            refColIdx++;
                         }
                     });
                 }
