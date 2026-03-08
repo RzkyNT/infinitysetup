@@ -1789,21 +1789,26 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'duplicate_row') {
         $pk = $_POST['pk'] ?? null;
         $val = $_POST['val'] ?? null;
+        $count = isset($_POST['duplicate_count']) ? (int)$_POST['duplicate_count'] : 1;
+        if ($count < 1) $count = 1;
+        
         try {
             if ($pk && $val) {
-                if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
-                    $jsonDb->duplicate_row($table, $val);
-                } else {
-                    // SQL Mode: Get columns excluding auto_increment
-                    $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
-                    $cols = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                    $colStr = "`" . implode("`, `", $cols) . "`";
-                    
-                    $sql = "INSERT INTO `$table` ($colStr) SELECT $colStr FROM `$table` WHERE `$pk` = ?";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute([$val]);
+                for ($i = 0; $i < $count; $i++) {
+                    if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                        $jsonDb->duplicate_row($table, $val);
+                    } else {
+                        // SQL Mode: Get columns excluding auto_increment
+                        $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
+                        $cols = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                        $colStr = "`" . implode("`, `", $cols) . "`";
+                        
+                        $sql = "INSERT INTO `$table` ($colStr) SELECT $colStr FROM `$table` WHERE `$pk` = ?";
+                        $stmt = $pdo->prepare($sql);
+                        $stmt->execute([$val]);
+                    }
                 }
-                $msg = "Row duplicated successfully.";
+                $msg = $count > 1 ? "$count rows duplicated successfully." : "Row duplicated successfully.";
             }
             redirect("?table=$table&view=data&msg=" . urlencode($msg));
         } catch (Exception $e) {
@@ -3903,6 +3908,38 @@ let advancedFilters = null;
             confirmButtonText: 'Yes, do it!'
         }).then((result) => {
             if (result.isConfirmed) {
+                form.submit();
+            }
+        });
+    }
+
+    function saQuickDuplicate(e, form) {
+        e.preventDefault();
+        Swal.fire({
+            title: 'Duplicate Row',
+            text: 'How many duplicates would you like to create?',
+            input: 'number',
+            inputValue: 1,
+            inputAttributes: {
+                min: 1,
+                step: 1
+            },
+            showCancelButton: true,
+            confirmButtonText: 'Duplicate',
+            cancelButtonText: 'Cancel',
+            preConfirm: (value) => {
+                if (!value || value < 1) {
+                    Swal.showValidationMessage('Minimum 1 duplicate');
+                }
+                return value;
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const countInput = document.createElement('input');
+                countInput.type = 'hidden';
+                countInput.name = 'duplicate_count';
+                countInput.value = result.value;
+                form.appendChild(countInput);
                 form.submit();
             }
         });
@@ -6176,7 +6213,7 @@ let advancedFilters = null;
                                             <?php if($primaryKey):
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
-                                                ?><form method="POST" style="display:inline; margin-right:5px;">
+                                                ?><form method="POST" style="display:inline; margin-right:5px;" onsubmit="saQuickDuplicate(event, this)">
                                                     <input type="hidden" name="action" value="duplicate_row">
                                                     <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
                                                     <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
