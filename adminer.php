@@ -6077,16 +6077,41 @@ var advancedFilters = null;
                         <?php if($uniSearch): ?>
                             <a href="?" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a>
                         <?php endif; ?>
-                    </form>                    <?php 
+                    </form>
+                    <?php 
                     if ($uniSearch):
                         $resultsFound = 0;
                         $searchQuery = trim($uniSearch);
                         
-                        // Helper to highlight matches
-                        $highlight = function($text, $query) {
-                            if (!$query) return htmlspecialchars((string)$text);
-                            $textStr = (string)$text;
-                            return preg_replace('/(' . preg_quote(htmlspecialchars($query), '/') . ')/i', '<mark style="background:rgba(255,193,7,0.3); color:inherit; padding:0 2px; border-radius:2px;">$1</mark>', htmlspecialchars($textStr));
+                        // Helper to render cell content with media support and highlighting
+                        $renderCell = function($val, $key, $query) {
+                            if ($val === null) return '<span style="color:#666">NULL</span>';
+                            $valStr = (string)$val;
+                            
+                            // Media Display Logic (Images)
+                            if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
+                                return '<img src="' . htmlspecialchars($valStr) . '" style="max-width:50px; max-height:50px; border-radius:4px; cursor:pointer;" onclick="showImageModal(this.src)" title="Base64 Image">';
+                            }
+                            
+                            if (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
+                                (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
+                                 stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
+                                 stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
+                                 stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
+                                
+                                $imgUrl = $valStr;
+                                if (!preg_match('/^https?:\/\//', $valStr)) {
+                                    $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                                }
+                                return '<div style="display:flex; align-items:center; gap:5px;">'
+                                    . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:40px; height:40px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="'.htmlspecialchars($valStr).'" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline\';">'
+                                    . '<span style="display:none; font-size:0.7rem; color:var(--text-secondary); line-height:1;">' . htmlspecialchars(basename($valStr)) . '</span>'
+                                    . '</div>';
+                            }
+
+                            // Highlighting for normal text
+                            if (!$query) return htmlspecialchars($valStr);
+                            return preg_replace('/(' . preg_quote(htmlspecialchars($query), '/') . ')/i', '<mark style="background:rgba(255,193,7,0.3); color:inherit; padding:0 2px; border-radius:2px;">$1</mark>', htmlspecialchars($valStr));
                         };
 
                         echo '<div id="universal-results" style="margin-top:20px;">';
@@ -6118,7 +6143,7 @@ var advancedFilters = null;
                                     echo "</tr></thead><tbody>";
                                     foreach (array_slice($matchedRows, 0, 5) as $row) {
                                         echo "<tr>";
-                                        foreach ($row as $v) echo "<td>".$highlight($v, $searchQuery)."</td>";
+                                        foreach ($row as $k => $v) echo "<td>".$renderCell($v, $k, $searchQuery)."</td>";
                                         echo "</tr>";
                                     }
                                     echo "</tbody></table>";
@@ -6173,7 +6198,7 @@ var advancedFilters = null;
                                         echo "</tr></thead><tbody>";
                                         foreach (array_slice($matches, 0, 5) as $row) {
                                             echo "<tr>";
-                                            foreach ($row as $v) echo "<td>".$highlight($v, $searchQuery)."</td>";
+                                            foreach ($row as $k => $v) echo "<td>".$renderCell($v, $k, $searchQuery)."</td>";
                                             echo "</tr>";
                                         }
                                         echo "</tbody></table>";
