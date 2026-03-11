@@ -4820,7 +4820,7 @@ var advancedFilters = null;
         const pk = td.getAttribute('data-pk');
         const col = td.getAttribute('data-col');
         const type = td.getAttribute('data-type') || '';
-        const table = td.closest('table').getAttribute('data-table');
+        const table = td.getAttribute('data-table') || td.closest('table').getAttribute('data-table');
         
         if(!pk || !col) return;
 
@@ -6300,6 +6300,14 @@ var advancedFilters = null;
                             <span class="perf-value"><?= PHP_VERSION ?></span>
                         </div>
                         <div class="perf-item">
+                            <span class="perf-label">Server OS</span>
+                            <span class="perf-value"><?= PHP_OS ?></span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Memory Usage</span>
+                            <span class="perf-value"><?= formatSize(memory_get_usage()) ?></span>
+                        </div>
+                        <div class="perf-item">
                             <span class="perf-label">Max Upload</span>
                             <span class="perf-value"><?= ini_get('upload_max_filesize') ?></span>
                         </div>
@@ -6433,7 +6441,11 @@ var advancedFilters = null;
                                     echo "</tr></thead><tbody>";
                                     foreach (array_slice($matchedRows, 0, 5) as $row) {
                                         echo "<tr>";
-                                        foreach ($row as $k => $v) echo "<td>".$renderCell($v, $k, $searchQuery)."</td>";
+                                        foreach ($row as $k => $v) {
+                                            $pkVal = $row['id'] ?? null;
+                                            $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                            echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
+                                        }
                                         echo "</tr>";
                                     }
                                     echo "</tbody></table>";
@@ -6487,8 +6499,28 @@ var advancedFilters = null;
                                         foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
                                         echo "</tr></thead><tbody>";
                                         foreach (array_slice($matches, 0, 5) as $row) {
+                                            $pk = null;
+                                            $colTypes = [];
+                                            if ($dbMode === 'sql') {
+                                                $cStmt = $pdo->query("DESCRIBE `$tName`");
+                                                foreach($cStmt->fetchAll() as $c) {
+                                                    if ($c['Key'] === 'PRI') $pk = $c['Field'];
+                                                    $colTypes[$c['Field']] = $c['Type'];
+                                                }
+                                            } else {
+                                                $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
+                                                foreach($cStmt->fetchAll() as $c) {
+                                                    if ($c['pk']) $pk = $c['name'];
+                                                    $colTypes[$c['name']] = $c['type'] ?? 'text';
+                                                }
+                                            }
+                                            
                                             echo "<tr>";
-                                            foreach ($row as $k => $v) echo "<td>".$renderCell($v, $k, $searchQuery)."</td>";
+                                            foreach ($row as $k => $v) {
+                                                $pkAttr = ($pk && isset($row[$pk])) ? "data-pk='".htmlspecialchars($row[$pk])."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                                $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
+                                                echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
+                                            }
                                             echo "</tr>";
                                         }
                                         echo "</tbody></table>";
@@ -8453,28 +8485,6 @@ function readFileContent(file) {
                         </div>
                     </div>
 
-                    <!-- System Health -->
-                    <div class="card" style="margin-bottom:0;">
-                        <h3><i class="fas fa-heartbeat"></i> System Health</h3>
-                        <ul style="list-style:none; padding:0; margin:0; font-size:0.9rem;">
-                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
-                                <span>PHP Version</span>
-                                <span style="font-weight:bold; color:var(--accent);"><?=phpversion()?></span>
-                            </li>
-                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
-                                <span>MySQL Version</span>
-                                <span style="font-weight:bold; color:var(--accent);"><?=$pdo->getAttribute(PDO::ATTR_SERVER_VERSION)?></span>
-                            </li>
-                            <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between;">
-                                <span>Memory Usage</span>
-                                <span style="font-weight:bold; color:var(--success);"><?=formatSize(memory_get_usage())?></span>
-                            </li>
-                            <li style="padding:8px 0; display:flex; justify-content:space-between;">
-                                <span>Server OS</span>
-                                <span style="font-weight:bold;"><?=PHP_OS?></span>
-                            </li>
-                        </ul>
-                    </div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-bottom:20px;">
