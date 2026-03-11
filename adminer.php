@@ -2863,6 +2863,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Cache for foreign key IDs to avoid redundant queries
                 $fkCache = [];
+                $successRows = 0;
+                $failedRows = 0;
+                $lastError = '';
 
                 for ($i = 0; $i < $sCount; $i++) {
                     $rowValues = [];
@@ -2878,8 +2881,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $refPart = substr($type, 3); // table.column
                             if (!isset($fkCache[$refPart])) {
                                 list($refTable, $refCol) = explode('.', $refPart);
-                                $fkStmt = $pdo->query("SELECT `$refCol` FROM `$refTable` LIMIT 100");
-                                $fkCache[$refPart] = $fkStmt->fetchAll(PDO::FETCH_COLUMN);
+                                try {
+                                    $fkStmt = $pdo->query("SELECT `$refCol` FROM `$refTable` LIMIT 100");
+                                    $fkCache[$refPart] = $fkStmt->fetchAll(PDO::FETCH_COLUMN);
+                                } catch (Exception $e) { $fkCache[$refPart] = []; }
                             }
                             if (!empty($fkCache[$refPart])) {
                                 $rowValues[] = $fkCache[$refPart][array_rand($fkCache[$refPart])];
@@ -2896,14 +2901,29 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             continue;
                         }
 
-                        // Priority 4: Standard Fake Data
+                        // Priority 4: Guess standard type if empty
+                        if ($type === '') {
+                             if (preg_match('/_?id$/i', $col) || preg_match('/_?count$/i', $col)) $type = 'number';
+                             elseif (preg_match('/_?at$/i', $col) || preg_match('/date/i', $col)) $type = 'datetime';
+                             elseif (preg_match('/is_/i', $col) || preg_match('/has_/i', $col)) $type = 'boolean';
+                        }
+
+                        // Priority 5: Standard Fake Data
                         $rowValues[] = generate_fake_data($type, $i);
                     }
-                    $stmt->execute($rowValues);
+                    try {
+                        $stmt->execute($rowValues);
+                        $successRows++;
+                    } catch (PDOException $e) {
+                        $failedRows++;
+                        $lastError = $e->getMessage();
+                    }
                 }
                 
                 $pdo->commit();
-                redirect("?table=$sTable&view=data&msg=" . urlencode("Successfully seeded $sCount rows."));
+                $msg = "Successfully seeded $successRows rows.";
+                if ($failedRows > 0) $msg .= " ($failedRows failed. Error: " . htmlspecialchars($lastError) . ")";
+                redirect("?table=$sTable&view=data&msg=" . urlencode($msg));
             } catch (Exception $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 $error = "Seeding Error: " . $e->getMessage();
@@ -2955,8 +2975,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
-            $path = trim($cfg['path'], '/') . '/' . $filename;
-            $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/$path";
+            $pathStr = trim($cfg['path'], '/') . '/' . $filename;
+            $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
+            $encPath = implode('/', $pathSegments);
+            $apiUrl = "https://api.github.com/repos/" . rawurlencode($cfg['user']) . "/" . rawurlencode($cfg['repo']) . "/contents/{$encPath}";
             
             $payload = json_encode([
                 'message' => "Database Backup: " . date('Y-m-d H:i:s'),
@@ -2998,8 +3020,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $path = trim($cfg['path'], '/');
-        $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/$path";
+        $pathStr = trim($cfg['path'], '/');
+        $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
+        $encPath = implode('/', $pathSegments);
+        $apiUrl = "https://api.github.com/repos/" . rawurlencode($cfg['user']) . "/" . rawurlencode($cfg['repo']) . "/contents/{$encPath}";
         
         $ch = curl_init($apiUrl);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -3084,7 +3108,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/" . ltrim($path, '/');
+        $pathStr = ltrim($path, '/');
+        $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
+        $encPath = implode('/', $pathSegments);
+        $apiUrl = "https://api.github.com/repos/" . rawurlencode($cfg['user']) . "/" . rawurlencode($cfg['repo']) . "/contents/{$encPath}";
         
         $payload = json_encode([
             'message' => 'Delete backup via Adminer ' . basename($path),
@@ -6717,6 +6744,7 @@ var advancedFilters = null;
                                     <div style="text-align:center; padding:20px;">Loading backups...</div>
                                 </div>
                             </div>
+                        <?php endif; ?>
                             <script>
                             // --- GITHUB BACKUP FUNCTIONS (SCOPED TO DASHBOARD) ---
                             function openGithubSettings() {
@@ -6868,7 +6896,6 @@ var advancedFilters = null;
 
                             document.addEventListener('DOMContentLoaded', loadGithubBackups);
                             </script>
-                        <?php endif; ?>
                     </div>
                 </div>
 
