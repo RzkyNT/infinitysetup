@@ -1785,6 +1785,68 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- GENERATE DUMMY DATA ---
+    elseif ($action === 'generate_dummy_data') {
+        $count = (int)($_POST['count'] ?? 10);
+        if ($count > 1000) $count = 1000;
+        
+        try {
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                for ($i = 0; $i < $count; $i++) {
+                    $dummy = [];
+                    // Small logic to guess data by key names in existing data
+                    $existing = $jsonDb->select($table, [], 0, 1);
+                    if (!empty($existing)) {
+                        foreach (array_keys($existing[0]) as $key) {
+                            if ($key === 'id') continue;
+                            $dummy[$key] = "Dummy " . bin2hex(random_bytes(4));
+                        }
+                    }
+                    $jsonDb->insert($table, $dummy);
+                }
+            } else {
+                // SQL Mode
+                $stmt = $pdo->query("DESCRIBE `$table`");
+                $structure = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                $cols = [];
+                foreach ($structure as $col) {
+                    if (strpos($col['Extra'], 'auto_increment') === false) {
+                        $cols[] = $col;
+                    }
+                }
+                
+                for ($i = 0; $i < $count; $i++) {
+                    $insertCols = [];
+                    $params = [];
+                    foreach ($cols as $c) {
+                        $insertCols[] = "`".$c['Field']."`";
+                        $name = strtolower($c['Field']);
+                        $type = strtolower($c['Type']);
+                        
+                        $val = '';
+                        if (strpos($name, 'email') !== false) $val = "user" . rand(100, 999) . "@example.com";
+                        elseif (strpos($name, 'user') !== false || strpos($name, 'name') !== false) $val = "User " . rand(100, 999);
+                        elseif (strpos($name, 'phone') !== false || strpos($name, 'tel') !== false) $val = "0812" . rand(10000000, 99999999);
+                        elseif (strpos($name, 'pass') !== false) $val = password_hash('password123', PASSWORD_DEFAULT);
+                        elseif (strpos($type, 'int') !== false) $val = rand(0, 100);
+                        elseif (strpos($type, 'date') !== false) $val = date('Y-m-d', strtotime('-' . rand(0, 365) . ' days'));
+                        elseif (strpos($type, 'text') !== false) $val = "This is a dummy text description for testing purposes generated at " . date('H:i:s');
+                        else $val = "Dummy Val " . rand(1, 100);
+                        
+                        $params[] = $val;
+                    }
+                    
+                    $sql = "INSERT INTO `$table` (" . implode(', ', $insertCols) . ") VALUES (" . implode(', ', array_fill(0, count($params), '?')) . ")";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute($params);
+                }
+            }
+            redirect("?table=$table&view=data&msg=" . urlencode("$count rows of dummy data generated successfully."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
     // --- DUPLICATE ROW ---
     elseif ($action === 'duplicate_row') {
         $pk = $_POST['pk'] ?? null;
@@ -3404,10 +3466,25 @@ if ($is_logged_in && $currentTable) {
     }
 }
 
-$colTypesMap = [];
 if (!empty($tableStructure)) {
     foreach ($tableStructure as $cs) {
         $colTypesMap[$cs['Field']] = strtolower($cs['Type']);
+    }
+}
+
+// Data for Dashboard Charts
+$chartLabels = [];
+$chartData = [];
+if (!empty($tables)) {
+    // Sort tables by size/rows descending but limit to 10 for readability
+    $sortedTables = $tables;
+    usort($sortedTables, function($a, $b) {
+        return ($b['Rows'] ?? 0) <=> ($a['Rows'] ?? 0);
+    });
+    $topTables = array_slice($sortedTables, 0, 10);
+    foreach ($topTables as $t) {
+        $chartLabels[] = $t['Name'] ?? ($t['TABLE_NAME'] ?? 'Unknown');
+        $chartData[] = (int)($t['Rows'] ?? 0);
     }
 }
 ?>
@@ -3426,7 +3503,59 @@ if (!empty($tableStructure)) {
     <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="<?= get_asset_url('assets/vendor/mermaid/mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js') ?>"></script>
     <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <style>
+        /* Robust SQL View Tabs System v2 */
+        .sql-v2-tab-content {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0;
+            height: 0;
+            overflow: hidden;
+        }
+        .sql-v2-tab-content.v2-active {
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            height: auto !important;
+            min-height: 450px !important;
+            overflow: visible !important;
+            border: 1px solid var(--border-color) !important;
+            padding: 20px !important;
+            background: var(--bg-card) !important;
+            border-radius: 0 0 8px 8px !important;
+        }
+        .sql-v2-tab-btn.v2-active {
+            color: var(--accent) !important;
+            border-bottom: 3px solid var(--accent) !important;
+            font-weight: bold !important;
+        }
+    </style>
+    <script>
+        function switchSqlTab(tabId) {
+            console.log('Switching SQL Tab:', tabId);
+            const target = document.getElementById(tabId);
+            if (!target) {
+                console.error('Tab target NOT found:', tabId);
+                return;
+            }
+
+            // Remove v2-active from all
+            document.querySelectorAll('.sql-v2-tab-content').forEach(el => el.classList.remove('v2-active'));
+            document.querySelectorAll('.sql-v2-tab-btn').forEach(el => el.classList.remove('v2-active'));
+
+            // Add v2-active to target
+            target.classList.add('v2-active');
+            
+            // Find the button and activate it
+            const btn = document.querySelector(`.sql-v2-tab-btn[onclick*="${tabId}"]`);
+            if (btn) btn.classList.add('v2-active');
+            
+            // Log success
+            console.log('Tab activated:', tabId);
+        }
+    </script>
     <script>
         /**
  * Advanced Filters Component
@@ -3836,7 +3965,7 @@ class AdvancedFilters {
 }
 
 // Global instance
-let advancedFilters = null;
+var advancedFilters = null;
 
     </script>
     <script>
@@ -3920,10 +4049,7 @@ let advancedFilters = null;
             text: 'How many duplicates would you like to create?',
             input: 'number',
             inputValue: 1,
-            inputAttributes: {
-                min: 1,
-                step: 1
-            },
+            inputAttributes: { min: 1, step: 1 },
             showCancelButton: true,
             confirmButtonText: 'Duplicate',
             cancelButtonText: 'Cancel',
@@ -3949,7 +4075,7 @@ let advancedFilters = null;
     function toggleTheme() {
         const root = document.documentElement;
         const current = root.getAttribute('data-theme');
-        const next = current === 'light' ? 'dark' : 'light';
+        const next = (current === 'light') ? 'dark' : 'light';
         root.setAttribute('data-theme', next);
         localStorage.setItem('adminer_theme', next);
         updateThemeColors(next);
@@ -6181,7 +6307,7 @@ let advancedFilters = null;
                             <table data-table="<?=htmlspecialchars($currentTable)?>">
                                 <thead>
                                     <tr>
-                                        <th style="width: 40px; text-align:center;"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
+                                        <th style="width: 40px; text-align:center;"><input type="checkbox" id="selectAll"></th>
                                         <th style="width: 80px;">Action</th>
                                     <?php foreach ($tableColumns as $col):
                                         $newOrderDir = 'ASC';
@@ -6206,21 +6332,15 @@ let advancedFilters = null;
                                     <tr>
                                         <td style="text-align:center;">
                                             <?php if($primaryKey): ?>
-                                                <input type="checkbox" name="ids[]" value="<?=htmlspecialchars($row[$primaryKey])?>" class="row-checkbox" onclick="updateBulkBtn()">
+                                                <input type="checkbox" name="ids[]" value="<?=htmlspecialchars($row[$primaryKey])?>" class="row-checkbox">
                                             <?php endif; ?>
                                         </td>
                                         <td>
                                             <?php if($primaryKey):
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
                                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
-                                                ?><form method="POST" style="display:inline; margin-right:5px;" onsubmit="saQuickDuplicate(event, this)">
-                                                    <input type="hidden" name="action" value="duplicate_row">
-                                                    <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                                    <input type="hidden" name="pk" value="<?=htmlspecialchars($primaryKey)?>">
-                                                    <input type="hidden" name="val" value="<?=htmlspecialchars($row[$primaryKey])?>">
-                                                    <button type="submit" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0;" title="Quick Duplicate"><i class="fas fa-clone"></i></button>
-                                                </form><?php
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
+                                                ?><button type="button" class="btn-quick-duplicate" data-table="<?=htmlspecialchars($currentTable)?>" data-pk="<?=htmlspecialchars($primaryKey)?>" data-val="<?=htmlspecialchars($row[$primaryKey])?>" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0; margin-right:5px;" title="Quick Duplicate"><i class="fas fa-clone"></i></button><?php
+                                                ?><a href="?table=<?=urlencode($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
                                             else:
                                                 ?><span style="opacity:0.3">-</span><?php 
                                             endif; ?>
@@ -6236,7 +6356,7 @@ let advancedFilters = null;
                                                 if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
                                                     $isMediaColumn = true;
                                                     $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<img src="' . htmlspecialchars($valStr) . '" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="Click to enlarge">'
+                                                        . '<img src="' . htmlspecialchars($valStr) . '" class="row-media-preview" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" title="Click to enlarge">'
                                                         . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
                                                         . '</div>';
                                                 }
@@ -6947,36 +7067,33 @@ async function generatePhpHash() {
                     <!-- SQL View Tabs -->
                     <div style="margin-bottom:20px; border-bottom:2px solid var(--border-color);">
                         <div style="display:flex; gap:5px;">
-                            <button type="button" class="sql-tab-btn active" onclick="switchSqlTab('sql-editor')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
+                            <button type="button" class="sql-v2-tab-btn v2-active" onclick="switchSqlTab('sql-editor')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
                                 <i class="fas fa-terminal"></i> SQL Editor
                             </button>
-                            <button type="button" class="sql-tab-btn" onclick="switchSqlTab('query-builder')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
+                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('query-builder')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
                                 <i class="fas fa-tools"></i> Query Builder
                             </button>
-                            <button type="button" class="sql-tab-btn" onclick="switchSqlTab('advanced-filters')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
+                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('advanced-filters')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
                                 <i class="fas fa-filter"></i> Advanced Filters
+                            </button>
+                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('ai-assistant')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
+                                <i class="fas fa-robot"></i> AI Assistant
                             </button>
                         </div>
                     </div>
                     
-                    <style>
-                        .sql-tab-btn.active {
-                            color: var(--accent) !important;
-                            border-bottom-color: var(--accent) !important;
-                        }
-                        .sql-tab-btn:hover {
-                            color: var(--text-primary) !important;
-                        }
-                        .sql-tab-content {
-                            display: none;
-                        }
-                        .sql-tab-content.active {
-                            display: block;
-                        }
-                    </style>
+                    <script>
+                        // Ensure at least one tab is showing on load
+                        document.addEventListener('DOMContentLoaded', () => {
+                            const activeContent = document.querySelector('.sql-v2-tab-content.v2-active');
+                            if (!activeContent) {
+                                switchSqlTab('sql-editor');
+                            }
+                        });
+                    </script>
                     
                     <!-- SQL Editor Tab -->
-                    <div id="sql-editor" class="sql-tab-content active">
+                    <div id="sql-editor" class="sql-v2-tab-content v2-active">
                         <div class="card">
                             <h3><i class="fas fa-terminal"></i> SQL Command</h3>
                             <form method="POST" id="sqlForm">
@@ -7120,7 +7237,7 @@ async function generatePhpHash() {
                     </div>
                     
                     <!-- Query Builder Tab -->
-                    <div id="query-builder" class="sql-tab-content">
+                    <div id="query-builder" class="sql-v2-tab-content">
                         <div class="card">
                             <h3><i class="fas fa-tools"></i> Query Builder</h3>
                             <div id="query-builder-container"></div>
@@ -7128,10 +7245,66 @@ async function generatePhpHash() {
                     </div>
                     
                     <!-- Advanced Filters Tab -->
-                    <div id="advanced-filters" class="sql-tab-content">
+                    <div id="advanced-filters" class="sql-v2-tab-content">
                         <div class="card">
                             <h3><i class="fas fa-filter"></i> Advanced Filters</h3>
                             <div id="advanced-filters-container"></div>
+                        </div>
+                    </div>
+
+                    <!-- AI Assistant Tab -->
+                    <div id="ai-assistant" class="sql-v2-tab-content">
+                        <div style="background: rgba(255,255,255,0.05); padding: 5px; font-size: 10px; color: #555; text-align: right;">DEBUG: AI_TAB_v2</div>
+                        <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:20px;">
+                            <!-- NL to SQL -->
+                            <div class="card">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                    <h3 style="margin:0;"><i class="fas fa-magic"></i> Natural Language to SQL</h3>
+                                    <span class="badge" style="background:var(--accent); color:#000; font-size:0.7rem; padding:2px 8px; border-radius:10px;">PRO AI</span>
+                                </div>
+                                <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:15px;">Ketik instruksi dalam bahasa sehari-hari untuk membuat query otomatis.</p>
+                                
+                                <div style="position:relative; margin-bottom:15px;">
+                                    <textarea id="ai-nl-input" class="form-control" rows="3" style="background:#080808; border:1px solid #444; color:#fff; padding:15px; font-size:1rem; resize:none;" placeholder="Contoh: tampilkan semua user yang aktif..."></textarea>
+                                    <button type="button" onclick="generateAiSql()" style="position:absolute; right:10px; bottom:10px; background:var(--accent); color:#000; border:none; padding:8px 15px; border-radius:6px; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;">
+                                        <i class="fas fa-wand-magic-sparkles"></i> Generate
+                                    </button>
+                                </div>
+
+                                <div id="ai-sql-preview-container" style="display:none;">
+                                    <label style="font-weight:bold; color:var(--text-secondary); font-size:0.8rem; margin-bottom:5px; display:block;">Generated SQL Preview:</label>
+                                    <div style="position:relative;">
+                                        <pre id="ai-sql-preview" style="background:#111; color:#a5d6ff; padding:15px; border:1px solid #333; border-radius:6px; font-family: 'Fira Code', monospace; font-size:0.9rem; margin:0;"></pre>
+                                        <button type="button" onclick="applyAiSql()" style="position:absolute; right:10px; top:10px; background:#333; color:#fff; border:1px solid #444; padding:5px 10px; border-radius:4px; font-size:0.8rem; cursor:pointer;" title="Apply to Editor">
+                                            <i class="fas fa-arrow-up"></i> Apply
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Data Generator -->
+                            <div class="card">
+                                <h3><i class="fas fa-seedling"></i> Data Generator</h3>
+                                <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:15px;">Generate dummy data untuk testing tabel.</p>
+                                
+                                <div class="form-group" style="margin-bottom:15px;">
+                                    <label>Target Table</label>
+                                    <input type="text" class="form-control" value="<?=htmlspecialchars($currentTable)?>" readonly style="opacity:0.6;">
+                                </div>
+
+                                <div class="form-group" style="margin-bottom:15px;">
+                                    <label>Number of Rows</label>
+                                    <input type="number" id="gen-row-count" class="form-control" value="10" min="1" max="1000">
+                                </div>
+
+                                <button type="button" class="btn btn-primary" style="width:100%;" onclick="generateDummyData()">
+                                    <i class="fas fa-bolt"></i> Generate & Execute
+                                </button>
+                                
+                                <div style="margin-top:20px; padding:15px; background:rgba(251, 191, 36, 0.1); border:1px solid rgba(251, 191, 36, 0.3); border-radius:6px;">
+                                    <small style="color:#fbbf24;"><i class="fas fa-exclamation-triangle"></i> Generate data akan langsung melakukan <b>INSERT</b> ke tabel aktif.</small>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 <?php elseif ($view === 'import'): ?>
@@ -7692,7 +7865,15 @@ async function generatePhpHash() {
                     </div>
                 </div>
 
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-bottom:20px;">
+                <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:20px; margin-bottom:20px;">
+                    <!-- Row Distribution Chart -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h3><i class="fas fa-chart-pie"></i> Row Distribution</h3>
+                        <div style="height: 250px; position: relative;">
+                            <canvas id="rowChart"></canvas>
+                        </div>
+                    </div>
+
                     <!-- System Health -->
                     <div class="card" style="margin-bottom:0;">
                         <h3><i class="fas fa-heartbeat"></i> System Health</h3>
@@ -7715,28 +7896,30 @@ async function generatePhpHash() {
                             </li>
                         </ul>
                     </div>
+                </div>
 
+                <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-bottom:20px;">
                     <!-- Recent Tables -->
                     <div class="card" style="margin-bottom:0;">
                         <h3><i class="fas fa-history"></i> Recently Modified</h3>
                         <?php
                             try {
-                                $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 5");
+                                $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 10");
                                 $recentTables = $recentStmt->fetchAll();
                             } catch (Exception $e) { $recentTables = []; }
                         ?>
-                        <ul style="list-style:none; padding:0; margin:0; font-size:0.9rem;">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap:10px;">
                             <?php if ($recentTables): foreach ($recentTables as $rt): ?>
-                                <li style="padding:8px 0; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+                                <div style="padding:10px; border:1px solid var(--border-color); border-radius:6px; display:flex; justify-content:space-between; align-items:center; background:var(--bg-hover);">
                                     <a href="?table=<?=htmlspecialchars($rt['TABLE_NAME'])?>" style="color:var(--text-primary); text-decoration:none; display:flex; align-items:center; gap:8px;">
                                         <i class="fas fa-table" style="color:var(--text-secondary);"></i> <?=htmlspecialchars($rt['TABLE_NAME'])?>
                                     </a>
                                     <small style="color:var(--text-secondary);"><?= date('M d H:i', strtotime($rt['UPDATE_TIME'])) ?></small>
-                                </li>
+                                </div>
                             <?php endforeach; else: ?>
-                                <li style="padding:10px 0; color:var(--text-secondary);">No recent activity recorded.</li>
+                                <div style="padding:10px; color:var(--text-secondary);">No recent activity recorded.</li>
                             <?php endif; ?>
-                        </ul>
+                        </div>
                     </div>
                 </div>
 
@@ -8210,7 +8393,7 @@ class QueryBuilder {
 }
 
 // Global instance
-let queryBuilder = null;
+var queryBuilder = null;
 
                     </script>
 
@@ -8436,7 +8619,8 @@ let queryBuilder = null;
         }
 
         function toggleSelectAll(source) {
-            document.querySelectorAll('.row-checkbox').forEach(cb => {
+            const checkboxes = document.querySelectorAll('.row-checkbox');
+            checkboxes.forEach(cb => {
                 cb.checked = source.checked;
             });
             updateBulkBtn();
@@ -8450,7 +8634,16 @@ let queryBuilder = null;
             if (!action) return;
             
             if (action === 'delete') {
-                form.querySelector('input[name="action"]').value = 'bulk_delete';
+                // Ensure the hidden action input is set correctly
+                let actionInput = form.querySelector('input[name="action"]');
+                if(!actionInput) {
+                    actionInput = document.createElement('input');
+                    actionInput.type = 'hidden';
+                    actionInput.name = 'action';
+                    form.appendChild(actionInput);
+                }
+                actionInput.value = 'bulk_delete';
+
                 Swal.fire({
                     title: 'Delete selected rows?',
                     text: "You won't be able to revert this!",
@@ -8462,10 +8655,115 @@ let queryBuilder = null;
                     if (result.isConfirmed) form.submit();
                 });
             } else {
-                form.querySelector('input[name="action"]').value = action;
+                let actionInput = form.querySelector('input[name="action"]');
+                if(!actionInput) {
+                    actionInput = document.createElement('input');
+                    actionInput.type = 'hidden';
+                    actionInput.name = 'action';
+                    form.appendChild(actionInput);
+                }
+                actionInput.value = action;
                 form.submit();
             }
         }
+
+        // Quick Duplicate via JS (Fix for nested forms)
+        async function saQuickDuplicateBtn(table, pk, val) {
+            const { value: count } = await Swal.fire({
+                title: 'Duplicate Row',
+                text: 'How many copies do you want?',
+                input: 'number',
+                inputValue: 1,
+                inputAttributes: { min: 1, step: 1 },
+                showCancelButton: true,
+                confirmButtonText: 'Duplicate',
+                confirmButtonColor: '#8b5cf6'
+            });
+
+            if (count) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.style.display = 'none';
+                form.innerHTML = `
+                    <input type="hidden" name="action" value="duplicate_row">
+                    <input type="hidden" name="table" value="${table}">
+                    <input type="hidden" name="pk" value="${pk}">
+                    <input type="hidden" name="val" value="${val}">
+                    <input type="hidden" name="count" value="${count}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        // DRAG TO SELECT ROWS + Double-Toggle Fix
+        document.addEventListener('DOMContentLoaded', () => {
+            const table = document.querySelector('table[data-table]');
+            if (!table) return;
+
+            let isDragging = false;
+            let startState = true;
+            let dragOrigin = null;
+
+            table.addEventListener('mousedown', (e) => {
+                const checkbox = e.target.closest('.row-checkbox');
+                if (checkbox) {
+                    isDragging = true;
+                    dragOrigin = checkbox;
+                    startState = !checkbox.checked;
+                    checkbox.checked = startState;
+                    updateBulkBtn();
+                    e.preventDefault(); // Prevents browser focus and native toggle in most browsers
+                }
+            });
+
+            table.addEventListener('mouseover', (e) => {
+                if (isDragging) {
+                    const checkbox = e.target.closest('.row-checkbox');
+                    if (checkbox && checkbox !== dragOrigin) {
+                        checkbox.checked = startState;
+                        updateBulkBtn();
+                    }
+                }
+            });
+
+            // Handle Delegation: Quick Duplicate + Select All + Checkbox Clicks
+            table.addEventListener('click', (e) => {
+                const dupBtn = e.target.closest('.btn-quick-duplicate');
+                if (dupBtn) {
+                    const table = dupBtn.getAttribute('data-table');
+                    const pk = dupBtn.getAttribute('data-pk');
+                    const val = dupBtn.getAttribute('data-val');
+                    saQuickDuplicateBtn(table, pk, val);
+                    return;
+                }
+
+                if (e.target.id === 'selectAll') {
+                    toggleSelectAll(e.target);
+                    return;
+                }
+
+                const checkbox = e.target.closest('.row-checkbox');
+                if (checkbox) {
+                    // If we just came from a mousedown toggle, prevent the native click toggle
+                    // but we MUST call updateBulkBtn if we prevent the default native click.
+                    // Actually, let's just use the state we set in mousedown and stop the browser's second toggle.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    updateBulkBtn();
+                }
+
+                const mediaImg = e.target.closest('.row-media-preview');
+                if (mediaImg) {
+                    showImageModal(mediaImg.src);
+                    return;
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+        });
 
         // Media Modal Functions
         function showImageModal(src) {
@@ -8984,32 +9282,188 @@ let queryBuilder = null;
                         }
 
                         // Initialize Query Builder & Advanced Filters if in SQL view
-                        <?php if ($view === 'sql' && $currentTable && !empty($tableColumns)): ?>
                         if (document.getElementById('advanced-filters-container')) {
+                            <?php if (!empty($tableColumns)): ?>
                             advancedFilters = new AdvancedFilters('advanced-filters-container', {
                                 table: <?= json_encode($currentTable) ?>,
                                 columns: <?= json_encode($tableColumns) ?>,
                                 columnTypes: <?= json_encode($colTypesMap) ?>
                             });
+                            <?php else: ?>
+                            document.getElementById('advanced-filters-container').innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-secondary);"><i class="fas fa-info-circle fa-2x" style="margin-bottom:15px; display:block;"></i> Silakan pilih tabel untuk menggunakan Advanced Filters.</div>';
+                            <?php endif; ?>
                         }
                         
                         if (document.getElementById('query-builder-container')) {
+                            <?php if (!empty($tableColumns)): ?>
                             queryBuilder = new QueryBuilder('query-builder-container', {
                                 table: <?= json_encode($currentTable) ?>,
                                 columns: <?= json_encode($tableColumns) ?>
                             });
+                            <?php else: ?>
+                            document.getElementById('query-builder-container').innerHTML = '<div style="padding:40px; text-align:center; color:var(--text-secondary);"><i class="fas fa-info-circle fa-2x" style="margin-bottom:15px; display:block;"></i> Silakan pilih tabel untuk menggunakan Query Builder.</div>';
+                            <?php endif; ?>
                         }
-                        <?php endif; ?>
+
+                        // Initialize Dashboard Charts
+                        const chartCanvas = document.getElementById('rowChart');
+                        if (chartCanvas) {
+                            new Chart(chartCanvas, {
+                                type: 'doughnut',
+                                data: {
+                                    labels: <?= json_encode($chartLabels) ?>,
+                                    datasets: [{
+                                        label: 'Rows',
+                                        data: <?= json_encode($chartData) ?>,
+                                        backgroundColor: [
+                                            'rgba(255, 99, 132, 0.7)',
+                                            'rgba(54, 162, 235, 0.7)',
+                                            'rgba(255, 206, 86, 0.7)',
+                                            'rgba(75, 192, 192, 0.7)',
+                                            'rgba(153, 102, 255, 0.7)',
+                                            'rgba(255, 159, 64, 0.7)',
+                                            'rgba(199, 199, 199, 0.7)',
+                                            'rgba(83, 102, 255, 0.7)',
+                                            'rgba(40, 159, 64, 0.7)',
+                                            'rgba(210, 199, 199, 0.7)'
+                                        ],
+                                        borderColor: '#1a1a1a',
+                                        borderWidth: 2
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: {
+                                            position: 'right',
+                                            labels: { color: '#888', font: { size: 10 } }
+                                        }
+                                    }
+                                }
+                            });
+                        }
                     });
 
-                    function switchSqlTab(tabId) {
-                        document.querySelectorAll('.sql-tab-content').forEach(el => el.classList.remove('active'));
-                        document.querySelectorAll('.sql-tab-btn').forEach(el => el.classList.remove('active'));
+                    // --- AI ASSISTANT LOGIC ---
+                    let lastGeneratedSql = "";
+
+                    async function generateAiSql() {
+                        const nlInput = document.getElementById('ai-nl-input').value.trim();
+                        if (!nlInput) return;
+
+                        const table = <?= json_encode($currentTable, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
                         
-                        document.getElementById(tabId).classList.add('active');
-                        const btn = document.querySelector(`button[onclick*="${tabId}"]`);
-                        if(btn) btn.classList.add('active');
+                        Swal.fire({
+                            title: 'AI is thinking...',
+                            text: 'Consulting Gemini AI API...',
+                            allowOutsideClick: false,
+                            didOpen: () => { Swal.showLoading(); }
+                        });
+
+                        try {
+                            // Define the system instructions for the AI
+                            const systemInst = `Target table: "${table}". User command: "${nlInput}". 
+                            Rules: 
+                            1. Response MUST be ONLY a MySQL query.
+                            2. Do not use markdown backticks unless strictly necessary for a code block.
+                            3. If multiple queries, separate with semicolon.
+                            4. If the request is ambiguous, default to SELECT.`;
+                            
+                            const prompt = encodeURIComponent(systemInst);
+                            const apiKey = "keysita_47JX47JX";
+                            const url = `https://api.ferdev.my.id/ai/gemini?prompt=${prompt}&apikey=${apiKey}`;
+                            
+                            const res = await fetch(url);
+                            const data = await res.json();
+                            
+                            if (data.success && data.message) {
+                                // Extract SQL from potential markdown code blocks
+                                let sql = data.message;
+                                if (sql.includes('```')) {
+                                    const match = sql.match(/```(?:sql)?\n?([\s\S]*?)\n?```/i);
+                                    if (match) sql = match[1];
+                                }
+                                sql = sql.replace(/`sql/gi, '').replace(/`/g, '').trim(); // Fallback cleanup
+                                
+                                // One more try: If the AI still puts backticks around table/column names, we actually want to keep those if they are MySQL backticks, but Gemini sometimes puts markdown backticks around the whole thing.
+                                // Let's just do a clean trim of markdown if present.
+                                sql = data.message.replace(/^```(sql)?\n/i, '').replace(/\n```$/i, '').trim();
+
+                                lastGeneratedSql = sql;
+                                document.getElementById('ai-sql-preview').textContent = sql;
+                                document.getElementById('ai-sql-preview-container').style.display = 'block';
+                                Swal.close();
+                            } else {
+                                throw new Error(data.message || "Failed to get response from AI");
+                            }
+                        } catch (err) {
+                            console.error(err);
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'AI Error',
+                                text: 'Gagal memproses kata-kata Anda. Silakan coba lagi nanti.'
+                            });
+                        }
                     }
+
+                    function applyAiSql() {
+                        if (!lastGeneratedSql) return;
+                        switchSqlTab('sql-editor');
+                        document.getElementById('queryInput').value = lastGeneratedSql;
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Applied!',
+                            text: 'Query has been copied to the SQL Editor.',
+                            toast: true,
+                            position: 'top-end',
+                            timer: 3000,
+                            showConfirmButton: false
+                        });
+                    }
+
+                    function generateDummyData() {
+                        const count = document.getElementById('gen-row-count').value;
+                        const table = <?= json_encode($currentTable, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+                        
+                        Swal.fire({
+                            title: 'Generate Dummy Data?',
+                            text: `This will insert ${count} rows into table ${table} using Faker logic.`,
+                            icon: 'question',
+                            showCancelButton: true,
+                            confirmButtonText: 'Generate Now',
+                            confirmButtonColor: 'var(--accent)'
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                // Create a dynamic form to submit the request
+                                const form = document.createElement('form');
+                                form.method = 'POST';
+                                
+                                const actionInput = document.createElement('input');
+                                actionInput.type = 'hidden';
+                                actionInput.name = 'action';
+                                actionInput.value = 'generate_dummy_data';
+                                
+                                const tableInput = document.createElement('input');
+                                tableInput.type = 'hidden';
+                                tableInput.name = 'table';
+                                tableInput.value = table;
+                                
+                                const countInput = document.createElement('input');
+                                countInput.type = 'hidden';
+                                countInput.name = 'count';
+                                countInput.value = count;
+                                
+                                form.appendChild(actionInput);
+                                form.appendChild(tableInput);
+                                form.appendChild(countInput);
+                                document.body.appendChild(form);
+                                form.submit();
+                            }
+                        });
+                    }
+
+                    // switchSqlTab moved to head for better reliability
                     </script>
 </body>
 </html>
