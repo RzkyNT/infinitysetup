@@ -2,6 +2,7 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
+ob_start();
 /**
  * JsonDatabase - A simple JSON-based database system
  * Provides SQL-like operations on JSON files
@@ -1496,6 +1497,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $action = $_POST['action'] ?? '';
     $table = $_POST['table'] ?? '';
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+    $configFile = __DIR__ . '/adminer.config.json';
     
     // --- SQL QUERY ---
     if ($action === 'sql_query') {
@@ -2769,7 +2772,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'seed_data') {
         $sTable = $_POST['table'] ?? '';
         $sCount = (int)($_POST['count'] ?? 10);
-        $sConfig = $_POST['field_types'] ?? []; // Map column => type
+        $sConfig = $_POST['field_types'] ?? []; 
+        $manualVals = $_POST['manual_values'] ?? [];
         
         if ($sTable && !empty($sConfig) && isset($pdo)) {
             try {
@@ -2779,21 +2783,213 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sql = "INSERT INTO `$sTable` (`" . implode('`, `', $columns) . "`) VALUES ($placeholders)";
                 $stmt = $pdo->prepare($sql);
                 
+                // Cache for foreign key IDs to avoid redundant queries
+                $fkCache = [];
+
                 for ($i = 0; $i < $sCount; $i++) {
                     $rowValues = [];
                     foreach ($sConfig as $col => $type) {
+                        // Priority 1: Manual Value
+                        if (!empty($manualVals[$col])) {
+                            $rowValues[] = $manualVals[$col];
+                            continue;
+                        }
+
+                        // Priority 2: Foreign Key detection
+                        if (strpos($type, 'fk:') === 0) {
+                            $refPart = substr($type, 3); // table.column
+                            if (!isset($fkCache[$refPart])) {
+                                list($refTable, $refCol) = explode('.', $refPart);
+                                $fkStmt = $pdo->query("SELECT `$refCol` FROM `$refTable` LIMIT 100");
+                                $fkCache[$refPart] = $fkStmt->fetchAll(PDO::FETCH_COLUMN);
+                            }
+                            if (!empty($fkCache[$refPart])) {
+                                $rowValues[] = $fkCache[$refPart][array_rand($fkCache[$refPart])];
+                            } else {
+                                $rowValues[] = null;
+                            }
+                            continue;
+                        }
+
+                        // Priority 3: Enum values
+                        if (strpos($type, 'enum:') === 0) {
+                            $options = explode(',', substr($type, 5));
+                            $rowValues[] = $options[array_rand($options)];
+                            continue;
+                        }
+
+                        // Priority 4: Standard Fake Data
                         $rowValues[] = generate_fake_data($type, $i);
                     }
                     $stmt->execute($rowValues);
                 }
                 
                 $pdo->commit();
-                redirect("?table=$sTable&view=data&msg=" . urlencode("Successfully seeded $sCount rows into $sTable."));
+                redirect("?table=$sTable&view=data&msg=" . urlencode("Successfully seeded $sCount rows."));
             } catch (Exception $e) {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 $error = "Seeding Error: " . $e->getMessage();
             }
         }
+    }
+    // --- SAVE GITHUB CONFIG ---
+    elseif ($action === 'save_github_config') {
+        $cfg = load_config($configFile);
+        $cfg['github'] = [
+            'token' => $_POST['gh_token'] ?? '',
+            'repo' => $_POST['gh_repo'] ?? '',
+            'user' => $_POST['gh_user'] ?? '',
+            'path' => $_POST['gh_path'] ?? 'backups'
+        ];
+        save_config($configFile, $cfg);
+        redirect("?msg=" . urlencode("GitHub settings saved."));
+    }
+    // --- PUSH BACKUP TO GITHUB ---
+    elseif ($action === 'push_github_backup') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['github'] ?? null;
+        if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
+            echo json_encode(['success' => false, 'message' => 'GitHub not configured (Token, User, and Repo required)']);
+            exit;
+        }
+
+        try {
+            $sqlDump = "-- Adminer Lite Backup\n-- Date: " . date('Y-m-d H:i:s') . "\n\n";
+            if ($dbMode === 'sql' && isset($pdo)) {
+                $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+                foreach ($tables as $t) {
+                    $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
+                    $sqlDump .= "\n\n" . $res['Create Table'] . ";\n\n";
+                    $rows = $pdo->query("SELECT * FROM `$t`")->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($rows as $row) {
+                        $keys = array_keys($row);
+                        $vals = array_map(function($v) use ($pdo) { 
+                            if ($v === null) return 'NULL';
+                            return $pdo->quote((string)$v); 
+                        }, array_values($row));
+                        $sqlDump .= "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ");\n";
+                    }
+                }
+            } else {
+                 echo json_encode(['success' => false, 'message' => 'Backup only supports SQL mode for now']);
+                 exit;
+            }
+
+            $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
+            $path = trim($cfg['path'], '/') . '/' . $filename;
+            $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/$path";
+            
+            $payload = json_encode([
+                'message' => "Database Backup: " . date('Y-m-d H:i:s'),
+                'content' => base64_encode($sqlDump)
+            ]);
+
+            $ch = curl_init($apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                "Authorization: token {$cfg['token']}",
+                "User-Agent: Adminer-Lite-Backup",
+                "Content-Type: application/json"
+            ]);
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PUT");
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($httpCode >= 200 && $httpCode < 300) {
+                echo json_encode(['success' => true, 'message' => 'Backup pushed to GitHub successfully']);
+            } else {
+                $err = json_decode($response, true);
+                echo json_encode(['success' => false, 'message' => $err['message'] ?? 'GitHub API Error']);
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- GET GITHUB BACKUPS ---
+    elseif ($action === 'get_github_backups') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['github'] ?? null;
+        if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
+            echo json_encode([]);
+            exit;
+        }
+
+        $path = trim($cfg['path'], '/');
+        $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/$path";
+        
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Authorization: token {$cfg['token']}",
+            "User-Agent: Adminer-Lite-Backup"
+        ]);
+        $response = curl_exec($ch);
+        curl_close($ch);
+        
+        $files = json_decode($response, true);
+        $backups = [];
+        if (is_array($files)) {
+            foreach ($files as $f) {
+                if (isset($f['name']) && strpos($f['name'], '.sql') !== false) {
+                    $backups[] = [
+                        'name' => $f['name'],
+                        'download_url' => $f['download_url'],
+                        'size' => $f['size']
+                    ];
+                }
+            }
+        }
+        echo json_encode(array_reverse($backups));
+        exit;
+    }
+    // --- RESTORE FROM GITHUB ---
+    elseif ($action === 'restore_github_backup') {
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['github'] ?? null;
+        $url = $_POST['url'] ?? '';
+        
+        if (!$cfg || empty($cfg['token']) || !$url) {
+            echo json_encode(['success' => false, 'message' => 'GitHub not configured or URL missing']);
+            exit;
+        }
+
+        try {
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                "Authorization: token {$cfg['token']}",
+                "User-Agent: Adminer-Lite-Backup"
+            ]);
+            $sqlContent = curl_exec($ch);
+            curl_close($ch);
+
+            if (!$sqlContent) {
+                echo json_encode(['success' => false, 'message' => 'Failed to download backup file']);
+                exit;
+            }
+
+            if (isset($pdo)) {
+                $queries = array_filter(array_map('trim', explode(';', $sqlContent)));
+                $pdo->beginTransaction();
+                foreach ($queries as $q) {
+                    if (!empty($q)) $pdo->exec($q);
+                }
+                $pdo->commit();
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'message' => 'Database not connected']);
+            }
+        } catch (Exception $e) {
+            if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
     }
     // --- MANAGE DATABASE SERVER (SQL) ---
     elseif ($action === 'create_database_server') {
@@ -6290,8 +6486,168 @@ var advancedFilters = null;
                         </div>
                     <?php endforeach; endif; ?>
                 </div>
+                
+                <!-- GITHUB BACKUP SECTION -->
+                <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-top:20px;">
+                    <div class="card" style="margin-bottom:0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                            <h4 style="margin:0;"><i class="fab fa-github"></i> GitHub Backup & Recovery (Private Repo)</h4>
+                            <div style="display:flex; gap:10px;">
+                                <button type="button" class="btn btn-sm" onclick="openGithubSettings()" style="background:#444;">
+                                    <i class="fas fa-cog"></i> Settings
+                                </button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="pushBackupToGithub()">
+                                    <i class="fas fa-cloud-upload-alt"></i> Backup Now (Push)
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <?php 
+                        $ghCfg = load_config($configFile)['github'] ?? null;
+                        if (!$ghCfg || empty($ghCfg['token'])): ?>
+                            <div style="text-align:center; padding:20px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
+                                <i class="fas fa-info-circle"></i> GitHub not configured. Click "Settings" to link your private repository.
+                            </div>
+                        <?php else: ?>
+                            <div id="github-backups-container">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                    <span style="font-size:0.85rem; color:var(--text-secondary);">Recent Recovery Points (GitHub):</span>
+                                    <button onclick="loadGithubBackups()" class="btn btn-sm" style="background:none; border:none; color:var(--accent);"><i class="fas fa-sync"></i> Refresh List</button>
+                                </div>
+                                <div id="gh-backups-list" class="table-wrapper" style="max-height:200px; overflow:auto;">
+                                    <div style="text-align:center; padding:20px;">Loading backups...</div>
+                                </div>
+                            </div>
+                            <script>
+                            // --- GITHUB BACKUP FUNCTIONS (SCOPED TO DASHBOARD) ---
+                            function openGithubSettings() {
+                                const gh = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['github'] ?? (object)[]); ?>;
+                                Swal.fire({
+                                    title: '<i class="fab fa-github"></i> GitHub API Settings',
+                                    background: 'var(--bg-card)',
+                                    color: 'var(--text-primary)',
+                                    html: `<div style="text-align:left;">
+                                            <label class="form-label" style="display:block; margin-bottom:5px;">GitHub Username</label>
+                                            <input type="text" id="gh_user" class="swal2-input" value="${gh.user || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                            <label class="form-label" style="display:block; margin-bottom:5px;">Private Repo Name</label>
+                                            <input type="text" id="gh_repo" class="swal2-input" value="${gh.repo || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                            <label class="form-label" style="display:block; margin-bottom:5px;">Personal Access Token</label>
+                                            <input type="password" id="gh_token" class="swal2-input" value="${gh.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                            <label class="form-label" style="display:block; margin-bottom:5px;">Folder Path</label>
+                                            <input type="text" id="gh_path" class="swal2-input" value="${gh.path || 'backups'}" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
+                                        </div>`,
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Save Settings',
+                                    preConfirm: () => ({
+                                        action: 'save_github_config',
+                                        gh_user: document.getElementById('gh_user').value,
+                                        gh_repo: document.getElementById('gh_repo').value,
+                                        gh_token: document.getElementById('gh_token').value,
+                                        gh_path: document.getElementById('gh_path').value
+                                    })
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        const form = document.createElement('form');
+                                        form.method = 'POST';
+                                        for (let k in result.value) {
+                                            const input = document.createElement('input');
+                                            input.type = 'hidden';
+                                            input.name = k;
+                                            input.value = result.value[k];
+                                            form.appendChild(input);
+                                        }
+                                        document.body.appendChild(form);
+                                        form.submit();
+                                    }
+                                });
+                            }
 
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px;">
+                            async function fetchJson(url, options) {
+                                const res = await fetch(url, options);
+                                const text = await res.text();
+                                try {
+                                    return JSON.parse(text);
+                                } catch (e) {
+                                    console.error("Invalid JSON:", text);
+                                    throw new Error("Server returned invalid response. Check PHP errors.");
+                                }
+                            }
+
+                            function loadGithubBackups() {
+                                const container = document.getElementById('gh-backups-list');
+                                if (!container) return;
+                                const formData = new FormData();
+                                formData.append('action', 'get_github_backups');
+                                fetchJson('?', { method: 'POST', body: formData })
+                                .then(data => {
+                                    if (!data || data.length === 0) {
+                                        container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-secondary);">No backups found.</div>';
+                                        return;
+                                    }
+                                    let html = '<table style="width:100%; font-size:0.85rem; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--border-color);"><th style="text-align:left; padding:8px;">Filename</th><th style="text-align:right; padding:8px;">Size</th><th style="text-align:right; padding:8px;">Action</th></tr></thead><tbody>';
+                                    data.forEach(f => {
+                                        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-undo"></i> Restore</button></td></tr>`;
+                                    });
+                                    container.innerHTML = html + '</tbody></table>';
+                                }).catch(err => {
+                                    container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger);">${err.message}</div>`;
+                                });
+                            }
+
+                            function pushBackupToGithub() {
+                                Swal.fire({
+                                    title: 'Create Backup Point',
+                                    text: 'Push current database state to GitHub?',
+                                    icon: 'question',
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Yes, Backup Now',
+                                    showLoaderOnConfirm: true,
+                                    preConfirm: () => {
+                                        const formData = new FormData();
+                                        formData.append('action', 'push_github_backup');
+                                        return fetchJson('?', { method: 'POST', body: formData })
+                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
+                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
+                                    }
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        Swal.fire('Success!', 'Backup uploaded!', 'success');
+                                        loadGithubBackups();
+                                    }
+                                });
+                            }
+
+                            function restoreFromGithub(url, name) {
+                                Swal.fire({
+                                    title: 'Restore Backup?',
+                                    text: `Overwrite database with "${name}"?`,
+                                    icon: 'warning',
+                                    showCancelButton: true,
+                                    confirmButtonColor: '#d33',
+                                    confirmButtonText: 'Yes, Restore it!',
+                                    showLoaderOnConfirm: true,
+                                    preConfirm: () => {
+                                        const formData = new FormData();
+                                        formData.append('action', 'restore_github_backup');
+                                        formData.append('url', url);
+                                        return fetchJson('?', { method: 'POST', body: formData })
+                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
+                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
+                                    }
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        Swal.fire('Restored!', 'Reloading...', 'success').then(() => location.reload());
+                                    }
+                                });
+                            }
+
+                            document.addEventListener('DOMContentLoaded', loadGithubBackups);
+                            </script>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; margin-top:20px;">
                     <!-- System Health -->
                     <div class="card" style="margin-bottom:0;">
                         <h4 style="margin-top:0;"><i class="fas fa-server"></i> System Health</h4>
@@ -7284,19 +7640,51 @@ async function generatePhpHash() {
                                         <td><strong><?= htmlspecialchars($col['Field'] ?? '') ?></strong></td>
                                         <td><small><?= htmlspecialchars($col['Type'] ?? '') ?></small></td>
                                         <td>
-                                            <select name="field_types[<?= htmlspecialchars($col['Field'] ?? '') ?>]" class="form-select">
-                                                <option value="">-- Skip / Auto --</option>
-                                                <option value="name">Full Name</option>
-                                                <option value="email">Email Address</option>
-                                                <option value="phone">Phone Number</option>
-                                                <option value="city">City Name</option>
-                                                <option value="text">Long Text / Paragraph</option>
-                                                <option value="number">Random Number</option>
-                                                <option value="date">Date (Y-m-d)</option>
-                                                <option value="datetime">Date Time</option>
-                                                <option value="boolean">Boolean (0/1)</option>
-                                                <option value="password">Hashed Password</option>
-                                            </select>
+                                            <div style="display:flex; gap:10px; align-items:center;">
+                                                <select name="field_types[<?= htmlspecialchars($col['Field'] ?? '') ?>]" class="form-select" style="flex:1;">
+                                                    <option value="">-- Skip / Auto --</option>
+                                                    <?php 
+                                                    // Detect Foreign Keys
+                                                    $isFK = false;
+                                                    if ($dbMode === 'sql' && isset($pdo)) {
+                                                        $fkQ = $pdo->prepare("SELECT REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                                                                             FROM information_schema.KEY_COLUMN_USAGE 
+                                                                             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL");
+                                                        $fkQ->execute([$currentTable, $col['Field']]);
+                                                        if ($fkR = $fkQ->fetch()) {
+                                                            echo '<option value="fk:'.htmlspecialchars($fkR['REFERENCED_TABLE_NAME'].'.'.$fkR['REFERENCED_COLUMN_NAME']).'" selected>FK: '.htmlspecialchars($fkR['REFERENCED_TABLE_NAME']).'</option>';
+                                                            $isFK = true;
+                                                        }
+                                                    } elseif ($dbMode === 'sqlite' && isset($pdo)) {
+                                                        $fkQ = $pdo->query("PRAGMA foreign_key_list(`$currentTable`)");
+                                                        foreach($fkQ->fetchAll() as $fkR) {
+                                                            if ($fkR['from'] === $col['Field']) {
+                                                                echo '<option value="fk:'.htmlspecialchars($fkR['table'].'.'.$fkR['to']).'" selected>FK: '.htmlspecialchars($fkR['table']).'</option>';
+                                                                $isFK = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Detect ENUM
+                                                    if (preg_match('/^enum\((.*)\)$/i', $col['Type'] ?? '', $matches)) {
+                                                        $enumVals = str_replace("'", "", $matches[1]);
+                                                        echo '<option value="enum:'.htmlspecialchars($enumVals).'" '.(!$isFK?'selected':'').'>Enum: '.htmlspecialchars(substr($enumVals, 0, 20)).'...</option>';
+                                                    }
+                                                    ?>
+                                                    <option value="name">Full Name</option>
+                                                    <option value="email">Email Address</option>
+                                                    <option value="phone">Phone Number</option>
+                                                    <option value="city">City Name</option>
+                                                    <option value="text">Long Text / Paragraph</option>
+                                                    <option value="number">Random Number</option>
+                                                    <option value="date">Date (Y-m-d)</option>
+                                                    <option value="datetime">Date Time</option>
+                                                    <option value="boolean">Boolean (0/1)</option>
+                                                    <option value="password">Hashed Password</option>
+                                                </select>
+                                                <input type="text" name="manual_values[<?= htmlspecialchars($col['Field'] ?? '') ?>]" class="form-control" placeholder="Fixed value (optional)" style="flex:1; font-size:0.8rem;">
+                                            </div>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -10233,7 +10621,7 @@ var queryBuilder = null;
                         }
                         container.appendChild(item);
                     }
-
+                    }
                     // switchSqlTab moved to head for better reliability
                     </script>
 </body>
