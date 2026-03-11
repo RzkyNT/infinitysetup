@@ -10122,7 +10122,7 @@ var queryBuilder = null;
             }
         }
 
-        // DRAG TO SELECT ROWS + Double-Toggle Fix
+        // DRAG TO SELECT ROWS + Double-Toggle Fix + SHIFT+CLICK RANGE SELECT
         document.addEventListener('DOMContentLoaded', () => {
             const table = document.querySelector('table[data-table]');
             if (!table) return;
@@ -10130,16 +10130,31 @@ var queryBuilder = null;
             let isDragging = false;
             let startState = true;
             let dragOrigin = null;
+            let lastChecked = null; // Store last checked checkbox for Shift+Click
 
             table.addEventListener('mousedown', (e) => {
                 const checkbox = e.target.closest('.row-checkbox');
                 if (checkbox) {
+                    // Handle Shift+Click Range Select
+                    if (e.shiftKey && lastChecked) {
+                        const checkboxes = Array.from(table.querySelectorAll('.row-checkbox'));
+                        const start = checkboxes.indexOf(checkbox);
+                        const end = checkboxes.indexOf(lastChecked);
+                        const range = checkboxes.slice(Math.min(start, end), Math.max(start, end) + 1);
+                        
+                        range.forEach(cb => cb.checked = lastChecked.checked);
+                        updateBulkBtn();
+                        e.preventDefault();
+                        return;
+                    }
+
                     isDragging = true;
                     dragOrigin = checkbox;
                     startState = !checkbox.checked;
                     checkbox.checked = startState;
+                    lastChecked = checkbox; // Update lastChecked
                     updateBulkBtn();
-                    e.preventDefault(); // Prevents browser focus and native toggle in most browsers
+                    e.preventDefault(); 
                 }
             });
 
@@ -10153,7 +10168,6 @@ var queryBuilder = null;
                 }
             });
 
-            // Handle Delegation: Quick Duplicate + Select All + Checkbox Clicks
             table.addEventListener('click', (e) => {
                 const dupBtn = e.target.closest('.btn-quick-duplicate');
                 if (dupBtn) {
@@ -10171,9 +10185,9 @@ var queryBuilder = null;
 
                 const checkbox = e.target.closest('.row-checkbox');
                 if (checkbox) {
-                    // If we just came from a mousedown toggle, prevent the native click toggle
-                    // but we MUST call updateBulkBtn if we prevent the default native click.
-                    // Actually, let's just use the state we set in mousedown and stop the browser's second toggle.
+                    // Logic already handled in mousedown to fix double-toggle,
+                    // but we ensure lastChecked is updated for standard clicks too
+                    lastChecked = checkbox;
                     e.preventDefault();
                     e.stopPropagation();
                     updateBulkBtn();
