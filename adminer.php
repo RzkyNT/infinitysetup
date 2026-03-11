@@ -1958,8 +1958,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                                     $data[$f] = $parts[0] . "+" . substr(md5(uniqid() . $i), 0, 4) . "@" . $parts[1];
                                 } else {
                                     // Prevent double copy suffix if duplicating a duplicate
-                                    $data[$f] = preg_replace('/\s\(Copy\s\d+\)$/', '', $data[$f]);
-                                    $data[$f] .= " (Copy $i)";
+                                    $data[$f] = preg_replace('/\s\(\d+\)$/', '', $data[$f]);
+                                    $data[$f] .= "$i";
                                 }
                             } elseif (is_numeric($data[$f])) {
                                 $data[$f] = $data[$f] + rand(100, 999) + $i;
