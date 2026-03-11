@@ -8476,7 +8476,7 @@ function readFileContent(file) {
                     </div>
                 </div>
 
-                <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:20px; margin-bottom:20px;">
+                <div style="gap:20px; margin-bottom:20px;">
                     <!-- Row Distribution Chart -->
                     <div class="card" style="margin-bottom:0;">
                         <h3><i class="fas fa-chart-pie"></i> Row Distribution</h3>
