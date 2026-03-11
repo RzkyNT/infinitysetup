@@ -1913,30 +1913,78 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'duplicate_row') {
         $pk = $_POST['pk'] ?? null;
         $val = $_POST['val'] ?? null;
-        $count = isset($_POST['duplicate_count']) ? (int)$_POST['duplicate_count'] : 1;
+        // Support both 'count' (from JS) and 'duplicate_count'
+        $count = isset($_POST['count']) ? (int)$_POST['count'] : (isset($_POST['duplicate_count']) ? (int)$_POST['duplicate_count'] : 1);
         if ($count < 1) $count = 1;
         
         try {
             if ($pk && $val) {
-                for ($i = 0; $i < $count; $i++) {
-                    if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                    for ($i = 0; $i < $count; $i++) {
                         $jsonDb->duplicate_row($table, $val);
-                    } else {
-                        // SQL Mode: Get columns excluding auto_increment
-                        $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
-                        $cols = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                        $colStr = "`" . implode("`, `", $cols) . "`";
-                        
-                        $sql = "INSERT INTO `$table` ($colStr) SELECT $colStr FROM `$table` WHERE `$pk` = ?";
-                        $stmt = $pdo->prepare($sql);
-                        $stmt->execute([$val]);
                     }
+                    $msg = $count > 1 ? "$count rows duplicated successfully." : "Row duplicated successfully.";
+                } else {
+                    // SQL Mode: Fetch original row to handle unique constraints
+                    $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ?");
+                    $stmt->execute([$val]);
+                    $original = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if (!$original) throw new Exception("Original row not found.");
+                    
+                    // Get columns meta to identify unique/primary keys
+                    $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
+                    $colsMeta = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    
+                    $insertCols = [];
+                    $uniqueFields = [];
+                    foreach ($colsMeta as $m) {
+                        $insertCols[] = $m['Field'];
+                        // UNI = Unique, PRI = Primary Key (if not auto-inc)
+                        if ($m['Key'] === 'UNI' || $m['Key'] === 'PRI') {
+                            $uniqueFields[] = $m['Field'];
+                        }
+                    }
+
+                    for ($i = 1; $i <= $count; $i++) {
+                        $data = $original;
+                        foreach ($uniqueFields as $f) {
+                            if ($data[$f] === null) continue;
+                            
+                            if (is_string($data[$f])) {
+                                // Append random string or sequence for uniqueness
+                                if (strpos($data[$f], '@') !== false && filter_var($data[$f], FILTER_VALIDATE_EMAIL)) {
+                                    $parts = explode('@', $data[$f]);
+                                    $data[$f] = $parts[0] . "+" . substr(md5(uniqid() . $i), 0, 4) . "@" . $parts[1];
+                                } else {
+                                    // Prevent double copy suffix if duplicating a duplicate
+                                    $data[$f] = preg_replace('/\s\(Copy\s\d+\)$/', '', $data[$f]);
+                                    $data[$f] .= " (Copy $i)";
+                                }
+                            } elseif (is_numeric($data[$f])) {
+                                $data[$f] = $data[$f] + rand(100, 999) + $i;
+                            }
+                        }
+                        
+                        $fields = [];
+                        $placeholders = [];
+                        $values = [];
+                        foreach ($insertCols as $colName) {
+                            $fields[] = "`$colName`";
+                            $placeholders[] = "?";
+                            $values[] = $data[$colName];
+                        }
+                        
+                        $sql = "INSERT INTO `$table` (" . implode(', ', $fields) . ") VALUES (" . implode(', ', $placeholders) . ")";
+                        $stmt = $pdo->prepare($sql);
+                        $stmt->execute($values);
+                    }
+                    $msg = $count > 1 ? "$count rows duplicated successfully." : "Row duplicated successfully.";
                 }
-                $msg = $count > 1 ? "$count rows duplicated successfully." : "Row duplicated successfully.";
+                redirect("?table=$table&view=data&msg=" . urlencode($msg));
             }
-            redirect("?table=$table&view=data&msg=" . urlencode($msg));
         } catch (Exception $e) {
-            $error = $e->getMessage();
+            $error = "Duplicate error: " . $e->getMessage();
         }
     }
     // --- SAVE ROW ---
@@ -2937,7 +2985,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'token' => $_POST['gh_token'] ?? '',
             'repo' => $_POST['gh_repo'] ?? '',
             'user' => $_POST['gh_user'] ?? '',
-            'path' => $_POST['gh_path'] ?? 'backups'
+            'path' => $_POST['gh_path'] ?? 'backups',
+            'auto' => $_POST['gh_auto'] ?? '',
+            'last_backup' => $cfg['github']['last_backup'] ?? 0
         ];
         save_config($configFile, $cfg);
         redirect("?msg=" . urlencode("GitHub settings saved."));
@@ -2958,7 +3008,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
                 foreach ($tables as $t) {
                     $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
-                    $sqlDump .= "\n\n" . $res['Create Table'] . ";\n\n";
+                    $sqlDump .= "\n\nDROP TABLE IF EXISTS `$t`;\n";
+                    $sqlDump .= $res['Create Table'] . ";\n\n";
                     $rows = $pdo->query("SELECT * FROM `$t`")->fetchAll(PDO::FETCH_ASSOC);
                     foreach ($rows as $row) {
                         $keys = array_keys($row);
@@ -3000,6 +3051,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_close($ch);
 
             if ($httpCode >= 200 && $httpCode < 300) {
+                // Update last backup time
+                if ($cfg) {
+                    $config = load_config($configFile);
+                    $config['github']['last_backup'] = time();
+                    save_config($configFile, $config);
+                }
                 echo json_encode(['success' => true, 'message' => 'Backup pushed to GitHub successfully']);
             } else {
                 $err = json_decode($response, true);
@@ -3079,13 +3136,27 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if (isset($pdo)) {
-                $queries = array_filter(array_map('trim', explode(';', $sqlContent)));
-                $pdo->beginTransaction();
-                foreach ($queries as $q) {
-                    if (!empty($q)) $pdo->exec($q);
+                // Backward compatibility: inject DROP TABLE IF EXISTS for old backups that didn't have it
+                $sqlContent = preg_replace('/CREATE\s+TABLE\s+`?([a-zA-Z0-9_$]+)`?/i', "DROP TABLE IF EXISTS `$1`;\nCREATE TABLE `$1`", $sqlContent);
+                
+                // Split by ";\n" to avoid breaking semicolons inside string data
+                $queries = array_filter(array_map('trim', explode(";\n", $sqlContent)));
+                
+                try {
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
+                    foreach ($queries as $q) {
+                        // Remove any remaining trailing semicolons explicitly
+                        $q = rtrim($q, ';');
+                        if (!empty($q)) {
+                            // Suppress errors per-query so a single failed DDL (like missing table on drop) doesn't halt restore
+                            try { $pdo->exec($q); } catch (PDOException $e) {} 
+                        }
+                    }
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
                 }
-                $pdo->commit();
-                echo json_encode(['success' => true]);
             } else {
                 echo json_encode(['success' => false, 'message' => 'Database not connected']);
             }
@@ -3136,6 +3207,73 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $err = json_decode($response, true);
             echo json_encode(['success' => false, 'message' => $err['message'] ?? 'Failed to delete backup from GitHub']);
+        }
+        exit;
+    }
+    // --- CLONE TABLE ---
+    elseif ($action === 'clone_table') {
+        $sourceTable = $_POST['table'] ?? '';
+        $newTable = $_POST['new_name'] ?? '';
+        $copyData = isset($_POST['copy_data']) && $_POST['copy_data'] == '1';
+        
+        if ($sourceTable && $newTable && isset($pdo) && $dbMode === 'sql') {
+            try {
+                $pdo->exec("CREATE TABLE `$newTable` LIKE `$sourceTable`");
+                if ($copyData) {
+                    $pdo->exec("INSERT INTO `$newTable` SELECT * FROM `$sourceTable`");
+                }
+                redirect("?table=$newTable&msg=" . urlencode("Table cloned successfully to $newTable."));
+            } catch (Exception $e) {
+                $error = "Cloning Error: " . $e->getMessage();
+            }
+        } elseif ($dbMode !== 'sql') {
+            $error = "Cloning is only supported for SQL mode at this time.";
+        }
+    }
+    // --- GENERATE DATA DICTIONARY ---
+    elseif ($action === 'generate_dictionary') {
+        while (ob_get_level()) ob_end_clean();
+        $dbName = $_SESSION['db_name'] ?? 'database';
+        $filename = "dictionary_{$dbName}_" . date("Y-m-d_H-i") . ".md";
+        
+        header('Content-Type: text/markdown');
+        header("Content-disposition: attachment; filename=\"$filename\"");
+        
+        echo "# Data Dictionary: `$dbName`\n";
+        echo "Generated on: " . date("Y-m-d H:i:s") . "\n\n";
+
+        if ($dbMode === 'sql' && isset($pdo)) {
+            $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($tables as $t) {
+                echo "## Table: `$t`\n\n";
+                echo "| Column | Type | Null | Key | Default | Extra |\n";
+                echo "| :--- | :--- | :--- | :--- | :--- | :--- |\n";
+                $cols = $pdo->query("DESCRIBE `$t`")->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($cols as $c) {
+                    $null = $c['Null'] === 'YES' ? 'Yes' : 'No';
+                    $def = $c['Default'] === null ? 'NULL' : $c['Default'];
+                    echo "| `{$c['Field']}` | {$c['Type']} | $null | {$c['Key']} | $def | {$c['Extra']} |\n";
+                }
+                echo "\n";
+            }
+        } elseif ($dbMode === 'sqlite' && isset($pdo)) {
+            $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+            $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($tables as $t) {
+                echo "## Table: `$t`\n\n";
+                echo "| Column | Type | Null | Key | Default |\n";
+                echo "| :--- | :--- | :--- | :--- | :--- |\n";
+                $cols = $pdo->query("PRAGMA table_info(`$t`)")->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($cols as $c) {
+                    $null = $c['notnull'] ? 'No' : 'Yes';
+                    $key = $c['pk'] ? 'PRI' : '';
+                    $def = $c['dflt_value'] === null ? 'NULL' : $c['dflt_value'];
+                    echo "| `{$c['name']}` | {$c['type']} | $null | $key | $def |\n";
+                }
+                echo "\n";
+            }
+        } else {
+             echo "Data Dictionary generator only supports SQL and SQLite modes.";
         }
         exit;
     }
@@ -6761,7 +6899,14 @@ var advancedFilters = null;
                                             <label class="form-label" style="display:block; margin-bottom:5px;">Personal Access Token</label>
                                             <input type="password" id="gh_token" class="swal2-input" value="${gh.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
                                             <label class="form-label" style="display:block; margin-bottom:5px;">Folder Path</label>
-                                            <input type="text" id="gh_path" class="swal2-input" value="${gh.path || 'backups'}" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
+                                            <input type="text" id="gh_path" class="swal2-input" value="${gh.path || 'backups'}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                            <label class="form-label" style="display:block; margin-bottom:5px;">Auto Backup Schedule</label>
+                                            <select id="gh_auto" class="swal2-input" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
+                                                <option value="">None / Manual Only</option>
+                                                <option value="3600" ${gh.auto == '3600' ? 'selected' : ''}>Every 1 Hour</option>
+                                                <option value="86400" ${gh.auto == '86400' ? 'selected' : ''}>Daily (24h)</option>
+                                                <option value="604800" ${gh.auto == '604800' ? 'selected' : ''}>Weekly (7d)</option>
+                                            </select>
                                         </div>`,
                                     showCancelButton: true,
                                     confirmButtonText: 'Save Settings',
@@ -6770,7 +6915,8 @@ var advancedFilters = null;
                                         gh_user: document.getElementById('gh_user').value,
                                         gh_repo: document.getElementById('gh_repo').value,
                                         gh_token: document.getElementById('gh_token').value,
-                                        gh_path: document.getElementById('gh_path').value
+                                        gh_path: document.getElementById('gh_path').value,
+                                        gh_auto: document.getElementById('gh_auto').value
                                     })
                                 }).then((result) => {
                                     if (result.isConfirmed) {
@@ -6895,14 +7041,38 @@ var advancedFilters = null;
                             }
 
                             document.addEventListener('DOMContentLoaded', loadGithubBackups);
+                            
+                            // Auto Backup Pseudo-Cron Check
+                            <?php 
+                            $ghNow = time();
+                            $ghLast = $ghCfg['last_backup'] ?? 0;
+                            $ghInterval = (int)($ghCfg['auto'] ?? 0);
+                            if ($ghInterval > 0 && ($ghNow - $ghLast) >= $ghInterval): ?>
+                                document.addEventListener('DOMContentLoaded', () => {
+                                    const fd = new FormData();
+                                    fd.append('action', 'push_github_backup');
+                                    fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                                        if (res.success && typeof loadGithubBackups === 'function') loadGithubBackups();
+                                        console.log(res.message);
+                                    }).catch(e => console.error('Auto backup failed', e));
+                                });
+                            <?php endif; ?>
                             </script>
                     </div>
                 </div>
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; margin-top:20px;">
-                    <!-- System Health -->
+                    <!-- System Health & Data Dictionary -->
                     <div class="card" style="margin-bottom:0;">
-                        <h4 style="margin-top:0;"><i class="fas fa-server"></i> System Health</h4>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0; margin-bottom:15px; border-bottom:1px solid var(--border-color); padding-bottom:10px;">
+                            <h4 style="margin:0;"><i class="fas fa-server"></i> System Health</h4>
+                            <form method="POST" style="margin:0;">
+                                <input type="hidden" name="action" value="generate_dictionary">
+                                <button type="submit" class="btn btn-sm btn-success" style="padding:4px 10px; font-size: 0.8rem;">
+                                    <i class="fas fa-book"></i> Export Data Dictionary 
+                                </button>
+                            </form>
+                        </div>
                         <div class="perf-item">
                             <span class="perf-label">PHP Version</span>
                             <span class="perf-value"><?= PHP_VERSION ?></span>
@@ -8007,6 +8177,9 @@ async function generatePhpHash() {
                         <a href="#foreign-keys-section" class="btn" style="margin-left:10px;"><i class="fas fa-link"></i> Add Relation</a>
 
                         <div style="display: flex; gap: 10px; margin-left:auto;">
+                             <!-- Clone Table -->
+                             <button type="button" onclick="openCloneModal('<?=htmlspecialchars($currentTable)?>')" class="btn btn-accent" style="margin-right:15px;"><i class="fas fa-copy"></i> Clone</button>
+
                              <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('TRUNCATE this table? All data will be lost!') ?>)' style="display:inline;">
                                 <input type="hidden" name="action" value="truncate_table">
                                 <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
@@ -8019,6 +8192,30 @@ async function generatePhpHash() {
                             </form>
                         </div>
                     </div>
+                    
+                    <script>
+                    function openCloneModal(tableName) {
+                        Swal.fire({
+                            title: 'Clone Table',
+                            html: `
+                                <form id="cloneForm" method="POST" action="?table=${encodeURIComponent(tableName)}&view=structure">
+                                    <input type="hidden" name="action" value="clone_table">
+                                    <input type="hidden" name="table" value="${tableName}">
+                                    <input type="text" name="new_name" class="swal2-input" value="${tableName}_copy" placeholder="New Table Name" required>
+                                    <label style="display:flex; align-items:center; justify-content:center; margin-top:15px; cursor:pointer;">
+                                        <input type="checkbox" name="copy_data" value="1" checked style="margin-right:8px; width:16px; height:16px;">
+                                        Include All Data Records
+                                    </label>
+                                </form>
+                            `,
+                            showCancelButton: true,
+                            confirmButtonText: 'Clone',
+                            preConfirm: () => {
+                                document.getElementById('cloneForm').submit();
+                            }
+                        });
+                    }
+                    </script>
 
                     <!-- INDEXES SECTION -->
                     <?php
