@@ -739,6 +739,65 @@ function is_valid_db_name($name)
     return (bool) preg_match('/^[A-Za-z0-9_\\$\\-\\.]+$/', $name);
 }
 
+/**
+ * Get Database Health and Performance Stats
+ */
+function get_db_health($pdo, $dbName, $dbMode) {
+    if (!$pdo) return null;
+    $stats = [];
+    try {
+        if ($dbMode === 'sql') {
+            $stmt = $pdo->query("SELECT VERSION() as ver, 
+                                (SELECT count(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as tables_count,
+                                (SELECT SUM(TABLE_ROWS) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as total_rows,
+                                (SELECT SUM(DATA_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as data_size,
+                                (SELECT SUM(INDEX_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as index_size");
+            $res = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($res) $stats = $res;
+            
+            $statusStmt = $pdo->query("SHOW STATUS LIKE 'Uptime'");
+            $stats['uptime'] = $statusStmt->fetch(PDO::FETCH_ASSOC)['Value'] ?? '0';
+            
+            $connStmt = $pdo->query("SHOW STATUS LIKE 'Threads_connected'");
+            $stats['connections'] = $connStmt->fetch(PDO::FETCH_ASSOC)['Value'] ?? '0';
+        } else if ($dbMode === 'sqlite') {
+             $stats['tables_count'] = $pdo->query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchColumn();
+             $stats['total_rows'] = 'N/A';
+             $stats['data_size'] = file_exists($_SESSION['sqlite_file'] ?? '') ? filesize($_SESSION['sqlite_file']) : 0;
+             $stats['index_size'] = 0;
+             $stats['ver'] = $pdo->query("select sqlite_version()")->fetchColumn();
+             $stats['uptime'] = 'N/A';
+        }
+    } catch (Exception $e) { return null; }
+    return $stats;
+}
+
+/**
+ * Generate Smart Fake Data
+ */
+function generate_fake_data($type, $index = 0) {
+    $names = ['James Smith', 'Maria Garcia', 'Robert Hernandez', 'David Miller', 'Linda Martinez', 'Michael Davis', 'Sarah Taylor', 'William Lopez', 'Angela Wilson', 'Daniel Anderson'];
+    $domains = ['example.com', 'test.io', 'mail.net', 'company.org', 'web.com'];
+    $cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'London', 'Berlin', 'Paris', 'Tokyo', 'Jakarta'];
+    $texts = ['Lorem ipsum dolor sit amet.', 'Quick brown fox jumps over lazy dog.', 'Data integrity is very important.', 'Fastest database manager in the west.', 'This is a sample generated text.'];
+    
+    switch (strtolower((string)$type)) {
+        case 'name': return $names[rand(0, count($names)-1)];
+        case 'email': 
+            $n = strtolower(str_replace(' ', '.', $names[rand(0, count($names)-1)]));
+            return $n . rand(10, 99) . '@' . $domains[rand(0, count($domains)-1)];
+        case 'phone': return '08' . rand(11, 19) . '-' . rand(1000, 9999) . '-' . rand(1000, 9999);
+        case 'city': return $cities[rand(0, count($cities)-1)];
+        case 'text': return $texts[rand(0, count($texts)-1)];
+        case 'number': return rand(1, 1000);
+        case 'boolean': return rand(0, 1);
+        case 'date': return date('Y-m-d', strtotime('-' . rand(0, 365) . ' days'));
+        case 'datetime': return date('Y-m-d H:i:s', strtotime('-' . rand(0, 365) . ' days -' . rand(0, 86400) . ' seconds'));
+        case 'password': return password_hash('password123', PASSWORD_BCRYPT);
+        default: return 'Value ' . ($index + 1);
+    }
+}
+
 // Deprecated wrapper functions for compatibility if needed, but we use load_config directly now
 function load_db_config($path) { return load_config($path); }
 function save_db_config($path, $data) { return save_config($path, $data); }
@@ -2671,6 +2730,71 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?view=manage_dbs&msg=" . urlencode($msg ?? ''));
     }
+    // --- ADD DASHBOARD WIDGET ---
+    elseif ($action === 'add_widget') {
+        $wTable = $_POST['table'] ?? '';
+        $wColumn = $_POST['column'] ?? '*';
+        $wType = $_POST['type'] ?? 'COUNT';
+        $wLabel = $_POST['label'] ?? "$wTable ($wType)";
+        $wColor = $_POST['color'] ?? 'accent';
+        
+        $config = load_config($configFile);
+        if (!isset($config['widgets'])) $config['widgets'] = [];
+        
+        $config['widgets'][] = [
+            'id' => uniqid(),
+            'table' => $wTable,
+            'column' => $wColumn,
+            'type' => $wType,
+            'label' => $wLabel,
+            'color' => $wColor
+        ];
+        
+        save_config($configFile, $config);
+        redirect("?msg=" . urlencode("Widget added to dashboard."));
+    }
+    // --- REMOVE DASHBOARD WIDGET ---
+    elseif ($action === 'remove_widget') {
+        $wId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['widgets'])) {
+            $config['widgets'] = array_filter($config['widgets'], function($w) use ($wId) {
+                return $w['id'] !== $wId;
+            });
+            save_config($configFile, $config);
+        }
+        redirect("?msg=" . urlencode("Widget removed."));
+    }
+    // --- SMART SEEDER ---
+    elseif ($action === 'seed_data') {
+        $sTable = $_POST['table'] ?? '';
+        $sCount = (int)($_POST['count'] ?? 10);
+        $sConfig = $_POST['field_types'] ?? []; // Map column => type
+        
+        if ($sTable && !empty($sConfig) && isset($pdo)) {
+            try {
+                $pdo->beginTransaction();
+                $columns = array_keys($sConfig);
+                $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+                $sql = "INSERT INTO `$sTable` (`" . implode('`, `', $columns) . "`) VALUES ($placeholders)";
+                $stmt = $pdo->prepare($sql);
+                
+                for ($i = 0; $i < $sCount; $i++) {
+                    $rowValues = [];
+                    foreach ($sConfig as $col => $type) {
+                        $rowValues[] = generate_fake_data($type, $i);
+                    }
+                    $stmt->execute($rowValues);
+                }
+                
+                $pdo->commit();
+                redirect("?table=$sTable&view=data&msg=" . urlencode("Successfully seeded $sCount rows into $sTable."));
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $error = "Seeding Error: " . $e->getMessage();
+            }
+        }
+    }
     // --- MANAGE DATABASE SERVER (SQL) ---
     elseif ($action === 'create_database_server') {
         $dbName = trim($_POST['name'] ?? '');
@@ -2714,6 +2838,25 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
+    }
+    // --- GET COLUMNS AJAX ---
+    elseif ($action === 'get_columns') {
+        header('Content-Type: application/json');
+        $t = $_GET['table'] ?? '';
+        $cols = [];
+        if ($t && isset($pdo)) {
+            try {
+                if ($dbMode === 'sqlite') {
+                    $stmt = $pdo->query("PRAGMA table_info(`$t`)");
+                    foreach($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $cols[] = $row['name'];
+                } else {
+                    $stmt = $pdo->query("DESCRIBE `$t`");
+                    $cols = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'Field');
+                }
+            } catch (Exception $e) {}
+        }
+        echo json_encode($cols);
+        exit;
     }
     // --- CREATE TABLE ---
     elseif ($action === 'create_table') {
@@ -3561,6 +3704,80 @@ if (!empty($tables)) {
             color: white;
             font-weight: bold;
         }
+
+        /* Dashboard Widget Styles */
+        .widget-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .widget-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+            transition: transform 0.2s, box-shadow 0.2s;
+            overflow: hidden;
+        }
+        .widget-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            border-color: var(--accent);
+        }
+        .widget-card .icon {
+            font-size: 2rem;
+            margin-bottom: 15px;
+            opacity: 0.8;
+        }
+        .widget-card .value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 5px;
+            color: var(--text-primary);
+        }
+        .widget-card .label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .widget-remove {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .widget-card:hover .widget-remove {
+            opacity: 1;
+        }
+
+        /* JSON Tree Editor Styles */
+        .json-tree {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        .json-key { color: #f97316; font-weight: bold; }
+        .json-string { color: #10b981; }
+        .json-number { color: #3b82f6; }
+        .json-boolean { color: #ef4444; }
+        .json-toggle { cursor: pointer; color: var(--text-secondary); margin-right: 5px; }
+
+        /* Performance Monitor List */
+        .perf-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .perf-item:last-child { border-bottom: none; }
+        .perf-label { color: var(--text-secondary); font-size: 0.9rem; }
+        .perf-value { color: var(--text-primary); font-weight: 600; font-family: monospace; }
     </style>
     <script>
         function switchSqlTab(tabId) {
@@ -6025,43 +6242,116 @@ var advancedFilters = null;
             $dbMode = $_SESSION['db_mode'] ?? 'sql';
             if (!$currentTable): 
             ?>
-                <!-- System Health Dashboard -->
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:15px; margin-bottom:20px;">
-                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
-                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(0, 123, 255, 0.1); color:#007bff; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
-                            <i class="fab fa-php"></i>
+                <!-- CUSTOM WIDGETS SECTION -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; margin-top:10px;">
+                    <h3 style="margin:0;"><i class="fas fa-th-large"></i> Custom Widgets</h3>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="openAddWidgetModal()">
+                        <i class="fas fa-plus"></i> Add Widget
+                    </button>
+                </div>
+                
+                <div class="widget-grid">
+                    <?php 
+                    $cfg = load_config($configFile);
+                    $widgets = $cfg['widgets'] ?? [];
+                    if (empty($widgets)): ?>
+                        <div style="grid-column: 1/-1; text-align:center; padding:30px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
+                            No widgets added. Click "Add Widget" to pin table statistics here.
                         </div>
-                        <div>
-                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">PHP Version</div>
-                            <div style="font-size:1.1rem; font-weight:bold;"><?= PHP_VERSION ?></div>
+                    <?php else: 
+                        foreach ($widgets as $w): 
+                            $val = 'N/A';
+                            try {
+                                if (isset($pdo)) {
+                                    $col = $w['column'] === '*' ? '*' : "`{$w['column']}`";
+                                    $wStmt = $pdo->query("SELECT {$w['type']}($col) as val FROM `{$w['table']}`");
+                                    $val = $wStmt->fetchColumn();
+                                } elseif ($dbMode === 'json' && isset($jsonDb)) {
+                                    $data = $jsonDb->select($w['table']);
+                                    if ($w['type'] === 'COUNT') $val = count($data);
+                                }
+                            } catch (Exception $e) {}
+                            
+                            $color = $w['color'] ?? 'accent';
+                            $icon = 'fa-chart-bar';
+                            if ($w['type'] === 'COUNT') $icon = 'fa-calculator';
+                            if ($w['type'] === 'SUM') $icon = 'fa-plus-circle';
+                    ?>
+                        <div class="widget-card">
+                            <form method="POST" style="margin:0;" onsubmit="saConfirmForm(event, 'Remove this widget?')">
+                                <input type="hidden" name="action" value="remove_widget">
+                                <input type="hidden" name="id" value="<?= $w['id'] ?>">
+                                <button type="submit" class="widget-remove" title="Remove Widget" style="background:none; border:none;"><i class="fas fa-times"></i></button>
+                            </form>
+                            <div class="icon" style="color:var(--<?= $color ?>)"><i class="fas <?= $icon ?>"></i></div>
+                            <div class="value"><?= is_numeric($val) ? number_format($val) : $val ?></div>
+                            <div class="label"><?= htmlspecialchars($w['label']) ?></div>
+                            <div style="position:absolute; bottom:0; left:0; right:0; height:4px; background:var(--<?= $color ?>); opacity:0.3;"></div>
+                        </div>
+                    <?php endforeach; endif; ?>
+                </div>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px;">
+                    <!-- System Health -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h4 style="margin-top:0;"><i class="fas fa-server"></i> System Health</h4>
+                        <div class="perf-item">
+                            <span class="perf-label">PHP Version</span>
+                            <span class="perf-value"><?= PHP_VERSION ?></span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Max Upload</span>
+                            <span class="perf-value"><?= ini_get('upload_max_filesize') ?></span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Memory Limit</span>
+                            <span class="perf-value"><?= ini_get('memory_limit') ?></span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Post Max Size</span>
+                            <span class="perf-value"><?= ini_get('post_max_size') ?></span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Status</span>
+                            <span class="perf-value" style="color:<?=isset($pdo)?'var(--success)':'var(--danger)'?>"><?= isset($pdo) ? 'CONNECTED' : 'OFFLINE' ?></span>
                         </div>
                     </div>
-                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
-                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(16, 185, 129, 0.1); color:var(--success); display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
-                            <i class="fas fa-upload"></i>
-                        </div>
-                        <div>
-                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Max Upload</div>
-                            <div style="font-size:1.1rem; font-weight:bold;"><?= ini_get('upload_max_filesize') ?></div>
-                        </div>
-                    </div>
-                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
-                        <div style="width:45px; height:45px; border-radius:10px; background:rgba(251, 191, 36, 0.1); color:#fbbf24; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
-                            <i class="fas fa-clock"></i>
-                        </div>
-                        <div>
-                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Server Time</div>
-                            <div style="font-size:1.1rem; font-weight:bold;"><?= date('H:i:s') ?></div>
-                        </div>
-                    </div>
-                    <div class="card" style="margin-bottom:0; display:flex; align-items:center; gap:15px; padding:20px;">
-                        <div style="width:45px; height:45px; border-radius:10px; background:<?=isset($pdo)?'rgba(16, 185, 129, 0.1)':'rgba(239, 68, 68, 0.1)'?>; color:<?=isset($pdo)?'var(--success)':'var(--danger)'?>; display:flex; align-items:center; justify-content:center; font-size:1.5rem;">
-                            <i class="fas fa-plug"></i>
-                        </div>
-                        <div>
-                            <div style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:bold;">Status</div>
-                            <div style="font-size:1.1rem; font-weight:bold;"><?= isset($pdo) ? 'Active' : 'Disconnected' ?></div>
-                        </div>
+
+                    <!-- DB Performance Monitor -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h4 style="margin-top:0;"><i class="fas fa-bolt"></i> Database Monitor</h4>
+                        <?php 
+                        $health = get_db_health($pdo, $_SESSION['db_name'] ?? '', $dbMode);
+                        if ($health): ?>
+                            <div class="perf-item">
+                                <span class="perf-label">DB Version</span>
+                                <span class="perf-value"><?= htmlspecialchars($health['ver'] ?? 'N/A') ?></span>
+                            </div>
+                            <?php if ($dbMode === 'sql' && isset($health['uptime'])): ?>
+                            <div class="perf-item">
+                                <span class="perf-label">Uptime</span>
+                                <span class="perf-value"><?= is_numeric($health['uptime']) ? number_format($health['uptime']/3600, 1) . ' hrs' : $health['uptime'] ?></span>
+                            </div>
+                            <?php endif; ?>
+                            <div class="perf-item">
+                                <span class="perf-label">Total Tables</span>
+                                <span class="perf-value"><?= $health['tables_count'] ?></span>
+                            </div>
+                            <div class="perf-item">
+                                <span class="perf-label">Total Data Size</span>
+                                <span class="perf-value"><?= formatSize($health['data_size']) ?></span>
+                            </div>
+                            <?php if (isset($health['index_size']) && $health['index_size'] > 0): ?>
+                            <div class="perf-item">
+                                <span class="perf-label">Index Size</span>
+                                <span class="perf-value"><?= formatSize($health['index_size']) ?></span>
+                            </div>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <div style="text-align:center; padding:20px; color:var(--text-secondary);">
+                                Performance data not available for this mode or connection.
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -6303,6 +6593,7 @@ var advancedFilters = null;
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="tab <?=$view==='data'?'active':''?>">Data</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=sql" class="tab <?=$view==='sql'?'active':''?>">SQL</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
+                    <a href="?table=<?=htmlspecialchars($currentTable)?>&view=seeder" class="tab <?=$view==='seeder'?'active':''?>">Seeder</a>
                     <div style="flex:1;"></div>
                     <!-- Actions -->
                     <button type="button" class="btn" onclick="copyTableStructure('<?=htmlspecialchars($currentTable)?>')" style="margin-right:10px;"><i class="fas fa-copy"></i> Copy Structure</button>
@@ -6572,6 +6863,16 @@ var advancedFilters = null;
                                                         . '</div>'
                                                         . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
                                                         . '</div>';
+                                                }
+                                                // Check if it's a JSON string
+                                                elseif (strpos($valStr, '{') === 0 || strpos($valStr, '[') === 0) {
+                                                    $decoded = json_decode($valStr, true);
+                                                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                                                        $displayVal = '<div class="json-cell" data-raw="' . htmlspecialchars($valStr) . '" style="background:rgba(255,255,255,0.03); padding:8px; border-radius:4px; max-height:100px; overflow:hidden; font-family:monospace; font-size:0.8rem; cursor:pointer; border:1px solid rgba(255,255,255,0.1);" onclick="openJsonEditor(this)" title="Click to view/edit as Tree">'
+                                                                    . '<div style="color:var(--accent); font-weight:bold; font-size:0.7rem; margin-bottom:4px; text-transform:uppercase;"><i class="fas fa-file-code"></i> JSON Data</div>'
+                                                                    . '<div style="opacity:0.6;">' . htmlspecialchars(substr($valStr, 0, 80)) . (strlen($valStr) > 80 ? '...' : '') . '</div>'
+                                                                    . '</div>';
+                                                    }
                                                 }
                                                 // Check if it's a video file path
                                                 elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
@@ -6903,6 +7204,79 @@ async function generatePhpHash() {
                             });
                         }
                     </script>
+
+                <?php elseif ($view === 'seeder'): ?>
+                <div class="card">
+                    <h3><i class="fas fa-magic"></i> Smart Data Seeder</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:20px;">Generate dummy data for testing purposes. Choose the data type for each column.</p>
+                    
+                    <form method="POST" onsubmit="saConfirmForm(event, 'Generate ' + this.count.value + ' rows?')">
+                        <input type="hidden" name="action" value="seed_data">
+                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                        
+                        <div style="margin-bottom:20px; max-width:600px; display:flex; align-items:center; gap:10px;">
+                            <label class="form-label" style="margin-bottom:0;">Number of Rows to Generate:</label>
+                            <input type="number" name="count" class="form-control" value="10" min="1" max="1000" style="width:120px;">
+                        </div>
+
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Column</th>
+                                        <th>Type</th>
+                                        <th>Seeder Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php 
+                                    $struct = [];
+                                    if ($dbMode === 'json') $struct = $jsonDb->getTableStructure($currentTable);
+                                    else {
+                                        try {
+                                            if ($dbMode === 'sqlite') {
+                                                $sStmt = $pdo->query("PRAGMA table_info(`$currentTable`)");
+                                                foreach($sStmt->fetchAll() as $row) $struct[] = ['Field' => $row['name'], 'Type' => $row['type'], 'Key' => $row['pk']?'PRI':''];
+                                            } else {
+                                                $sStmt = $pdo->query("DESCRIBE `$currentTable`");
+                                                $struct = $sStmt->fetchAll(PDO::FETCH_ASSOC);
+                                            }
+                                        } catch (Exception $e) {}
+                                    }
+                                    
+                                    foreach ($struct as $col): 
+                                        $isPK = ($col['Key'] === 'PRI' || (isset($col['pk']) && $col['pk']));
+                                        if ($isPK && stripos($col['Type'] ?? '', 'int') !== false) continue; // Skip auto-increment int PK
+                                    ?>
+                                    <tr>
+                                        <td><strong><?= htmlspecialchars($col['Field'] ?? '') ?></strong></td>
+                                        <td><small><?= htmlspecialchars($col['Type'] ?? '') ?></small></td>
+                                        <td>
+                                            <select name="field_types[<?= htmlspecialchars($col['Field'] ?? '') ?>]" class="form-select">
+                                                <option value="">-- Skip / Auto --</option>
+                                                <option value="name">Full Name</option>
+                                                <option value="email">Email Address</option>
+                                                <option value="phone">Phone Number</option>
+                                                <option value="city">City Name</option>
+                                                <option value="text">Long Text / Paragraph</option>
+                                                <option value="number">Random Number</option>
+                                                <option value="date">Date (Y-m-d)</option>
+                                                <option value="datetime">Date Time</option>
+                                                <option value="boolean">Boolean (0/1)</option>
+                                                <option value="password">Hashed Password</option>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div style="margin-top:20px;">
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-play"></i> Run Seeder</button>
+                        </div>
+                    </form>
+                </div>
 
                 <?php elseif ($view === 'structure'): 
                     ?>
@@ -7523,11 +7897,24 @@ async function generatePhpHash() {
     if (!file) return;
 
     if (file.size > 5 * 1024 * 1024) {
-        if (!confirm("File besar terdeteksi (>5MB). Preview penuh dapat memperlambat browser. Lanjutkan?")) {
-            return;
-        }
+        Swal.fire({
+            title: 'Large File Detected',
+            text: 'File besar terdeteksi (>5MB). Preview penuh dapat memperlambat browser. Lanjutkan?',
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Lanjutkan',
+            cancelButtonText: 'Batal'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                readFileContent(file);
+            }
+        });
+        return;
     }
+    readFileContent(file);
+}
 
+function readFileContent(file) {
     const reader = new FileReader();
     reader.onload = function (e) {
         document.getElementById('sql-preview').textContent = e.target.result;
@@ -9653,6 +10040,188 @@ var queryBuilder = null;
                                 form.submit();
                             }
                         });
+                    }
+
+                    function openAddWidgetModal() {
+                        const tables = <?= json_encode($tables) ?>;
+                        let tableOptions = tables.map(t => `<option value="${t.Name}">${t.Name}</option>`).join('');
+                        
+                        Swal.fire({
+                            title: 'Add Dashboard Widget',
+                            background: 'var(--bg-card)',
+                            color: 'var(--text-primary)',
+                            html: `
+                                <div style="text-align:left;">
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Select Table</label>
+                                    <select id="w_table" class="form-select" onchange="updateWidgetCols(this.value)" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="">-- Select Table --</option>
+                                        ${tableOptions}
+                                    </select>
+                                    
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Calculation Type</label>
+                                    <select id="w_type" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="COUNT">Count Rows</option>
+                                        <option value="SUM">Sum Column</option>
+                                        <option value="AVG">Average Column</option>
+                                        <option value="MAX">Max Value</option>
+                                    </select>
+                                    
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Column (for Sum/Avg/Max)</label>
+                                    <select id="w_col" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="*">* (All)</option>
+                                    </select>
+                                    
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Label</label>
+                                    <input type="text" id="w_label" class="form-control" placeholder="e.g. Total Users" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                    
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Accent Color</label>
+                                    <select id="w_color" class="form-select" style="background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="accent">Blue (Primary)</option>
+                                        <option value="success">Green (Success)</option>
+                                        <option value="danger">Red (Danger)</option>
+                                        <option value="warning">Orange (Warning)</option>
+                                    </select>
+                                </div>
+                            `,
+                            showCancelButton: true,
+                            confirmButtonText: 'Add Widget',
+                            confirmButtonColor: 'var(--accent)',
+                            preConfirm: () => {
+                                const table = document.getElementById('w_table').value;
+                                if (!table) {
+                                    Swal.showValidationMessage('Please select a table');
+                                    return false;
+                                }
+                                return {
+                                    table: table,
+                                    type: document.getElementById('w_type').value,
+                                    column: document.getElementById('w_col').value,
+                                    label: document.getElementById('w_label').value || (table + ' ' + document.getElementById('w_type').value),
+                                    color: document.getElementById('w_color').value
+                                }
+                            }
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                const form = document.createElement('form');
+                                form.method = 'POST';
+                                form.action = '';
+                                const data = result.value;
+                                data.action = 'add_widget';
+                                for (let key in data) {
+                                    const input = document.createElement('input');
+                                    input.type = 'hidden';
+                                    input.name = key;
+                                    input.value = data[key];
+                                    form.appendChild(input);
+                                }
+                                document.body.appendChild(form);
+                                form.submit();
+                            }
+                        });
+                    }
+
+                    function updateWidgetCols(table) {
+                        if (!table) return;
+                        fetch(`?action=get_columns&table=${encodeURIComponent(table)}`)
+                            .then(r => r.json())
+                            .then(cols => {
+                                const select = document.getElementById('w_col');
+                                select.innerHTML = '<option value="*">* (All)</option>';
+                                cols.forEach(c => {
+                                    const opt = document.createElement('option');
+                                    opt.value = c;
+                                    opt.textContent = c;
+                                    select.appendChild(opt);
+                                });
+                            });
+                    }
+
+                    function openJsonEditor(el) {
+                        const raw = el.getAttribute('data-raw');
+                        try {
+                            const json = JSON.parse(raw);
+                            Swal.fire({
+                                title: '<i class="fas fa-file-code"></i> JSON Tree Viewer',
+                                background: 'var(--bg-card)',
+                                color: 'var(--text-primary)',
+                                html: `<div id="json-tree-container" class="json-tree" style="text-align:left; max-height:500px; overflow-y:auto; padding:20px; background:#000; border-radius:8px; border:1px solid var(--border-color);"></div>`,
+                                width: '700px',
+                                showCloseButton: true,
+                                showConfirmButton: false,
+                                didOpen: () => {
+                                    document.getElementById('json-tree-container').innerHTML = ''; // Clear
+                                    renderJsonTree(json, document.getElementById('json-tree-container'));
+                                }
+                            });
+                        } catch(e) { 
+                            console.error(e); 
+                            Swal.fire('Error', 'Invalid JSON data', 'error');
+                        }
+                    }
+
+                    function renderJsonTree(data, container, key = null) {
+                        const item = document.createElement('div');
+                        item.style.marginLeft = '20px';
+                        
+                        const type = typeof data;
+                        const isArray = Array.isArray(data);
+                        const isObject = type === 'object' && data !== null;
+
+                        if (isObject) {
+                            const line = document.createElement('div');
+                            
+                            const toggle = document.createElement('span');
+                            toggle.className = 'json-toggle';
+                            toggle.innerHTML = '<i class="fas fa-chevron-down" style="font-size:0.7rem; width:12px;"></i>';
+                            line.appendChild(toggle);
+                            
+                            if (key !== null) {
+                                const kSpan = document.createElement('span');
+                                kSpan.className = 'json-key';
+                                kSpan.textContent = key + ': ';
+                                line.appendChild(kSpan);
+                            }
+                            
+                            const bracket = document.createElement('span');
+                            bracket.textContent = isArray ? '[' : '{';
+                            bracket.style.color = '#fff';
+                            line.appendChild(bracket);
+                            
+                            item.appendChild(line);
+                            
+                            const content = document.createElement('div');
+                            for (let k in data) {
+                                renderJsonTree(data[k], content, k);
+                            }
+                            item.appendChild(content);
+                            
+                            const closing = document.createElement('div');
+                            closing.textContent = isArray ? ']' : '}';
+                            closing.style.color = '#fff';
+                            closing.style.marginLeft = '12px';
+                            item.appendChild(closing);
+                            
+                            toggle.onclick = (e) => {
+                                e.stopPropagation();
+                                const collapsed = content.style.display === 'none';
+                                content.style.display = collapsed ? 'block' : 'none';
+                                toggle.innerHTML = collapsed ? '<i class="fas fa-chevron-down" style="font-size:0.7rem; width:12px;"></i>' : '<i class="fas fa-chevron-right" style="font-size:0.7rem; width:12px;"></i>';
+                            };
+                        } else {
+                            const line = document.createElement('div');
+                            if (key !== null) {
+                                const kSpan = document.createElement('span');
+                                kSpan.className = 'json-key';
+                                kSpan.textContent = key + ': ';
+                                line.appendChild(kSpan);
+                            }
+                            const vSpan = document.createElement('span');
+                            vSpan.className = 'json-' + type;
+                            vSpan.textContent = type === 'string' ? `"${data}"` : data;
+                            line.appendChild(vSpan);
+                            item.appendChild(line);
+                        }
+                        container.appendChild(item);
                     }
 
                     // switchSqlTab moved to head for better reliability
