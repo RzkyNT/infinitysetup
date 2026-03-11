@@ -3531,6 +3531,36 @@ if (!empty($tables)) {
             border-bottom: 3px solid var(--accent) !important;
             font-weight: bold !important;
         }
+        
+        /* Universal Search UI Styles */
+        .uni-result-item {
+            transition: all 0.2s ease;
+            border: 1px solid var(--border-color) !important;
+        }
+        .uni-result-item:hover {
+            border-color: var(--accent) !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            background: rgba(255,255,255,0.01);
+        }
+        .uni-table-compact td {
+            padding: 6px 10px !important;
+            font-size: 0.82rem !important;
+            border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+        }
+        .uni-table-compact tr:last-child td {
+            border-bottom: none !important;
+        }
+        .uni-table-compact tr:hover td {
+            background: rgba(0, 123, 255, 0.05) !important;
+        }
+        .uni-match-badge {
+            font-size: 0.65rem;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: var(--accent);
+            color: white;
+            font-weight: bold;
+        }
     </style>
     <script>
         function switchSqlTab(tabId) {
@@ -6033,6 +6063,143 @@ var advancedFilters = null;
                             <div style="font-size:1.1rem; font-weight:bold;"><?= isset($pdo) ? 'Active' : 'Disconnected' ?></div>
                         </div>
                     </div>
+                </div>
+
+                <?php 
+                $uniSearch = $_GET['uni_search'] ?? '';
+                ?>
+                <div class="card" style="margin-top: 20px;">
+                    <h3><i class="fas fa-search-plus"></i> Universal Search</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">Search for any content across all tables in the current database/file.</p>
+                    <form method="GET" style="display:flex; gap:10px; margin-bottom:10px;">
+                        <input type="text" name="uni_search" class="form-control" placeholder="Search keywords..." value="<?= htmlspecialchars($uniSearch) ?>" style="flex:1;">
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Search All Tables</button>
+                        <?php if($uniSearch): ?>
+                            <a href="?" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a>
+                        <?php endif; ?>
+                    </form>                    <?php 
+                    if ($uniSearch):
+                        $resultsFound = 0;
+                        $searchQuery = trim($uniSearch);
+                        
+                        // Helper to highlight matches
+                        $highlight = function($text, $query) {
+                            if (!$query) return htmlspecialchars((string)$text);
+                            $textStr = (string)$text;
+                            return preg_replace('/(' . preg_quote(htmlspecialchars($query), '/') . ')/i', '<mark style="background:rgba(255,193,7,0.3); color:inherit; padding:0 2px; border-radius:2px;">$1</mark>', htmlspecialchars($textStr));
+                        };
+
+                        echo '<div id="universal-results" style="margin-top:20px;">';
+                        echo "<div style='margin-bottom:15px; color:var(--text-secondary); font-size:0.9rem;'>Searching for \"<b>".htmlspecialchars($searchQuery)."</b>\"...</div>";
+                        
+                        if ($dbMode === 'json' && isset($jsonDb)) {
+                            $tablesToSearch = $jsonDb->listTables();
+                            foreach ($tablesToSearch as $tName) {
+                                $data = $jsonDb->select($tName);
+                                $matchedRows = [];
+                                foreach ($data as $row) {
+                                    $rowText = implode(' ', array_map('strval', $row));
+                                    if (stripos($rowText, $searchQuery) !== false) {
+                                        $matchedRows[] = $row;
+                                    }
+                                }
+                                
+                                if (!empty($matchedRows)) {
+                                    $resultsFound += count($matchedRows);
+                                    echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
+                                            <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                                <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".count($matchedRows)." matches</span></span>
+                                                <a href='?table=" . urlencode($tName) . "&view=data' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Browse Table</a>
+                                            </div>
+                                            <div style='overflow-x:auto;'>
+                                                <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
+                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>";
+                                    foreach (array_keys($matchedRows[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
+                                    echo "</tr></thead><tbody>";
+                                    foreach (array_slice($matchedRows, 0, 5) as $row) {
+                                        echo "<tr>";
+                                        foreach ($row as $v) echo "<td>".$highlight($v, $searchQuery)."</td>";
+                                        echo "</tr>";
+                                    }
+                                    echo "</tbody></table>";
+                                    if (count($matchedRows) > 5) echo "<div style='padding:8px; text-align:center; font-size:0.75rem; color:var(--text-secondary); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'>Showing 5 of ".count($matchedRows)." matches</div>";
+                                    echo "</div></div>";
+                                }
+                            }
+                        } elseif (($dbMode === 'sql' || $dbMode === 'sqlite') && isset($pdo)) {
+                            try {
+                                if ($dbMode === 'sql') {
+                                    $stmt = $pdo->query("SHOW TABLES");
+                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                } else {
+                                    $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                }
+                                
+                                foreach ($tablesToSearch as $tName) {
+                                    // Get columns to search in
+                                    if ($dbMode === 'sql') {
+                                        $cStmt = $pdo->query("DESCRIBE `$tName`");
+                                        $cols = $cStmt->fetchAll(PDO::FETCH_COLUMN);
+                                    } else {
+                                        $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
+                                        $cols = [];
+                                        foreach($cStmt->fetchAll() as $colInfo) $cols[] = $colInfo['name'];
+                                    }
+                                    
+                                    if (empty($cols)) continue;
+                                    
+                                    $whereConditions = [];
+                                    foreach ($cols as $c) {
+                                        $whereConditions[] = "`$c` LIKE " . $pdo->quote("%$searchQuery%");
+                                    }
+                                    
+                                    $sqlSelect = "SELECT * FROM `$tName` WHERE " . implode(" OR ", $whereConditions) . " LIMIT 11";
+                                    $sStmt = $pdo->query($sqlSelect);
+                                    $matches = $sStmt->fetchAll(PDO::FETCH_ASSOC);
+                                    
+                                    if (!empty($matches)) {
+                                        $matchCount = count($matches);
+                                        $resultsFound += $matchCount;
+                                        echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
+                                                <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                                    <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".($matchCount > 10 ? '10+' : $matchCount)." matches</span></span>
+                                                    <a href='?table=" . urlencode($tName) . "&view=data&search_val=".urlencode($searchQuery)."' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Full Search Results</a>
+                                                </div>
+                                                <div style='overflow-x:auto;'>
+                                                    <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
+                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>";
+                                        foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
+                                        echo "</tr></thead><tbody>";
+                                        foreach (array_slice($matches, 0, 5) as $row) {
+                                            echo "<tr>";
+                                            foreach ($row as $v) echo "<td>".$highlight($v, $searchQuery)."</td>";
+                                            echo "</tr>";
+                                        }
+                                        echo "</tbody></table>";
+                                        if ($matchCount > 5) echo "<div style='padding:10px; text-align:center; font-size:0.75rem; color:var(--accent); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'><i class='fas fa-info-circle'></i> More matches found. <a href='?table=".urlencode($tName)."&view=data&search_val=".urlencode($searchQuery)."' style='text-decoration:underline; font-weight:bold; color:var(--accent);'>Explore Table</a></div>";
+                                        echo "</div></div>";
+                                    }
+                                }
+                            } catch (Exception $e) {
+                                echo "<div class='alert alert-danger'>Search Error: " . htmlspecialchars($e->getMessage()) . "</div>";
+                            }
+                        }
+                        
+                        if ($resultsFound === 0) {
+                            echo "<div style='text-align:center; padding:50px 20px; border:1px dashed var(--border-color); border-radius:10px; background:rgba(0,0,0,0.1);'>
+                                    <i class='fas fa-search-minus fa-3x' style='color:var(--text-secondary); margin-bottom:15px; opacity:0.5;'></i>
+                                    <h4 style='color:var(--text-primary);'>No Results Found</h4>
+                                    <p style='color:var(--text-secondary);'>We couldn't find any matches for \"<b>" . htmlspecialchars($searchQuery) . "</b>\" across your tables.</p>
+                                    <a href='?' class='btn' style='margin-top:10px;'>Try another term</a>
+                                  </div>";
+                        } else {
+                            echo "<div style='text-align:center; padding:20px; color:var(--text-secondary); font-size:0.85rem;'>End of search results. Total tables with matches: " . ($resultsFound > 0 ? "Multiple" : "None") . "</div>";
+                        }
+                        
+                        echo '</div>';
+                    endif;
+                    ?>
                 </div>
 
                 <?php if ($dbMode === 'sql' && !$hasSelectedDatabase): ?>
