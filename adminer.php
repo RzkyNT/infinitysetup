@@ -2768,6 +2768,84 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?msg=" . urlencode("Widget removed."));
     }
+    // --- ADD ANALYTICS CHART ---
+    elseif ($action === 'add_chart') {
+        $config = load_config($configFile);
+        if (!isset($config['charts'])) $config['charts'] = [];
+        
+        $config['charts'][] = [
+            'id' => uniqid(),
+            'table' => $_POST['table'] ?? '',
+            'label_col' => $_POST['label_col'] ?? '',
+            'data_col' => $_POST['data_col'] ?? '',
+            'type' => $_POST['type'] ?? 'bar',
+            'title' => $_POST['title'] ?? 'New Chart',
+            'limit' => (int)($_POST['limit'] ?? 5)
+        ];
+        
+        save_config($configFile, $config);
+        redirect("?msg=" . urlencode("Chart added to dashboard."));
+    }
+    // --- REMOVE ANALYTICS CHART ---
+    elseif ($action === 'remove_chart') {
+        $cId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['charts'])) {
+            $config['charts'] = array_filter($config['charts'], function($c) use ($cId) {
+                return $c['id'] !== $cId;
+            });
+            save_config($configFile, $config);
+        }
+        redirect("?msg=" . urlencode("Chart removed."));
+    }
+    // --- GET CHART DATA (AJAX) ---
+    elseif ($action === 'get_chart_data') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        
+        $chartId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        $chart = null;
+        if (isset($config['charts'])) {
+            foreach ($config['charts'] as $c) {
+                if ($c['id'] === $chartId) {
+                    $chart = $c;
+                    break;
+                }
+            }
+        }
+        
+        if (!$chart || !isset($pdo)) {
+            echo json_encode(['success' => false, 'message' => 'Chart not found']);
+            exit;
+        }
+        
+        try {
+            $table = $chart['table'];
+            $label = $chart['label_col'];
+            $data = $chart['data_col'];
+            $limit = $chart['limit'] ?: 5;
+            
+            // Logic: Count group by label
+            $sql = "SELECT `$label` as label, COUNT(*) as value 
+                    FROM `$table` 
+                    GROUP BY `$label` 
+                    ORDER BY value DESC 
+                    LIMIT $limit";
+            
+            $stmt = $pdo->query($sql);
+            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            echo json_encode([
+                'success' => true,
+                'labels' => array_column($results, 'label'),
+                'values' => array_column($results, 'value')
+            ]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- SMART SEEDER ---
     elseif ($action === 'seed_data') {
         $sTable = $_POST['table'] ?? '';
@@ -2940,7 +3018,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $backups[] = [
                         'name' => $f['name'],
                         'download_url' => $f['download_url'],
-                        'size' => $f['size']
+                        'size' => $f['size'],
+                        'path' => $f['path'],
+                        'sha' => $f['sha']
                     ];
                 }
             }
@@ -2991,6 +3071,47 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- DELETE FROM GITHUB ---
+    elseif ($action === 'delete_github_backup') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['github'] ?? null;
+        $path = $_POST['path'] ?? '';
+        $sha = $_POST['sha'] ?? '';
+        
+        if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user']) || !$path || !$sha) {
+            echo json_encode(['success' => false, 'message' => 'GitHub not configured or parameters missing']);
+            exit;
+        }
+
+        $apiUrl = "https://api.github.com/repos/{$cfg['user']}/{$cfg['repo']}/contents/" . ltrim($path, '/');
+        
+        $payload = json_encode([
+            'message' => 'Delete backup via Adminer ' . basename($path),
+            'sha' => $sha
+        ]);
+
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "DELETE");
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Authorization: token {$cfg['token']}",
+            "User-Agent: Adminer-Lite-Backup",
+            "Content-Type: application/json"
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($httpCode >= 200 && $httpCode < 300) {
+            echo json_encode(['success' => true]);
+        } else {
+            $err = json_decode($response, true);
+            echo json_encode(['success' => false, 'message' => $err['message'] ?? 'Failed to delete backup from GitHub']);
+        }
+        exit;
+    }
     // --- MANAGE DATABASE SERVER (SQL) ---
     elseif ($action === 'create_database_server') {
         $dbName = trim($_POST['name'] ?? '');
@@ -3037,8 +3158,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     // --- GET COLUMNS AJAX ---
     elseif ($action === 'get_columns') {
+        while (ob_get_level()) ob_end_clean();
         header('Content-Type: application/json');
-        $t = $_GET['table'] ?? '';
+        $t = $_POST['table'] ?? $_GET['table'] ?? '';
         $cols = [];
         if ($t && isset($pdo)) {
             try {
@@ -3921,6 +4043,42 @@ if (!empty($tables)) {
             transform: translateY(-5px);
             box-shadow: 0 10px 20px rgba(0,0,0,0.3);
             border-color: var(--accent);
+        }
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .chart-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 20px;
+            min-height: 380px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .chart-card:hover {
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.4);
+            transform: translateY(-5px);
+        }
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .chart-remove {
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        .chart-remove:hover {
+            color: var(--danger);
+            opacity: 1;
         }
         .widget-card .icon {
             font-size: 2rem;
@@ -6273,7 +6431,7 @@ var advancedFilters = null;
         <div class="db-info">
             <!-- Database Mode Toggle -->
             <div style="margin-bottom: 10px; padding: 8px; background: var(--bg-hover); border-radius: 4px; border: 1px solid #444;">
-                <div style="display: flex; gap: 5px; margin-bottom: 5px;">
+                <div style="display: flex;gap: 5px;margin-bottom: 5px;justify-content: center;align-items: center;">
                     <button type="button" onclick="switchDbMode('sql')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'sql' ? 'background: var(--accent); color: white;' : '' ?>">
                         <i class="fas fa-database"></i> SQL
                     </button>
@@ -6487,6 +6645,47 @@ var advancedFilters = null;
                     <?php endforeach; endif; ?>
                 </div>
                 
+                <!-- ANALYTICS CHARTS SECTION -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; margin-top:30px;">
+                    <h3 style="margin:0;"><i class="fas fa-chart-pie"></i> Visual Analytics</h3>
+                    <button type="button" class="btn btn-accent btn-sm" onclick="openAddChartModal()">
+                        <i class="fas fa-chart-line"></i> Add Chart
+                    </button>
+                </div>
+                
+                <div class="chart-grid">
+                    <?php 
+                    $charts = $cfg['charts'] ?? [];
+                    if (empty($charts)): ?>
+                        <div style="grid-column: 1/-1; text-align:center; padding:40px; border:2px dashed var(--border-color); border-radius:16px; color:var(--text-secondary); background: rgba(255,255,255,0.02);">
+                            <i class="fas fa-chart-area" style="font-size:2rem; margin-bottom:15px; display:block;"></i>
+                            Visualisasikan data tabel Anda dengan Chart Pro. Klik "Add Chart" untuk mulai.
+                        </div>
+                    <?php else: 
+                        foreach ($charts as $c): ?>
+                        <div class="chart-card">
+                            <div class="chart-header">
+                                <h4 style="margin:0; font-size:1.1rem; color:var(--text-primary);"><?= htmlspecialchars($c['title']) ?></h4>
+                                <form method="POST" style="margin:0;" onsubmit="saConfirmForm(event, 'Remove this chart?')">
+                                    <input type="hidden" name="action" value="remove_chart">
+                                    <input type="hidden" name="id" value="<?= $c['id'] ?>">
+                                    <button type="submit" class="chart-remove" style="background:none; border:none;" title="Remove Chart">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
+                                </form>
+                            </div>
+                            <div style="position:relative; height:280px; width:100%;">
+                                <canvas id="chart-<?= $c['id'] ?>"></canvas>
+                            </div>
+                            <script>
+                            document.addEventListener('DOMContentLoaded', function() {
+                                initDashboardChart('<?= $c['id'] ?>', '<?= $c['type'] ?>');
+                            });
+                            </script>
+                        </div>
+                    <?php endforeach; endif; ?>
+                </div>
+
                 <!-- GITHUB BACKUP SECTION -->
                 <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-top:20px;">
                     <div class="card" style="margin-bottom:0;">
@@ -6576,9 +6775,9 @@ var advancedFilters = null;
                             function loadGithubBackups() {
                                 const container = document.getElementById('gh-backups-list');
                                 if (!container) return;
-                                const formData = new FormData();
-                                formData.append('action', 'get_github_backups');
-                                fetchJson('?', { method: 'POST', body: formData })
+                                const params = new URLSearchParams();
+                                params.append('action', 'get_github_backups');
+                                fetchJson(window.location.pathname, { method: 'POST', body: params })
                                 .then(data => {
                                     if (!data || data.length === 0) {
                                         container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-secondary);">No backups found.</div>';
@@ -6586,11 +6785,37 @@ var advancedFilters = null;
                                     }
                                     let html = '<table style="width:100%; font-size:0.85rem; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--border-color);"><th style="text-align:left; padding:8px;">Filename</th><th style="text-align:right; padding:8px;">Size</th><th style="text-align:right; padding:8px;">Action</th></tr></thead><tbody>';
                                     data.forEach(f => {
-                                        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-undo"></i> Restore</button></td></tr>`;
+                                        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right; white-space:nowrap;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem; margin-right:5px;"><i class="fas fa-undo"></i> Restore</button><button onclick="deleteGithubBackup('${f.path}', '${f.name}', '${f.sha}')" class="btn btn-sm btn-danger" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-trash"></i></button></td></tr>`;
                                     });
                                     container.innerHTML = html + '</tbody></table>';
                                 }).catch(err => {
                                     container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger);">${err.message}</div>`;
+                                });
+                            }
+
+                            function deleteGithubBackup(path, name, sha) {
+                                Swal.fire({
+                                    title: 'Delete Backup?',
+                                    text: `Are you sure you want to completely remove "${name}" from GitHub repository?`,
+                                    icon: 'warning',
+                                    showCancelButton: true,
+                                    confirmButtonColor: '#d33',
+                                    confirmButtonText: 'Yes, Delete it!',
+                                    showLoaderOnConfirm: true,
+                                    preConfirm: () => {
+                                        const formData = new FormData();
+                                        formData.append('action', 'delete_github_backup');
+                                        formData.append('path', path);
+                                        formData.append('sha', sha);
+                                        return fetchJson('?', { method: 'POST', body: formData })
+                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
+                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
+                                    }
+                                }).then((result) => {
+                                    if (result.isConfirmed) {
+                                        Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000, icon: 'success', title: 'Backup deleted' });
+                                        loadGithubBackups();
+                                    }
                                 });
                             }
 
@@ -10621,6 +10846,155 @@ var queryBuilder = null;
                         }
                         container.appendChild(item);
                     }
+
+                    function openAddChartModal() {
+                        const tables = <?= json_encode($tables) ?>;
+                        let tableOptions = tables.map(t => `<option value="${t.Name}">${t.Name}</option>`).join('');
+                        
+                        Swal.fire({
+                            title: '<i class="fas fa-chart-line"></i> Add Analytics Chart',
+                            background: 'var(--bg-card)',
+                            color: 'var(--text-primary)',
+                            html: `
+                                <div style="text-align:left;">
+                                    <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Chart Title</label>
+                                    <input type="text" id="c_title" class="form-control" placeholder="e.g. Sales by Category" style="width:100%; box-sizing:border-box; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                    
+                                    <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Data Table</label>
+                                    <select id="c_table" class="swal2-input" onchange="updateChartCols(this.value)" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="">-- Choose Table --</option>
+                                        ${tableOptions}
+                                    </select>
+                                    
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Label Column (X-Axis)</label>
+                                            <select id="c_label_col" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);"><option value="">Select Table First</option></select>
+                                        </div>
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Chart Type</label>
+                                            <select id="c_type" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="bar">Bar Chart</option>
+                                                <option value="pie">Pie Chart</option>
+                                                <option value="line">Line Chart</option>
+                                                <option value="doughnut">Doughnut</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Limit Data (Top N)</label>
+                                    <input type="number" id="c_limit" class="form-control" value="5" style="width:100%; box-sizing:border-box; margin:0; background:var(--bg-input); color:var(--text-primary);">
+                                </div>
+                            `,
+                            showCancelButton: true,
+                            confirmButtonText: 'Create Chart',
+                            preConfirm: () => {
+                                const title = document.getElementById('c_title').value;
+                                const table = document.getElementById('c_table').value;
+                                const label_col = document.getElementById('c_label_col').value;
+                                
+                                if (!title || !table || !label_col) {
+                                    Swal.showValidationMessage('Please fill all required fields');
+                                    return false;
+                                }
+                                
+                                return {
+                                    action: 'add_chart',
+                                    title, table, label_col,
+                                    type: document.getElementById('c_type').value,
+                                    limit: document.getElementById('c_limit').value
+                                };
+                            }
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                const form = document.createElement('form');
+                                form.method = 'POST';
+                                for (let key in result.value) {
+                                    const input = document.createElement('input');
+                                    input.type = 'hidden';
+                                    input.name = key;
+                                    input.value = result.value[key];
+                                    form.appendChild(input);
+                                }
+                                document.body.appendChild(form);
+                                form.submit();
+                            }
+                        });
+                    }
+
+                    function updateChartCols(table) {
+                        if (!table) return;
+                        fetch(`?action=get_columns&table=${encodeURIComponent(table)}`)
+                            .then(r => r.json())
+                            .then(cols => {
+                                const select = document.getElementById('c_label_col');
+                                select.innerHTML = cols.map(c => `<option value="${c}">${c}</option>`).join('');
+                            });
+                    }
+
+                    function initDashboardChart(id, type) {
+                        const canvas = document.getElementById('chart-' + id);
+                        if (!canvas) return;
+                        const ctx = canvas.getContext('2d');
+                        const formData = new FormData();
+                        formData.append('action', 'get_chart_data');
+                        formData.append('id', id);
+
+                        fetch('?', { method: 'POST', body: formData })
+                            .then(res => res.json())
+                            .then(data => {
+                                if (!data.success) throw new Error(data.message);
+                                
+                                new Chart(ctx, {
+                                    type: type,
+                                    data: {
+                                        labels: data.labels,
+                                        datasets: [{
+                                            label: 'Total Rows',
+                                            data: data.values,
+                                            backgroundColor: [
+                                                'rgba(54, 162, 235, 0.6)',
+                                                'rgba(255, 99, 132, 0.6)',
+                                                'rgba(75, 192, 192, 0.6)',
+                                                'rgba(255, 206, 86, 0.6)',
+                                                'rgba(153, 102, 255, 0.6)',
+                                                'rgba(255, 159, 64, 0.6)'
+                                            ],
+                                            borderColor: 'rgba(255,255,255,0.1)',
+                                            borderWidth: 1
+                                        }]
+                                    },
+                                    options: {
+                                        responsive: true,
+                                        maintainAspectRatio: false,
+                                        plugins: {
+                                            legend: {
+                                                display: (type === 'pie' || type === 'doughnut'),
+                                                position: 'bottom',
+                                                labels: { color: '#ccc', font: { size: 11 } }
+                                            }
+                                        },
+                                        scales: (type === 'pie' || type === 'doughnut') ? {} : {
+                                            y: {
+                                                beginAtZero: true,
+                                                grid: { color: 'rgba(255,255,255,0.05)' },
+                                                ticks: { color: '#888' }
+                                            },
+                                            x: {
+                                                grid: { display: false },
+                                                ticks: { color: '#888' }
+                                            }
+                                        }
+                                    }
+                                });
+                            })
+                            .catch(err => {
+                                console.error("Chart Error:", err);
+                                canvas.parentElement.innerHTML = `<div style="display:flex; height:100%; align-items:center; justify-content:center; color:var(--danger); font-size:0.8rem; text-align:center; padding:20px;">
+                                    <i class="fas fa-exclamation-circle" style="display:block; font-size:1.5rem; margin-bottom:10px;"></i>
+                                    Data Error: ${err.message}
+                                </div>`;
+                            });
                     }
                     // switchSqlTab moved to head for better reliability
                     </script>
