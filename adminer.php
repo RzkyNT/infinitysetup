@@ -769,7 +769,9 @@ function telegram_api_request($method, $postFields, $cfg) {
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 120);
     
     $response = curl_exec($ch);
     $errNo = curl_errno($ch);
@@ -3258,6 +3260,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     elseif ($action === 'push_telegram_backup') {
+        @set_time_limit(180);
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $cfg = load_config($configFile)['telegram'] ?? null;
@@ -3471,6 +3474,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     // --- TELEGRAM HEALTH REPORT ---
     elseif ($action === 'send_telegram_health_report') {
+        @set_time_limit(180);
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $cfg = load_config($configFile)['telegram'] ?? null;
