@@ -4456,30 +4456,90 @@ if (!empty($tables)) {
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
-        /* Robust SQL View Tabs System v2 */
+        .sql-view-container {
+            display: flex;
+            gap: 0; /* Flush sidebar */
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            min-height: 650px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .sql-sidebar {
+            width: 240px;
+            background: rgba(15, 15, 15, 0.6);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 15px 10px;
+        }
+        .sql-sidebar-header {
+            padding: 10px 15px 25px 15px;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            opacity: 0.8;
+            font-weight: 800;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .sql-nav-item {
+            padding: 14px 18px;
+            margin-bottom: 8px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            color: var(--text-secondary);
+            border: 1px solid transparent;
+            font-size: 0.9rem;
+        }
+        .sql-nav-item i {
+            width: 24px;
+            text-align: center;
+            font-size: 1.1rem;
+            transition: transform 0.3s;
+        }
+        .sql-nav-item:hover {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-primary);
+            transform: translateX(5px);
+        }
+        .sql-nav-item:hover i {
+            transform: scale(1.2);
+            color: var(--accent);
+        }
+        .sql-nav-item.active {
+            background: linear-gradient(135deg, var(--accent), #0056b3);
+            color: white;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0, 123, 255, 0.4);
+        }
+        .sql-nav-item.active i {
+            color: white;
+        }
+        .sql-main-content {
+            flex: 1;
+            padding: 30px;
+            overflow: auto;
+            background: rgba(0,0,0,0.1);
+        }
         .sql-v2-tab-content {
             display: none !important;
-            visibility: hidden !important;
-            opacity: 0;
-            height: 0;
-            overflow: hidden;
         }
         .sql-v2-tab-content.v2-active {
             display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            height: auto !important;
-            min-height: 450px !important;
-            overflow: visible !important;
-            border: 1px solid var(--border-color) !important;
-            padding: 20px !important;
-            background: var(--bg-card) !important;
-            border-radius: 0 0 8px 8px !important;
         }
-        .sql-v2-tab-btn.v2-active {
-            color: var(--accent) !important;
-            border-bottom: 3px solid var(--accent) !important;
-            font-weight: bold !important;
+        .sql-card-v2 {
+            border: none !important;
+            padding: 0 !important;
+            background: transparent !important;
         }
         
         /* Universal Search UI Styles */
@@ -8979,329 +9039,204 @@ async function generatePhpHash() {
 
                 <?php elseif ($view === 'sql'): 
                     ?>
-                    <!-- SQL View Tabs -->
-                    <div style="margin-bottom:20px; border-bottom:2px solid var(--border-color);">
-                        <div style="display:flex; gap:5px;">
-                            <button type="button" class="sql-v2-tab-btn v2-active" onclick="switchSqlTab('sql-editor')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-terminal"></i> SQL Editor
-                            </button>
-                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('query-builder')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-tools"></i> Query Builder
-                            </button>
-                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('advanced-filters')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-filter"></i> Advanced Filters
-                            </button>
-                            <button type="button" class="sql-v2-tab-btn" onclick="switchSqlTab('ai-assistant')" style="padding:10px 20px; background:transparent; border:none; border-bottom:3px solid transparent; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;">
-                                <i class="fas fa-robot"></i> AI Assistant
-                            </button>
+                    <div class="sql-view-container">
+                        <!-- New Sidebar Navigation -->
+                        <div class="sql-sidebar">
+                            <div class="sql-sidebar-header">
+                                <i class="fas fa-layer-group"></i> SQL Workspace
+                            </div>
+                            <div class="sql-nav-item active" onclick="switchSqlTabV2(this, 'sql-editor')">
+                                <i class="fas fa-terminal"></i>
+                                <span>SQL Editor</span>
+                            </div>
+                            <div class="sql-nav-item" onclick="switchSqlTabV2(this, 'query-builder')">
+                                <i class="fas fa-tools"></i>
+                                <span>Query Builder</span>
+                            </div>
+                            <div class="sql-nav-item" onclick="switchSqlTabV2(this, 'advanced-filters')">
+                                <i class="fas fa-filter"></i>
+                                <span>Advanced Filters</span>
+                            </div>
+                            <div class="sql-nav-item" onclick="switchSqlTabV2(this, 'ai-assistant')">
+                                <i class="fas fa-robot"></i>
+                                <span>AI Assistant</span>
+                            </div>
+                            
+                            <div style="flex:1;"></div>
+                            
+                            <div style="padding:15px; background:rgba(255,255,255,0.03); border-radius:8px; margin-top:10px;">
+                                <div style="font-size:0.7rem; color:var(--text-secondary); margin-bottom:5px;">QUICK TIPS</div>
+                                <div style="font-size:0.75rem; line-height:1.4;">
+                                    Use <kbd style="background:#333; padding:2px 5px; border-radius:3px;">AI Assistant</kbd> to generate SQL from natural language.
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Main Content Area -->
+                        <div class="sql-main-content">
+                            <!-- SQL Editor Tab -->
+                            <div id="sql-editor" class="sql-v2-tab-content v2-active">
+                                <div class="sql-card-v2">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                        <h3 style="margin:0;"><i class="fas fa-terminal"></i> SQL Command</h3>
+                                        <div style="display:flex; gap:10px;">
+                                            <button type="button" class="btn btn-sm" onclick="document.getElementById('queryInput').value=''">Clear</button>
+                                            <button type="button" class="btn btn-primary btn-sm" onclick="document.getElementById('sqlForm').submit()"><i class="fas fa-play"></i> Run</button>
+                                        </div>
+                                    </div>
+                                    <form method="POST" id="sqlForm">
+                                        <input type="hidden" name="action" value="sql_query">
+                                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                        
+                                        <div style="display:flex; gap:15px; flex-wrap:wrap;">
+                                            <div style="flex:1; min-width:300px;">
+                                                <textarea name="query" id="queryInput" class="form-control" rows="12" style="font-family: 'Fira Code', monospace; background: #080808; border:1px solid #333; color:#a5d6ff; line-height:1.5; padding:15px; font-size:14px;" placeholder="SELECT * FROM `<?=htmlspecialchars($currentTable ?: 'table')?>` WHERE 1"><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : ($currentTable ? "SELECT * FROM `$currentTable` LIMIT 50" : "SHOW TABLES")?></textarea>
+                                            </div>
+                                            
+                                            <div style="width: 280px; display: flex; flex-direction: column; border-left:1px solid var(--border-color); padding-left:15px;">
+                                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                                    <span style="font-weight:bold; color:var(--text-secondary); text-transform:uppercase; font-size:0.75rem;">Query History</span>
+                                                    <button type="button" class="btn btn-danger" onclick="clearHistory()" style="padding:2px 6px; font-size:0.7rem;" title="Clear History"><i class="fas fa-trash"></i></button>
+                                                </div>
+                                                <div id="queryHistory" style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; overflow-y:auto; font-size:0.8rem; max-height:250px;">
+                                                    <!-- JS populates this -->
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </form>
+                                    
+                                    <script>
+                                        const historyKey = 'adminer_query_history_<?=md5($_SESSION['db_host'].$_SESSION['db_user'])?>';
+                                        const input = document.getElementById('queryInput');
+                                        const list = document.getElementById('queryHistory');
+                                        
+                                        function renderHistory() {
+                                            let history = JSON.parse(localStorage.getItem(historyKey) || '[]');
+                                            list.innerHTML = '';
+                                            history.forEach(q => {
+                                                let item = document.createElement('div');
+                                                item.style.padding = '10px';
+                                                item.style.borderBottom = '1px solid #333';
+                                                item.style.cursor = 'pointer';
+                                                item.style.whiteSpace = 'pre-wrap';
+                                                item.style.maxHeight = '60px';
+                                                item.style.overflow = 'hidden';
+                                                item.style.textOverflow = 'ellipsis';
+                                                item.style.fontFamily = 'monospace';
+                                                item.style.color = '#ccc';
+                                                item.style.transition = '0.2s';
+                                                item.title = q;
+                                                item.textContent = q;
+                                                item.onmouseover = () => { item.style.background = '#333'; item.style.color = '#fff'; };
+                                                item.onmouseout = () => { item.style.background = 'transparent'; item.style.color = '#ccc'; };
+                                                item.onclick = () => { input.value = q; input.scrollTop = 0; };
+                                                list.appendChild(item);
+                                            });
+                                            if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history.</div>';
+                                        }
+                                        renderHistory();
+                                    </script>
+
+                                    <?php if(!empty($sqlResults)): ?>
+                                        <div style="margin-top:30px;">
+                                            <?php foreach($sqlResults as $i => $res): ?>
+                                                <div style="margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; overflow:hidden;">
+                                                    <div style="background:var(--dark-gray); padding:10px 15px; border-bottom:1px solid #333; font-family:monospace; font-size:0.9rem; color:#a5d6ff;">
+                                                        <?=htmlspecialchars($res['query'])?>
+                                                    </div>
+                                                    <div class="table-wrapper" style="border:none; border-radius:0; max-height:400px;">
+                                                        <table>
+                                                            <thead>
+                                                                <tr>
+                                                                    <?php if(!empty($res['columns'])): foreach($res['columns'] as $col): ?>
+                                                                        <th><?=htmlspecialchars($col)?></th>
+                                                                    <?php endforeach; else: ?>
+                                                                        <th>Result</th>
+                                                                    <?php endif; ?>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <?php if(!empty($res['rows'])): foreach($res['rows'] as $row): ?>
+                                                                    <tr>
+                                                                        <?php foreach($row as $cell): ?>
+                                                                            <td><?= $cell === null ? '<span style="color:#666">NULL</span>' : htmlspecialchars($cell) ?></td>
+                                                                        <?php endforeach; ?>
+                                                                    </tr>
+                                                                <?php endforeach; else: ?>
+                                                                    <tr><td colspan="<?=count($res['columns']?:[1])?>" style="padding:15px; color:#888; text-align:center;">Query executed successfully.</td></tr>
+                                                                <?php endif; ?>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            
+                            <!-- Query Builder Tab -->
+                            <div id="query-builder" class="sql-v2-tab-content">
+                                <div class="sql-card-v2">
+                                    <h3><i class="fas fa-tools"></i> Query Builder</h3>
+                                    <div id="query-builder-container"></div>
+                                </div>
+                            </div>
+                            
+                            <!-- Advanced Filters Tab -->
+                            <div id="advanced-filters" class="sql-v2-tab-content">
+                                <div class="sql-card-v2">
+                                    <h3><i class="fas fa-filter"></i> Advanced Filters</h3>
+                                    <div id="advanced-filters-container"></div>
+                                </div>
+                            </div>
+
+                            <!-- AI Assistant Tab -->
+                            <div id="ai-assistant" class="sql-v2-tab-content">
+                                <div class="sql-card-v2">
+                                    <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:20px;">
+                                        <!-- NL to SQL -->
+                                        <div class="card" style="margin-bottom:0;">
+                                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                                <h3 style="margin:0;"><i class="fas fa-magic"></i> Natural Language to SQL</h3>
+                                                <span class="badge" style="background:var(--accent); color:#000; font-size:0.7rem; padding:2px 8px; border-radius:10px;">PRO AI</span>
+                                            </div>
+                                            <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:15px;">Ketik instruksi dalam bahasa sehari-hari untuk membuat query otomatis.</p>
+                                            <div style="position:relative; margin-bottom:15px;">
+                                                <textarea id="ai-nl-input" class="form-control" rows="3" style="background:#080808; border:1px solid #444; color:#fff; padding:15px; font-size:1rem; resize:none;" placeholder="Contoh: tampilkan semua user yang aktif..."></textarea>
+                                                <button type="button" onclick="generateAiSql()" style="position:absolute; right:10px; bottom:10px; background:var(--accent); color:#000; border:none; padding:8px 15px; border-radius:6px; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;">
+                                                    <i class="fas fa-wand-magic-sparkles"></i> Generate
+                                                </button>
+                                            </div>
+                                            <div id="ai-sql-preview-container" style="display:none;">
+                                                <pre id="ai-sql-preview" style="background:#111; color:#a5d6ff; padding:15px; border:1px solid #333; border-radius:6px; font-family: 'Fira Code', monospace; font-size:0.9rem; margin:0; position:relative;"></pre>
+                                                <button type="button" onclick="applyAiSql()" class="btn btn-sm" style="margin-top:10px;"><i class="fas fa-arrow-up"></i> Apply to Editor</button>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Data Seeder -->
+                                        <div class="card" style="margin-bottom:0;">
+                                            <h3 style="margin-bottom:15px;"><i class="fas fa-seedling"></i> Smart Seeder</h3>
+                                            <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:15px;">Generate dummy data for <b><?=htmlspecialchars($currentTable)?></b>.</div>
+                                            <div class="form-group" style="margin-bottom:15px;">
+                                                <input type="number" id="gen-row-count-v2" class="form-control" value="10" min="1" max="100" style="background:#080808; border:1px solid #333; color:#fff;">
+                                            </div>
+                                            <button type="button" class="btn btn-primary" style="width:100%" onclick="executeSmartSeeder()"><i class="fas fa-bolt"></i> Generate Rows</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     
                     <script>
-                        // Ensure at least one tab is showing on load
-                        document.addEventListener('DOMContentLoaded', () => {
-                            const activeContent = document.querySelector('.sql-v2-tab-content.v2-active');
-                            if (!activeContent) {
-                                switchSqlTab('sql-editor');
-                            }
-                        });
+                        function switchSqlTabV2(btn, tabId) {
+                            document.querySelectorAll('.sql-nav-item').forEach(el => el.classList.remove('active'));
+                            document.querySelectorAll('.sql-v2-tab-content').forEach(el => el.classList.remove('v2-active'));
+                            btn.classList.add('active');
+                            document.getElementById(tabId).classList.add('v2-active');
+                        }
                     </script>
-                    
-                    <!-- SQL Editor Tab -->
-                    <div id="sql-editor" class="sql-v2-tab-content v2-active">
-                        <div class="card">
-                            <h3><i class="fas fa-terminal"></i> SQL Command</h3>
-                            <form method="POST" id="sqlForm">
-                                <input type="hidden" name="action" value="sql_query">
-                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                
-                                <div style="display:flex; gap:15px; flex-wrap:wrap;">
-                                    <div style="flex:1; min-width:300px;">
-                                        <textarea name="query" id="queryInput" class="form-control" rows="12" style="font-family: 'Fira Code', monospace; background: #080808; border:1px solid #333; color:#a5d6ff; line-height:1.5; padding:15px; font-size:14px;" placeholder="SELECT * FROM `<?=htmlspecialchars($currentTable ?: 'table')?>` WHERE 1"><?=isset($_POST['query']) ? htmlspecialchars($_POST['query']) : ($currentTable ? "SELECT * FROM `$currentTable` LIMIT 50" : "SHOW TABLES")?></textarea>
-                                        <div style="margin-top: 10px; display:flex; gap:10px; justify-content:flex-end;">
-                                            <button type="button" class="btn" onclick="document.getElementById('queryInput').value=''">Clear</button>
-                                            <button type="submit" class="btn btn-primary" style="padding-left:20px; padding-right:20px;"><i class="fas fa-play"></i> Execute</button>
-                                        </div>
-                                    </div>
-                                    
-                                    <div style="width: 280px; display: flex; flex-direction: column; border-left:1px solid var(--border-color); padding-left:15px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                                            <span style="font-weight:bold; color:var(--text-secondary); text-transform:uppercase; font-size:0.75rem;">Query History</span>
-                                            <button type="button" class="btn btn-danger" onclick="clearHistory()" style="padding:2px 6px; font-size:0.7rem;" title="Clear History"><i class="fas fa-trash"></i></button>
-                                        </div>
-                                        <div id="queryHistory" style="flex:1; background:var(--bg-input); border:1px solid var(--border-color); border-radius:4px; overflow-y:auto; font-size:0.8rem; max-height:300px;">
-                                            <!-- JS populates this -->
-                                        </div>
-                                    </div>
-                                </div>
-                            </form>
-                            
-                            <script>
-                                const historyKey = 'adminer_query_history_<?=md5($_SESSION['db_host'].$_SESSION['db_user'])?>';
-                                const input = document.getElementById('queryInput');
-                                const list = document.getElementById('queryHistory');
-                                
-                                function renderHistory() {
-                                    let history = JSON.parse(localStorage.getItem(historyKey) || '[]');
-                                    list.innerHTML = '';
-                                    history.forEach(q => {
-                                        let item = document.createElement('div');
-                                        item.style.padding = '10px';
-                                        item.style.borderBottom = '1px solid #333';
-                                        item.style.cursor = 'pointer';
-                                        item.style.whiteSpace = 'pre-wrap';
-                                        item.style.maxHeight = '60px';
-                                        item.style.overflow = 'hidden';
-                                        item.style.textOverflow = 'ellipsis';
-                                        item.style.fontFamily = 'monospace';
-                                        item.style.color = '#ccc';
-                                        item.style.transition = '0.2s';
-                                        item.title = q;
-                                        item.textContent = q;
-                                        item.onmouseover = () => { item.style.background = '#333'; item.style.color = '#fff'; };
-                                        item.onmouseout = () => { item.style.background = 'transparent'; item.style.color = '#ccc'; };
-                                        item.onclick = () => { 
-                                            input.value = q; 
-                                            input.scrollTop = 0;
-                                        };
-                                        list.appendChild(item);
-                                    });
-                                    if(history.length === 0) list.innerHTML = '<div style="padding:15px; color:#666; text-align:center; font-style:italic;">No history yet.<br>Execute a query to save it.</div>';
-                                }
-                                                        
-                            function clearHistory() {
-                                Swal.fire({
-                                    title: 'Clear History?',
-                                    text: "All query history will be permanently deleted!",
-                                    icon: 'warning',
-                                    showCancelButton: true,
-                                    confirmButtonText: 'Yes, Clear It',
-                                    cancelButtonText: 'Cancel',
-                                    confirmButtonColor: '#d33',
-                                    cancelButtonColor: '#3085d6'
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        localStorage.removeItem(historyKey);
-                                        renderHistory();
-
-                                        Swal.fire(
-                                            'Cleared!',
-                                            'Query history has been deleted.',
-                                            'success'
-                                        );
-                                    }
-                                });
-                            }
-
-                            document.getElementById('sqlForm').addEventListener('submit', function() {
-                                let q = input.value.trim();
-                                if(q) {
-                                    let history = JSON.parse(localStorage.getItem(historyKey) || '[]');
-                                    // Remove if exists (to move to top)
-                                    history = history.filter(item => item !== q);
-                                    history.unshift(q);
-                                    if(history.length > 20) history.pop();
-                                    localStorage.setItem(historyKey, JSON.stringify(history));
-                                }
-                            });
-                            
-                            renderHistory();
-                        </script>
-
-                        <?php if(!empty($sqlResults)): ?>
-                            <div style="margin-top:30px;">
-                                <?php foreach($sqlResults as $i => $res): ?>
-                                    <div style="margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; overflow:hidden;">
-                                        <div style="background:var(--dark-gray); padding:10px 15px; border-bottom:1px solid #333; font-family:monospace; font-size:0.9rem; color:#a5d6ff;">
-                                            <?=htmlspecialchars($res['query'])?>
-                                        </div>
-                                        <div class="table-wrapper" style="border:none; border-radius:0; max-height:400px;">
-                                            <table>
-                                                <thead>
-                                                    <tr>
-                                                        <?php if(!empty($res['columns'])): foreach($res['columns'] as $col): ?>
-                                                            <th><?=htmlspecialchars($col)?></th>
-                                                        <?php endforeach; else: ?>
-                                                            <th>Result</th>
-                                                        <?php endif; ?>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    <?php if(!empty($res['rows'])): foreach($res['rows'] as $row): ?>
-                                                        <tr>
-                                                            <?php foreach($row as $cell): ?>
-                                                                <td><?= $cell === null ? '<span style="color:#666">NULL</span>' : htmlspecialchars($cell) ?></td>
-                                                            <?php endforeach; ?>
-                                                        </tr>
-                                                    <?php endforeach; else: ?>
-                                                        <tr><td colspan="<?=count($res['columns']?:[1])?>" style="padding:15px; color:#888; text-align:center;">
-                                                            <?php if(stripos($res['query'], 'SELECT') === 0 || stripos($res['query'], 'SHOW') === 0): ?>
-                                                                Empty result set.
-                                                            <?php else: ?>
-                                                                Query executed successfully.
-                                                            <?php endif; ?>
-                                                        </td></tr>
-                                                    <?php endif; ?>
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                    </div>
-                    
-                    <!-- Query Builder Tab -->
-                    <div id="query-builder" class="sql-v2-tab-content">
-                        <div class="card">
-                            <h3><i class="fas fa-tools"></i> Query Builder</h3>
-                            <div id="query-builder-container"></div>
-                        </div>
-                    </div>
-                    
-                    <!-- Advanced Filters Tab -->
-                    <div id="advanced-filters" class="sql-v2-tab-content">
-                        <div class="card">
-                            <h3><i class="fas fa-filter"></i> Advanced Filters</h3>
-                            <div id="advanced-filters-container"></div>
-                        </div>
-                    </div>
-
-                    <!-- AI Assistant Tab -->
-                    <div id="ai-assistant" class="sql-v2-tab-content">
-                        <div style="background: rgba(255,255,255,0.05); padding: 5px; font-size: 10px; color: #555; text-align: right;">DEBUG: AI_TAB_v2</div>
-                        <div style="display:grid; grid-template-columns: 1.5fr 1fr; gap:20px;">
-                            <!-- NL to SQL -->
-                            <div class="card">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                                    <h3 style="margin:0;"><i class="fas fa-magic"></i> Natural Language to SQL</h3>
-                                    <span class="badge" style="background:var(--accent); color:#000; font-size:0.7rem; padding:2px 8px; border-radius:10px;">PRO AI</span>
-                                </div>
-                                <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:15px;">Ketik instruksi dalam bahasa sehari-hari untuk membuat query otomatis.</p>
-                                
-                                <div style="position:relative; margin-bottom:15px;">
-                                    <textarea id="ai-nl-input" class="form-control" rows="3" style="background:#080808; border:1px solid #444; color:#fff; padding:15px; font-size:1rem; resize:none;" placeholder="Contoh: tampilkan semua user yang aktif..."></textarea>
-                                    <button type="button" onclick="generateAiSql()" style="position:absolute; right:10px; bottom:10px; background:var(--accent); color:#000; border:none; padding:8px 15px; border-radius:6px; font-weight:bold; cursor:pointer; display:flex; align-items:center; gap:8px;">
-                                        <i class="fas fa-wand-magic-sparkles"></i> Generate
-                                    </button>
-                                </div>
-
-                                <div id="ai-sql-preview-container" style="display:none;">
-                                    <label style="font-weight:bold; color:var(--text-secondary); font-size:0.8rem; margin-bottom:5px; display:block;">Generated SQL Preview:</label>
-                                    <div style="position:relative;">
-                                        <pre id="ai-sql-preview" style="background:#111; color:#a5d6ff; padding:15px; border:1px solid #333; border-radius:6px; font-family: 'Fira Code', monospace; font-size:0.9rem; margin:0;"></pre>
-                                        <button type="button" onclick="applyAiSql()" style="position:absolute; right:10px; top:10px; background:#333; color:#fff; border:1px solid #444; padding:5px 10px; border-radius:4px; font-size:0.8rem; cursor:pointer;" title="Apply to Editor">
-                                            <i class="fas fa-arrow-up"></i> Apply
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Data Generator -->
-                            <div class="card" id="data-generator-card">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                                    <h3 style="margin:0;"><i class="fas fa-seedling"></i> Smart Data Seeder</h3>
-                                    <span class="badge" style="background:var(--accent); color:#000; font-size:0.7rem; padding:2px 8px; border-radius:10px;">V2</span>
-                                </div>
-                                <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:15px;">Generate dummy data for testing purposes. Choose the data type for each column.</p>
-                                
-                                <div class="form-group" style="margin-bottom:15px; display:flex; align-items:center; gap:10px;">
-                                    <label style="margin:0; white-space:nowrap; font-size:0.9rem;">Number of Rows to Generate:</label>
-                                    <input type="number" id="gen-row-count" class="form-control" value="10" min="1" max="1000" style="width:100px; height:35px; background:var(--bg-input);">
-                                </div>
-
-                                <div class="table-wrapper" style="max-height: 400px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #333; border-radius:6px; background:rgba(0,0,0,0.2);">
-                                    <table id="seeder-columns-table" style="width:100%; border-collapse:collapse;">
-                                        <thead>
-                                            <tr style="background:rgba(255,255,255,0.05);">
-                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Column</th>
-                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Type</th>
-                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Seeder Type</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <?php 
-                                            // Ensure we have table structure
-                                            if ($currentTable) {
-                                                try {
-                                                    $stmtS = $pdo->query("DESCRIBE `$currentTable` ");
-                                                    $colsS = $stmtS->fetchAll(PDO::FETCH_ASSOC);
-                                                    foreach ($colsS as $col): 
-                                                        if (strpos($col['Extra'], 'auto_increment') !== false) continue;
-                                                        $fieldName = $col['Field'];
-                                                        $fieldType = $col['Type'];
-                                                        
-                                                        // Identify defaults
-                                                        $defaultType = 'auto';
-                                                        $defaultValue = '';
-                                                        
-                                                        // Specific user request: target_id 387, target_type user
-                                                        if ($fieldName === 'target_id') {
-                                                            $defaultType = 'fixed';
-                                                            $defaultValue = '387';
-                                                        } elseif ($fieldName === 'target_type') {
-                                                            $defaultType = 'fixed';
-                                                            $defaultValue = 'user';
-                                                        }
-                                            ?>
-                                                <tr class="seeder-row" data-field="<?=htmlspecialchars($fieldName)?>" style="border-bottom:1px solid #222;">
-                                                    <td style="font-size:0.85rem; padding:10px; font-weight:bold; color:var(--text-primary);">
-                                                        <?=htmlspecialchars($fieldName)?>
-                                                        <?php if($col['Key']==='MUL'): ?>
-                                                            <i class="fas fa-link" style="font-size:0.6rem; color:var(--accent); margin-left:4px;" title="Has Foreign Key"></i>
-                                                        <?php endif; ?>
-                                                    </td>
-                                                    <td style="font-size:0.7rem; padding:10px; color:#666; font-family:monospace;">
-                                                        <?=htmlspecialchars($fieldType)?>
-                                                        <?php 
-                                                            if (stripos($fieldType, 'tinyint') !== false) echo '<br><span style="color:#fbbf24; font-size:0.6rem;">Max: ' . (stripos($fieldType, 'unsigned') !== false ? '255' : '127') . '</span>';
-                                                            elseif (stripos($fieldType, 'smallint') !== false) echo '<br><span style="color:#fbbf24; font-size:0.6rem;">Max: ' . (stripos($fieldType, 'unsigned') !== false ? '65535' : '32767') . '</span>';
-                                                        ?>
-                                                    </td>
-                                                    <td style="padding:10px; width:220px;">
-                                                        <div style="display:flex; gap:5px; flex-direction:column;">
-                                                            <select class="form-select seeder-type" style="font-size:0.75rem; padding:4px 8px; height:30px; background:var(--bg-input); border:1px solid #444; color:#eee;" onchange="toggleSeederValue(this)">
-                                                                <option value="auto" <?=$defaultType==='auto'?'selected':''?>>-- Skip / Auto --</option>
-                                                                <option value="fixed" <?=$defaultType==='fixed'?'selected':''?>>Fixed Value</option>
-                                                                <option value="name">Full Name</option>
-                                                                <option value="username">Username</option>
-                                                                <option value="email">Email</option>
-                                                                <option value="phone">Phone Number</option>
-                                                                <option value="number">Random Number</option>
-                                                                <option value="date">Random Date</option>
-                                                                <option value="text">Random Text</option>
-                                                            </select>
-                                                            <input type="text" class="form-control seeder-value" value="<?=htmlspecialchars($defaultValue)?>" style="font-size:0.75rem; padding:4px 10px; height:30px; display:<?= $defaultType==='fixed' ? 'block' : 'none' ?>; background:#000; border:1px solid var(--accent); color:#fff; margin-top:5px;" placeholder="Fixed value...">
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            <?php 
-                                                    endforeach;
-                                                } catch(Exception $e) { echo "<tr><td colspan='3' style='padding:20px; color:var(--danger);'>Error fetching structure: " . htmlspecialchars($e->getMessage()) . "</td></tr>"; }
-                                            } else {
-                                                echo "<tr><td colspan='3' style='text-align:center; padding:30px; color:#666;'><i class='fas fa-info-circle' style='display:block; font-size:1.5rem; margin-bottom:10px;'></i> Silakan pilih tabel untuk mengatur Data Seeder.</td></tr>";
-                                            }
-                                            ?>
-                                        </tbody>
-                                    </table>
-                                </div>
-
-                                <div class="form-group" style="margin-bottom:15px; display:none;">
-                                    <label>Custom Overrides (Hidden JSON)</label>
-                                    <textarea id="gen-overrides" class="form-control"></textarea>
-                                </div>
-
-                                <button type="button" class="btn btn-primary" style="width:100%; height:45px; font-weight:bold; font-size:1rem;" onclick="executeSmartSeeder()">
-                                    <i class="fas fa-bolt"></i> Generate Data Now
-                                </button>
-                                
-                                <div style="margin-top:20px; padding:15px; background:rgba(251, 191, 36, 0.05); border:1px solid rgba(251, 191, 36, 0.2); border-radius:6px; display:flex; gap:12px; align-items:center;">
-                                    <i class="fas fa-exclamation-triangle" style="color:#fbbf24; font-size:1.2rem;"></i>
-                                    <small style="color:#fbbf24; line-height:1.4;">Generate data akan menyisipkan baris baru (<b>INSERT</b>) ke dalam tabel <code><?=htmlspecialchars($currentTable)?></code> menggunakan logika seeder terpilih.</small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 <?php elseif ($view === 'import'): ?>
                     <div class="card">
                         <h3>Import Database</h3>
