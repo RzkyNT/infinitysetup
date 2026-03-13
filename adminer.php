@@ -769,8 +769,18 @@ function get_db_health($pdo, $dbName, $dbMode) {
              $stats['ver'] = $pdo->query("select sqlite_version()")->fetchColumn();
              $stats['uptime'] = 'N/A';
         }
-    } catch (Exception $e) { return null; }
-    return $stats;
+    } catch (Exception $e) { }
+    
+    // Ensure numeric defaults to prevent errors in report
+    return [
+        'ver' => $stats['ver'] ?? 'Unknown',
+        'tables_count' => $stats['tables_count'] ?? 0,
+        'total_rows' => $stats['total_rows'] ?? 0,
+        'data_size' => $stats['data_size'] ?? 0,
+        'index_size' => $stats['index_size'] ?? 0,
+        'uptime' => $stats['uptime'] ?? '0',
+        'connections' => $stats['connections'] ?? '0'
+    ];
 }
 
 
@@ -3404,21 +3414,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $dbName = $_SESSION['db_name'] ?? 'db';
             $health = get_db_health($pdo, $dbName, $dbMode);
             
-            $message = "📊 *Smart Database Report: $dbName*\n";
+            $message = "📊 <b>Smart Database Report: $dbName</b>\n";
             $message .= "━━━━━━━━━━━━━━━━━━\n";
             $message .= "⏱ Time: " . date('Y-m-d H:i') . "\n";
             $message .= "💾 Total Size: " . formatSize($health['data_size']) . "\n";
             $message .= "📁 Total Tables: " . $health['tables_count'] . "\n\n";
             
             if ($dbMode === 'sql' && isset($pdo)) {
-                $message .= "*Top 3 Tables (Rows):*\n";
+                $message .= "<b>Top 3 Tables (Rows):</b>\n";
                 $topTables = $pdo->query("SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName' ORDER BY TABLE_ROWS DESC LIMIT 3")->fetchAll(PDO::FETCH_ASSOC);
                 foreach($topTables as $t) {
-                    $message .= "🔹 " . $t['TABLE_NAME'] . ": " . number_format($t['TABLE_ROWS']) . " rows\n";
+                    $message .= "🔹 " . htmlspecialchars($t['TABLE_NAME']) . ": " . number_format($t['TABLE_ROWS']) . " rows\n";
                 }
             }
             
-            $message .= "\n🖥 *Server Status:*\n";
+            $message .= "\n🖥 <b>Server Status:</b>\n";
             $message .= "⚡ PHP: " . PHP_VERSION . " on " . PHP_OS . "\n";
             if (function_exists('disk_free_space')) {
                 $free = @disk_free_space(".");
@@ -3435,16 +3445,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_setopt($ch, CURLOPT_POSTFIELDS, [
                 'chat_id' => $cfg['chat_id'],
                 'text' => $message,
-                'parse_mode' => 'Markdown'
+                'parse_mode' => 'HTML'
             ]);
-            curl_exec($ch);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
 
-            $config = load_config($configFile);
-            $config['telegram']['last_health_report'] = time();
-            save_config($configFile, $config);
-
-            echo json_encode(['success' => true, 'message' => 'Report sent to Telegram.']);
+            if ($httpCode >= 200 && $httpCode < 300) {
+                $config = load_config($configFile);
+                $config['telegram']['last_health_report'] = time();
+                save_config($configFile, $config);
+                echo json_encode(['success' => true, 'message' => 'Report sent to Telegram.']);
+            } else {
+                $err = json_decode($response, true);
+                throw new Exception("Telegram Error: " . ($err['description'] ?? 'Unknown error'));
+            }
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
