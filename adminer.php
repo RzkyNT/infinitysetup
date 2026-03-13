@@ -3224,6 +3224,38 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         save_config($configFile, $cfg);
         redirect("?msg=" . urlencode("Telegram settings saved."));
     }
+    
+    /**
+     * Helper to send request to Telegram with better error handling
+     */
+    function telegram_api_request($method, $postFields, $cfg) {
+        $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
+        $apiUrl = "$apiBase/bot" . ($cfg['token'] ?? '') . "/$method";
+        
+        $ch = curl_init($apiUrl);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        
+        $response = curl_exec($ch);
+        $errNo = curl_errno($ch);
+        $errStr = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($errNo) {
+             return ['ok' => false, 'error' => "Connection Failed ($errNo): $errStr"];
+        }
+        
+        $data = json_decode($response, true);
+        if (!$data) {
+             return ['ok' => false, 'error' => "Invalid API Response: " . substr($response, 0, 100)];
+        }
+        
+        return $data;
+    }
     // --- PUSH BACKUP TO TELEGRAM ---
     elseif ($action === 'push_telegram_backup') {
         while (ob_get_level()) ob_end_clean(); 
@@ -3285,34 +3317,16 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
-            $apiUrl = "$apiBase/bot{$cfg['token']}/sendDocument";
-            
             $postFields = [
                 'chat_id' => $cfg['chat_id'],
                 'document' => new CURLFile($finalFile, $mimeType, $filename),
                 'caption' => "📦 DB Backup: " . ($_SESSION['db_name'] ?? 'db') . "\n🏷 Tag: #" . ($cfg['tag'] ?? 'general') . "\n📅 Date: " . date('Y-m-d H:i:s') . ((!empty($cfg['zip_password'])) ? "\n🔐 Encrypted ZIP" : "")
             ];
 
-            $ch = curl_init($apiUrl);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Fix for most shared hosting
-            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-            
-            $response = curl_exec($ch);
-            $errNo = curl_errno($ch);
-            $errStr = curl_error($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            $resData = telegram_api_request('sendDocument', $postFields, $cfg);
             @unlink($finalFile);
 
-            if ($httpCode >= 200 && $httpCode < 300) {
-                $resData = json_decode($response, true);
-                if (!isset($resData['result'])) {
-                    throw new Exception("Telegram response invalid: " . $response);
-                }
+            if (isset($resData['ok']) && $resData['ok']) {
                 $fileId = $resData['result']['document']['file_id'] ?? '';
                 
                 $config = load_config($configFile);
@@ -3325,22 +3339,15 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     'date' => time(),
                     'file_id' => $fileId,
                     'message_id' => $resData['result']['message_id'] ?? '',
-                    'tag' => $cfg['tag'] ?? 'general',
+                    'tag' => $cfg['tag'] ?? 'unorganized',
                     'size' => strlen($sqlDump)
                 ]);
                 
-                // Keep only last 20 history items
                 $config['telegram']['history'] = array_slice($config['telegram']['history'], 0, 20);
-                
                 save_config($configFile, $config);
-                echo json_encode(['success' => true, 'message' => 'Backup sent to Telegram & indexed successfully']);
+                echo json_encode(['success' => true, 'message' => 'Backup sent successfully']);
             } else {
-                if ($errNo) {
-                    echo json_encode(['success' => false, 'message' => "Connection Error ($errNo): $errStr"]);
-                } else {
-                    $err = json_decode($response, true);
-                    echo json_encode(['success' => false, 'message' => "Telegram API: " . ($err['description'] ?? 'Unknown Error')]);
-                }
+                echo json_encode(['success' => false, 'message' => $resData['error'] ?? ($resData['description'] ?? 'API Error')]);
             }
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
@@ -3483,33 +3490,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
-            $apiUrl = "$apiBase/bot{$cfg['token']}/sendMessage";
-            $ch = curl_init($apiUrl);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, [
+            $postFields = [
                 'chat_id' => $cfg['chat_id'],
                 'text' => $message,
                 'parse_mode' => 'HTML'
-            ]);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-            
-            $response = curl_exec($ch);
-            $errNo = curl_errno($ch);
-            $errStr = curl_error($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            ];
 
-            if ($httpCode >= 200 && $httpCode < 300) {
+            $resData = telegram_api_request('sendMessage', $postFields, $cfg);
+
+            if (isset($resData['ok']) && $resData['ok']) {
                 $config = load_config($configFile);
                 $config['telegram']['last_health_report'] = time();
                 save_config($configFile, $config);
-                echo json_encode(['success' => true, 'message' => 'Report sent to Telegram.']);
+                echo json_encode(['success' => true, 'message' => 'Health Report sent.']);
             } else {
-                $err = json_decode($response, true);
-                throw new Exception("Telegram Error: " . ($err['description'] ?? 'Unknown error'));
+                echo json_encode(['success' => false, 'message' => $resData['error'] ?? ($resData['description'] ?? 'API Error')]);
             }
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
