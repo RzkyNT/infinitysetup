@@ -4103,7 +4103,11 @@ $view = isset($_GET['view']) ? $_GET['view'] : 'structure';
 $tableData = [];
 $tableStructure = [];
 $tableColumns = [];
-$limit = 50;
+$limit = isset($_GET['limit']) ? ($_GET['limit'] === 'all' ? 999999 : (int)$_GET['limit']) : ($_SESSION['adminer_limit'] ?? 50);
+if (isset($_GET['limit'])) {
+    $_SESSION['adminer_limit'] = $_GET['limit'] === 'all' ? 999999 : (int)$_GET['limit'];
+}
+$limit = (int)$limit;
 $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
 
 // Primary key detection based on database mode
@@ -7707,6 +7711,15 @@ var advancedFilters = null;
                         <form class="search-bar" method="GET" style="margin-bottom:5px;">
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
                             <input type="hidden" name="view" value="data">
+                            <input type="hidden" name="limit" value="<?= (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50)) ?>">
+                            <?php 
+                            $pagination_base = "&search_col=" . urlencode($searchColumn)
+                                                . "&search_op=" . urlencode($searchOp)
+                                                . "&search_val=" . urlencode($searchVal)
+                                                . "&order_by=" . urlencode($orderBy ?? '')
+                                                . "&order_dir=" . urlencode($orderDir);
+                            $pagination_params = $pagination_base . "&limit=" . (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50));
+                            ?>
                             
                             <div class="search-group" style="flex:1;">
                                 <select name="search_col" class="form-select" style="width: 150px; background: var(--bg-card);">
@@ -7747,6 +7760,19 @@ var advancedFilters = null;
                                 </div>
                             </div>
 
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <i class="fas fa-list-ol" style="color:var(--text-secondary); font-size:0.8rem;"></i>
+                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&limit=' + this.value + '<?=$pagination_base ?? ''?>'" class="form-select" style="width:100px; background:var(--bg-card); height:35px; font-size:0.85rem;">
+                                    <?php 
+                                    $limits = [50, 100, 200, 500, 'all'];
+                                    foreach($limits as $l): 
+                                        $selected = ($limit == $l || ($l === 'all' && $limit > 10000)) ? 'selected' : '';
+                                    ?>
+                                        <option value="<?=$l?>" <?=$selected?>><?= $l === 'all' ? 'Show All' : $l ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
                             <div style="margin-left:auto; display:flex; gap:10px; align-items:center;" id="bulkActionsContainer" style="display:none;">
                                 <select id="bulkActionSelect" class="form-select" style="width:150px; display:none;">
                                     <option value="">With Selected:</option>
@@ -7784,7 +7810,8 @@ var advancedFilters = null;
                                                     . "&search_op=" . urlencode($searchOp)
                                                     . "&search_val=" . urlencode($searchVal)
                                                     . "&order_by=" . urlencode($col)
-                                                    . "&order_dir=" . urlencode($newOrderDir);
+                                                    . "&order_dir=" . urlencode($newOrderDir)
+                                                    . "&limit=" . (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50));
                                         ?><th data-col="<?=htmlspecialchars($col)?>"><a href="<?=$sortLink?>" style="color:inherit; text-decoration:none; display:flex; align-items:center; justify-content:space-between;"><?=$sortIcon?><?=htmlspecialchars($col)?></a></th><?php 
                                     endforeach; ?>
                                 </tr>
@@ -7893,11 +7920,7 @@ var advancedFilters = null;
                     <!-- Pagination Simple -->
                     <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
                         <?php 
-                        $pagination_params = "&search_col=" . urlencode($searchColumn)
-                                            . "&search_op=" . urlencode($searchOp)
-                                            . "&search_val=" . urlencode($searchVal)
-                                            . "&order_by=" . urlencode($orderBy ?? '')
-                                            . "&order_dir=" . urlencode($orderDir);
+                        // Already defined above
                         if($offset > 0):
                             ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=max(0, $offset-$limit)?><?=$pagination_params?>" class="btn">Previous</a><?php 
                         endif; ?>
