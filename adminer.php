@@ -268,12 +268,29 @@ class JsonDatabase {
             return array_values($results);
         }
         
-        // Table structure handling (original code)
-        if (!isset($this->data[$table]) || !is_array($this->data[$table])) {
+        // Table structure handling
+        if (!isset($this->data[$table])) {
             return [];
         }
         
         $results = $this->data[$table];
+
+        // --- ENHANCEMENT: Wrap single objects or primitive arrays as rows ---
+        if (is_array($results)) {
+            // Is it a single associative array (object)?
+            if (!empty($results) && !isset($results[0])) {
+                $results = [$results]; // Wrap into a single row
+            } 
+            // Is it an array of primitives (like the 'databases' list)?
+            elseif (!empty($results) && isset($results[0]) && !is_array($results[0])) {
+                $wrapped = [];
+                foreach ($results as $val) $wrapped[] = ['value' => $val];
+                $results = $wrapped;
+            }
+        } else {
+            // It's a single primitive value
+            $results = [['value' => $results]];
+        }
         
         // Apply conditions (WHERE clause)
         if (!empty($conditions)) {
@@ -753,8 +770,22 @@ function get_db_health($pdo, $dbName, $dbMode) {
                                 (SELECT SUM(TABLE_ROWS) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as total_rows,
                                 (SELECT SUM(DATA_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as data_size,
                                 (SELECT SUM(INDEX_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as index_size");
-            $res = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($res) $stats = $res;
+            if ($res && $res['tables_count'] > 0) {
+                 $stats = $res;
+            } else {
+                // Fallback for restricted informational_schema environments (like InfinityFree)
+                $status = $pdo->query("SHOW TABLE STATUS FROM `$dbName`")->fetchAll(PDO::FETCH_ASSOC);
+                $stats['tables_count'] = count($status);
+                $stats['total_rows'] = 0;
+                $stats['data_size'] = 0;
+                $stats['index_size'] = 0;
+                $stats['ver'] = $pdo->query("SELECT VERSION()")->fetchColumn();
+                foreach ($status as $row) {
+                    $stats['total_rows'] += $row['Rows'];
+                    $stats['data_size'] += $row['Data_length'];
+                    $stats['index_size'] += $row['Index_length'];
+                }
+            }
             
             $statusStmt = $pdo->query("SHOW STATUS LIKE 'Uptime'");
             $stats['uptime'] = $statusStmt->fetch(PDO::FETCH_ASSOC)['Value'] ?? '0';
