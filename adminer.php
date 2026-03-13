@@ -7939,13 +7939,15 @@ var advancedFilters = null;
                             <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
                             <input type="hidden" name="view" value="data">
                             <input type="hidden" name="limit" value="<?= (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50)) ?>">
+                            <input type="hidden" name="pagination_mode" value="<?= htmlspecialchars($paginationMode) ?>">
                             <?php 
                             $pagination_base = "&search_col=" . urlencode($searchColumn)
                                                 . "&search_op=" . urlencode($searchOp)
                                                 . "&search_val=" . urlencode($searchVal)
                                                 . "&order_by=" . urlencode($orderBy ?? '')
                                                 . "&order_dir=" . urlencode($orderDir);
-                            $pagination_params = $pagination_base . "&limit=" . (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50)) . "&pagination_mode=" . $paginationMode;
+                            $pagination_limit_val = (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50));
+                            $pagination_params = $pagination_base . "&limit=" . $pagination_limit_val . "&pagination_mode=" . $paginationMode;
                             ?>
                             
                             <div class="search-group" style="flex:1;">
@@ -7989,7 +7991,7 @@ var advancedFilters = null;
 
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <i class="fas fa-list-ol" style="color:var(--text-secondary); font-size:0.8rem;"></i>
-                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&limit=' + this.value + '<?=$pagination_base ?? ''?>'" class="form-select" style="width:100px; background:var(--bg-card); height:35px; font-size:0.85rem;">
+                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&limit=' + this.value + '<?=$pagination_base?>&pagination_mode=<?=$paginationMode?>'" class="form-select" style="width:100px; background:var(--bg-card); height:35px; font-size:0.85rem;">
                                     <?php 
                                     $limits = [50, 100, 200, 500, 'all'];
                                     foreach($limits as $l): 
@@ -8002,7 +8004,7 @@ var advancedFilters = null;
 
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <i class="fas fa-pagination" style="color:var(--text-secondary); font-size:0.8rem;"></i>
-                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&pagination_mode=' + this.value + '<?=$pagination_params ?? ''?>'" class="form-select" style="width:130px; background:var(--bg-card); height:35px; font-size:0.85rem;">
+                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&pagination_mode=' + this.value + '<?=$pagination_base?>&limit=<?=$pagination_limit_val?>'" class="form-select" style="width:130px; background:var(--bg-card); height:35px; font-size:0.85rem;">
                                     <option value="classic" <?= $paginationMode === 'classic' ? 'selected' : '' ?>>Numeric Page</option>
                                     <option value="load_more" <?= $paginationMode === 'load_more' ? 'selected' : '' ?>>Load More</option>
                                 </select>
