@@ -3016,24 +3016,6 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?msg=" . urlencode("Chart removed."));
     }
-    // --- FETCH DATA (AJAX for Load More) ---
-    elseif ($action === 'fetch_data') {
-        while (ob_get_level()) ob_end_clean();
-        header('Content-Type: application/json');
-        
-        $html = '';
-        foreach ($tableData as $row) {
-            $html .= render_data_row($row, $currentTable, $primaryKey, $colTypes ?? []);
-        }
-
-        echo json_encode([
-            'success' => true,
-            'html' => $html,
-            'count' => count($tableData),
-            'has_more' => ($offset + $limit < $totalDataCount)
-        ]);
-        exit;
-    }
     // --- GET CHART DATA (AJAX) ---
     elseif ($action === 'get_chart_data') {
         while (ob_get_level()) ob_end_clean();
@@ -4117,6 +4099,7 @@ if ($is_logged_in && $hasSelectedDatabase && !$currentTable && isset($pdo)) {
 
 $currentTable = isset($_GET['table']) ? preg_replace('/[^a-zA-Z0-9_]/', '', $_GET['table']) : null;
 $view = isset($_GET['view']) ? $_GET['view'] : 'structure'; 
+$action = $_REQUEST['action'] ?? '';
 
 $tableData = [];
 $tableStructure = [];
@@ -4418,6 +4401,25 @@ if (!empty($tableStructure)) {
     foreach ($tableStructure as $cs) {
         $colTypesMap[$cs['Field']] = strtolower($cs['Type']);
     }
+}
+
+// Handle AJAX Data Fetching (Load More)
+if ($action === 'fetch_data') {
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/json');
+    
+    $html = '';
+    foreach ($tableData as $row) {
+        $html .= render_data_row($row, $currentTable, $primaryKey, $colTypesMap ?? []);
+    }
+
+    echo json_encode([
+        'success' => true,
+        'html' => $html,
+        'count' => count($tableData),
+        'has_more' => ($offset + count($tableData) < ($totalDataCount ?? 0))
+    ]);
+    exit;
 }
 
 // Data for Dashboard Charts
@@ -8126,9 +8128,11 @@ var advancedFilters = null;
                             btn.classList.add('loading');
                             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
                             
-                            const url = window.location.href + '&action=fetch_data&offset=' + currentOffset;
+                            const url = new URL(window.location.href);
+                            url.searchParams.set('action', 'fetch_data');
+                            url.searchParams.set('offset', currentOffset);
                             
-                            fetch(url)
+                            fetch(url.toString())
                                 .then(response => response.json())
                                 .then(data => {
                                     if (data.success) {
