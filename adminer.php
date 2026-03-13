@@ -3224,7 +3224,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         save_config($configFile, $cfg);
         redirect("?msg=" . urlencode("Telegram settings saved."));
     }
-    
+
     /**
      * Helper to send request to Telegram with better error handling
      */
@@ -3256,8 +3256,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         return $data;
     }
-    // --- PUSH BACKUP TO TELEGRAM ---
-    elseif ($action === 'push_telegram_backup') {
+
+    if ($action === 'push_telegram_backup') {
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $cfg = load_config($configFile)['telegram'] ?? null;
