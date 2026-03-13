@@ -773,6 +773,8 @@ function get_db_health($pdo, $dbName, $dbMode) {
     return $stats;
 }
 
+
+
 /**
  * Generate Smart Fake Data
  */
@@ -3169,7 +3171,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'token' => $_POST['tg_token'] ?? '',
             'chat_id' => $_POST['tg_chat_id'] ?? '',
             'tag' => $_POST['tg_tag'] ?? 'unorganized',
+            'auto' => $_POST['tg_auto'] ?? '',
+            'use_zip' => isset($_POST['tg_zip']) && $_POST['tg_zip'] === '1' ? '1' : '0',
+            'zip_password' => $_POST['tg_zip_password'] ?? '',
             'last_backup' => $cfg['telegram']['last_backup'] ?? 0,
+            'last_health_report' => $cfg['telegram']['last_health_report'] ?? 0,
             'history' => $cfg['telegram']['history'] ?? []
         ];
         save_config($configFile, $cfg);
@@ -3209,15 +3215,39 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
-            $tmpFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename;
-            file_put_contents($tmpFile, $sqlDump);
+            $finalFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename;
+            file_put_contents($finalFile, $sqlDump);
+            $mimeType = 'text/plain';
+
+            // ZIP Compression Logic
+            if (($cfg['use_zip'] ?? '0') === '1' && class_exists('ZipArchive')) {
+                $zipFile = $finalFile . ".zip";
+                $zip = new ZipArchive();
+                if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
+                    $pass = $cfg['zip_password'] ?? '';
+                    if (!empty($pass)) {
+                        $zip->setPassword($pass);
+                        $zip->addFromString($filename, $sqlDump);
+                        if (method_exists($zip, 'setEncryptionName')) {
+                            $zip->setEncryptionName($filename, ZipArchive::EM_AES_256);
+                        }
+                    } else {
+                        $zip->addFile($finalFile, $filename);
+                    }
+                    $zip->close();
+                    @unlink($finalFile);
+                    $finalFile = $zipFile;
+                    $filename .= ".zip";
+                    $mimeType = 'application/zip';
+                }
+            }
 
             $apiUrl = "https://api.telegram.org/bot{$cfg['token']}/sendDocument";
             
             $postFields = [
                 'chat_id' => $cfg['chat_id'],
-                'document' => new CURLFile($tmpFile, 'text/plain', $filename),
-                'caption' => "Database Backup: " . ($_SESSION['db_name'] ?? 'db') . "\nDate: " . date('Y-m-d H:i:s')
+                'document' => new CURLFile($finalFile, $mimeType, $filename),
+                'caption' => "📦 DB Backup: " . ($_SESSION['db_name'] ?? 'db') . "\n🏷 Tag: #" . ($cfg['tag'] ?? 'general') . "\n📅 Date: " . date('Y-m-d H:i:s') . ((!empty($cfg['zip_password'])) ? "\n🔐 Encrypted ZIP" : "")
             ];
 
             $ch = curl_init($apiUrl);
@@ -3228,7 +3258,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $response = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
-            @unlink($tmpFile);
+            @unlink($finalFile);
 
             if ($httpCode >= 200 && $httpCode < 300) {
                 $resData = json_decode($response, true);
@@ -3275,6 +3305,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         try {
+            $password = $_POST['password'] ?? '';
             // 1. Get File Path from Telegram
             $getRes = file_get_contents("https://api.telegram.org/bot{$cfg['token']}/getFile?file_id=$fileId");
             $getFile = json_decode($getRes, true);
@@ -3284,8 +3315,33 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $downloadUrl = "https://api.telegram.org/file/bot{$cfg['token']}/$filePath";
             
             // 2. Download content
-            $sql = file_get_contents($downloadUrl);
-            if (!$sql) throw new Exception("Failed to download file from Telegram");
+            $content = file_get_contents($downloadUrl);
+            if (!$content) throw new Exception("Failed to download file from Telegram");
+
+            $sql = $content;
+            // Check if it's a ZIP file
+            if (strpos($filePath, '.zip') !== false && class_exists('ZipArchive')) {
+                $tmpZip = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'restore_' . uniqid() . '.zip';
+                file_put_contents($tmpZip, $content);
+                
+                $zip = new ZipArchive();
+                if ($zip->open($tmpZip) === TRUE) {
+                    if (!empty($password)) {
+                        $zip->setPassword($password);
+                    }
+                    // Try to get first file content
+                    $sqlName = $zip->getNameIndex(0);
+                    $sql = $zip->getFromIndex(0);
+                    
+                    if ($sql === false) {
+                        $zip->close();
+                        @unlink($tmpZip);
+                        throw new Exception("Failed to extract ZIP. " . (empty($password) ? "Maybe it requires a password?" : "Incorrect password."));
+                    }
+                    $zip->close();
+                }
+                @unlink($tmpZip);
+            }
 
             // 3. Execute SQL
             if ($dbMode === 'sql' && isset($pdo)) {
@@ -3329,6 +3385,66 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             echo json_encode(['success' => true, 'message' => 'Backup removed from index and chat.']);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- TELEGRAM HEALTH REPORT ---
+    elseif ($action === 'send_telegram_health_report') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['telegram'] ?? null;
+        if (!$cfg || empty($cfg['token']) || empty($cfg['chat_id'])) {
+            echo json_encode(['success' => false, 'message' => 'Telegram not configured']);
+            exit;
+        }
+
+        try {
+            $dbName = $_SESSION['db_name'] ?? 'db';
+            $health = get_db_health($pdo, $dbName, $dbMode);
+            
+            $message = "📊 *Smart Database Report: $dbName*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "⏱ Time: " . date('Y-m-d H:i') . "\n";
+            $message .= "💾 Total Size: " . formatSize($health['data_size']) . "\n";
+            $message .= "📁 Total Tables: " . $health['tables_count'] . "\n\n";
+            
+            if ($dbMode === 'sql' && isset($pdo)) {
+                $message .= "*Top 3 Tables (Rows):*\n";
+                $topTables = $pdo->query("SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName' ORDER BY TABLE_ROWS DESC LIMIT 3")->fetchAll(PDO::FETCH_ASSOC);
+                foreach($topTables as $t) {
+                    $message .= "🔹 " . $t['TABLE_NAME'] . ": " . number_format($t['TABLE_ROWS']) . " rows\n";
+                }
+            }
+            
+            $message .= "\n🖥 *Server Status:*\n";
+            $message .= "⚡ PHP: " . PHP_VERSION . " on " . PHP_OS . "\n";
+            if (function_exists('disk_free_space')) {
+                $free = @disk_free_space(".");
+                $total = @disk_total_space(".");
+                if ($free && $total) {
+                    $message .= "💽 Disk Free: " . formatSize($free) . " / " . formatSize($total) . " (" . round(($free/$total)*100) . "%)\n";
+                }
+            }
+
+            $apiUrl = "https://api.telegram.org/bot{$cfg['token']}/sendMessage";
+            $ch = curl_init($apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, [
+                'chat_id' => $cfg['chat_id'],
+                'text' => $message,
+                'parse_mode' => 'Markdown'
+            ]);
+            curl_exec($ch);
+            curl_close($ch);
+
+            $config = load_config($configFile);
+            $config['telegram']['last_health_report'] = time();
+            save_config($configFile, $config);
+
+            echo json_encode(['success' => true, 'message' => 'Report sent to Telegram.']);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
@@ -7531,6 +7647,9 @@ var advancedFilters = null;
                                 <button type="button" class="btn btn-primary btn-sm" onclick="pushBackupToTelegram()" style="background:#0088cc;">
                                     <i class="fas fa-paper-plane"></i> Send Now
                                 </button>
+                                <button type="button" class="btn btn-accent btn-sm" onclick="sendTelegramHealthReport()" title="Send Health Report Now">
+                                    <i class="fas fa-chart-line"></i> Report
+                                </button>
                             </div>
                         </div>
                         
@@ -7745,9 +7864,22 @@ var advancedFilters = null;
                                 <input type="password" id="tg_token" class="swal2-input" value="${tg.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
                                 <label class="form-label">Chat ID / Channel ID</label>
                                 <input type="text" id="tg_chat_id" class="swal2-input" value="${tg.chat_id || ''}" placeholder="-100xxxxxxxx" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
-                                <label class="form-label">Backup Tag (mimic folders)</label>
-                                <input type="text" id="tg_tag" class="swal2-input" value="${tg.tag || 'production'}" placeholder="e.g. production, daily, testing" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
-                                <small style="color:var(--text-secondary); font-size:0.8rem;">Current tag: <b>${tg.tag || 'none'}</b>. Used to categorize backups in the history list.</small>
+                                <label class="form-label">Backup Tag (Folders)</label>
+                                <input type="text" id="tg_tag" class="swal2-input" value="${tg.tag || 'production'}" placeholder="e.g. production" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Auto Schedule</label>
+                                <select id="tg_auto" class="swal2-input" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                    <option value="">None / Manual Only</option>
+                                    <option value="3600" ${tg.auto == '3600' ? 'selected' : ''}>Every 1 Hour</option>
+                                    <option value="43200" ${tg.auto == '43200' ? 'selected' : ''}>Every 12 Hours</option>
+                                    <option value="86400" ${tg.auto == '86400' ? 'selected' : ''}>Daily (24h)</option>
+                                </select>
+                                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                                    <input type="checkbox" id="tg_zip" value="1" ${tg.use_zip == '1' ? 'checked' : ''} style="width:20px; height:20px;">
+                                    <label for="tg_zip" class="form-label" style="margin:0;">Use ZIP Compression</label>
+                                </div>
+                                <label class="form-label">ZIP Password (Optional)</label>
+                                <input type="password" id="tg_zip_password" class="swal2-input" value="${tg.zip_password || ''}" placeholder="Leave empty for no password" style="margin:0; width:100%; box-sizing:border-box;">
+                                <small style="color:var(--text-secondary); font-size:0.8rem; margin-top:5px; display:block;">Password provides AES-256 encryption for your data.</small>
                             </div>`,
                         showCancelButton: true,
                         confirmButtonText: 'Save Settings',
@@ -7755,7 +7887,10 @@ var advancedFilters = null;
                             action: 'save_telegram_config',
                             tg_token: document.getElementById('tg_token').value,
                             tg_chat_id: document.getElementById('tg_chat_id').value,
-                            tg_tag: document.getElementById('tg_tag').value
+                            tg_tag: document.getElementById('tg_tag').value,
+                            tg_auto: document.getElementById('tg_auto').value,
+                            tg_zip: document.getElementById('tg_zip').checked ? '1' : '0',
+                            tg_zip_password: document.getElementById('tg_zip_password').value
                         })
                     }).then((result) => { if (result.isConfirmed) saSubmitData(result.value); });
                 }
@@ -7771,7 +7906,32 @@ var advancedFilters = null;
                     }).catch(e => { Swal.fire({ icon: 'error', title: 'Request Failed', text: e.message }); });
                 }
 
-                function restoreFromTelegram(fileId, name) {
+                function sendTelegramHealthReport() {
+                    Swal.fire({ title: 'Generating...', text: 'Calculating DB Health & Sending...', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+                    const params = new URLSearchParams();
+                    params.append('action', 'send_telegram_health_report');
+                    fetchJson(window.location.pathname, { method: 'POST', body: params })
+                    .then(data => {
+                        if (data.success) { Swal.fire({ icon: 'success', title: 'Sent!', text: data.message }); }
+                        else { Swal.fire({ icon: 'error', title: 'Failed', text: data.message }); }
+                    }).catch(e => { Swal.fire({ icon: 'error', title: 'Request Failed', text: e.message }); });
+                }
+
+                async function restoreFromTelegram(fileId, name) {
+                    let password = '';
+                    if (name.endsWith('.zip')) {
+                        const { value: pass } = await Swal.fire({
+                            title: 'ZIP Password',
+                            text: 'This backup is zipped. Enter password to decrypt (leave blank if none):',
+                            input: 'password',
+                            inputPlaceholder: 'Enter ZIP password...',
+                            showCancelButton: true,
+                            inputValue: <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['telegram']['zip_password'] ?? '') ?>
+                        });
+                        if (pass === undefined) return; // Cancelled
+                        password = pass;
+                    }
+
                     Swal.fire({
                         title: 'Restore from Telegram',
                         text: `Import and Overwrite database with "${name}"?`,
@@ -7783,6 +7943,7 @@ var advancedFilters = null;
                             const fd = new FormData();
                             fd.append('action', 'restore_telegram_backup');
                             fd.append('file_id', fileId);
+                            fd.append('password', password);
                             return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
@@ -7827,6 +7988,35 @@ var advancedFilters = null;
                             if (res.success && typeof loadGithubBackups === 'function') loadGithubBackups();
                             console.log('GitHub Auto-backup:', res.message);
                         }).catch(e => console.error('GitHub Auto-backup failed', e));
+                    });
+                <?php endif; ?>
+
+                // Auto Backup Pseudo-Cron for Telegram
+                <?php 
+                $tgNow = time();
+                $tgLast = $tgCfg['last_backup'] ?? 0;
+                $tgInterval = (int)($tgCfg['auto'] ?? 0);
+                if ($tgInterval > 0 && ($tgNow - $tgLast) >= $tgInterval): ?>
+                    document.addEventListener('DOMContentLoaded', () => {
+                        const fd = new FormData();
+                        fd.append('action', 'push_telegram_backup');
+                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                            console.log('Telegram Auto-backup:', res.message);
+                            if (res.success) location.reload();
+                        }).catch(e => console.error('Telegram Auto-backup failed', e));
+                    });
+                <?php endif; ?>
+
+                // Daily Health Report Pseudo-Cron (Every 24h)
+                <?php 
+                $hLast = $tgCfg['last_health_report'] ?? 0;
+                if ($tgCfg && !empty($tgCfg['token']) && ($tgNow - $hLast) >= 86400): ?>
+                    document.addEventListener('DOMContentLoaded', () => {
+                        const fd = new FormData();
+                        fd.append('action', 'send_telegram_health_report');
+                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                            console.log('Daily Health Report:', res.message);
+                        }).catch(e => console.error('Health Report failed', e));
                     });
                 <?php endif; ?>
                 </script>
