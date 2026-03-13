@@ -3295,14 +3295,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_POST, true);
             curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Fix for most shared hosting
+            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
             
             $response = curl_exec($ch);
+            $errNo = curl_errno($ch);
+            $errStr = curl_error($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
             @unlink($finalFile);
 
             if ($httpCode >= 200 && $httpCode < 300) {
                 $resData = json_decode($response, true);
+                if (!isset($resData['result'])) {
+                    throw new Exception("Telegram response invalid: " . $response);
+                }
                 $fileId = $resData['result']['document']['file_id'] ?? '';
                 
                 $config = load_config($configFile);
@@ -3325,8 +3332,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 save_config($configFile, $config);
                 echo json_encode(['success' => true, 'message' => 'Backup sent to Telegram & indexed successfully']);
             } else {
-                $err = json_decode($response, true);
-                echo json_encode(['success' => false, 'message' => $err['description'] ?? 'Telegram API Error']);
+                if ($errNo) {
+                    echo json_encode(['success' => false, 'message' => "Connection Error ($errNo): $errStr"]);
+                } else {
+                    $err = json_decode($response, true);
+                    echo json_encode(['success' => false, 'message' => "Telegram API: " . ($err['description'] ?? 'Unknown Error')]);
+                }
             }
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
@@ -3478,7 +3489,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 'text' => $message,
                 'parse_mode' => 'HTML'
             ]);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+            
             $response = curl_exec($ch);
+            $errNo = curl_errno($ch);
+            $errStr = curl_error($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
 
