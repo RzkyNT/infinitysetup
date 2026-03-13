@@ -758,6 +758,38 @@ function is_valid_db_name($name)
 }
 
 /**
+ * Helper to send request to Telegram with better error handling
+ */
+function telegram_api_request($method, $postFields, $cfg) {
+    $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
+    $apiUrl = "$apiBase/bot" . ($cfg['token'] ?? '') . "/$method";
+    
+    $ch = curl_init($apiUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
+    $response = curl_exec($ch);
+    $errNo = curl_errno($ch);
+    $errStr = curl_error($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($errNo) {
+         return ['ok' => false, 'error' => "Connection Failed ($errNo): $errStr"];
+    }
+    
+    $data = json_decode($response, true);
+    if (!$data) {
+         return ['ok' => false, 'error' => "Invalid API Response: " . substr($response, 0, 100)];
+    }
+    
+    return $data;
+}
+
+/**
  * Get Database Health and Performance Stats
  */
 function get_db_health($pdo, $dbName, $dbMode) {
@@ -3224,39 +3256,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         save_config($configFile, $cfg);
         redirect("?msg=" . urlencode("Telegram settings saved."));
     }
-
-    /**
-     * Helper to send request to Telegram with better error handling
-     */
-    function telegram_api_request($method, $postFields, $cfg) {
-        $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
-        $apiUrl = "$apiBase/bot" . ($cfg['token'] ?? '') . "/$method";
-        
-        $ch = curl_init($apiUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        
-        $response = curl_exec($ch);
-        $errNo = curl_errno($ch);
-        $errStr = curl_error($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($errNo) {
-             return ['ok' => false, 'error' => "Connection Failed ($errNo): $errStr"];
-        }
-        
-        $data = json_decode($response, true);
-        if (!$data) {
-             return ['ok' => false, 'error' => "Invalid API Response: " . substr($response, 0, 100)];
-        }
-        
-        return $data;
-    }
-
+    
     elseif ($action === 'push_telegram_backup') {
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
