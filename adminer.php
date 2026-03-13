@@ -11288,6 +11288,7 @@ var queryBuilder = null;
                         if (!nlInput) return;
 
                         const table = <?= json_encode($currentTable, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+                        const structure = <?= json_encode(array_map(function($col) { return ['name' => $col['Field'], 'type' => $col['Type']]; }, $tableStructure ?? []), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
                         
                         Swal.fire({
                             title: 'AI is thinking...',
@@ -11297,13 +11298,16 @@ var queryBuilder = null;
                         });
 
                         try {
-                            // Define the system instructions for the AI
-                            const systemInst = `Target table: "${table}". User command: "${nlInput}". 
+                            const structureStr = structure.map(s => `${s.name} (${s.type})`).join(', ');
+                            const systemInst = `Target table: "${table}". 
+                            Table columns: ${structureStr}.
+                            User command: "${nlInput}". 
                             Rules: 
                             1. Response MUST be ONLY a MySQL query.
                             2. Do not use markdown backticks unless strictly necessary for a code block.
                             3. If multiple queries, separate with semicolon.
-                            4. If the request is ambiguous, default to SELECT.`;
+                            4. Use backticks for table and column names if needed.
+                            5. If the request is ambiguous, default to SELECT.`;
                             
                             const prompt = encodeURIComponent(systemInst);
                             const apiKey = "keysita_47JX47JX";
