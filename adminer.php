@@ -2821,7 +2821,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
                 }
                 
-                $msg = $toUnique ? "Unique constraint restored for '$name'." : "Unique constraint removed. Index '$name' is now Normal.";
+                $msg = $toUnique ? "Unique constraint restored for `$name`." : "Unique constraint removed. Index `$name` is now Normal.";
                 redirect("?table=$table&view=structure&msg=" . urlencode($msg));
             } catch (Exception $e) {
                 $error = "Bypass Failed: " . $e->getMessage();
@@ -6921,10 +6921,10 @@ var advancedFilters = null;
 
         <div class="content-area">
             <?php if ($msg): ?>
-                <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?=htmlspecialchars($msg)?></div>
+                <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?=$msg?></div>
             <?php endif; ?>
             <?php if ($error): ?>
-                <div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> <?=htmlspecialchars($error)?></div>
+                <div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> <?=$error?></div>
             <?php endif; ?>
 
             <?php 
