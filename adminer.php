@@ -3290,7 +3290,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
-            $finalFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename;
+            
+            $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+            if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+            
+            $finalFile = $tmpDir . DIRECTORY_SEPARATOR . $filename;
             file_put_contents($finalFile, $sqlDump);
             $mimeType = 'text/plain';
 
@@ -3368,22 +3372,27 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             $password = $_POST['password'] ?? '';
+            $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
+
             // 1. Get File Path from Telegram
-            $getRes = file_get_contents("https://api.telegram.org/bot{$cfg['token']}/getFile?file_id=$fileId");
+            $getRes = @file_get_contents("$apiBase/bot{$cfg['token']}/getFile?file_id=$fileId");
             $getFile = json_decode($getRes, true);
             if (!$getFile['ok']) throw new Exception("Telegram could not locate file");
             
             $filePath = $getFile['result']['file_path'];
-            $downloadUrl = "https://api.telegram.org/file/bot{$cfg['token']}/$filePath";
+            $downloadUrl = "$apiBase/file/bot{$cfg['token']}/$filePath";
             
             // 2. Download content
-            $content = file_get_contents($downloadUrl);
+            $content = @file_get_contents($downloadUrl);
             if (!$content) throw new Exception("Failed to download file from Telegram");
 
             $sql = $content;
             // Check if it's a ZIP file
             if (strpos($filePath, '.zip') !== false && class_exists('ZipArchive')) {
-                $tmpZip = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'restore_' . uniqid() . '.zip';
+                $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+                if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+
+                $tmpZip = $tmpDir . DIRECTORY_SEPARATOR . 'restore_' . uniqid() . '.zip';
                 file_put_contents($tmpZip, $content);
                 
                 $zip = new ZipArchive();
