@@ -776,27 +776,59 @@ function get_db_health($pdo, $dbName, $dbMode) {
 /**
  * Generate Smart Fake Data
  */
-function generate_fake_data($type, $index = 0) {
+function generate_fake_data($type, $index = 0, $dbType = '') {
     $names = ['James Smith', 'Maria Garcia', 'Robert Hernandez', 'David Miller', 'Linda Martinez', 'Michael Davis', 'Sarah Taylor', 'William Lopez', 'Angela Wilson', 'Daniel Anderson'];
     $domains = ['example.com', 'test.io', 'mail.net', 'company.org', 'web.com'];
     $cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'London', 'Berlin', 'Paris', 'Tokyo', 'Jakarta'];
     $texts = ['Lorem ipsum dolor sit amet.', 'Quick brown fox jumps over lazy dog.', 'Data integrity is very important.', 'Fastest database manager in the west.', 'This is a sample generated text.'];
     
+    $dbType = strtolower($dbType);
     switch (strtolower((string)$type)) {
         case 'name': return $names[rand(0, count($names)-1)];
+        case 'username': return strtolower(explode(' ', $names[rand(0, count($names)-1)])[0]) . rand(10, 99);
         case 'email': 
             $n = strtolower(str_replace(' ', '.', $names[rand(0, count($names)-1)]));
             return $n . rand(10, 99) . '@' . $domains[rand(0, count($domains)-1)];
         case 'phone': return '08' . rand(11, 19) . '-' . rand(1000, 9999) . '-' . rand(1000, 9999);
         case 'city': return $cities[rand(0, count($cities)-1)];
         case 'text': return $texts[rand(0, count($texts)-1)];
-        case 'number': return rand(1, 1000);
+        case 'role': return 'user'; 
+        case 'status': return (rand(0, 10) > 2) ? 'active' : 'inactive';
+        case 'number': 
+            $max = 1000;
+            if (strpos($dbType, 'tinyint') !== false) $max = (strpos($dbType, 'unsigned') !== false) ? 255 : 127;
+            elseif (strpos($dbType, 'smallint') !== false) $max = (strpos($dbType, 'unsigned') !== false) ? 65535 : 32767;
+            return rand(1, $max);
         case 'boolean': return rand(0, 1);
         case 'date': return date('Y-m-d', strtotime('-' . rand(0, 365) . ' days'));
         case 'datetime': return date('Y-m-d H:i:s', strtotime('-' . rand(0, 365) . ' days -' . rand(0, 86400) . ' seconds'));
         case 'password': return password_hash('password123', PASSWORD_BCRYPT);
         default: return 'Value ' . ($index + 1);
     }
+}
+
+/**
+ * Guess Fake Data Type based on Column Name and DB Type
+ */
+function guess_fake_type($name, $dbType) {
+    $name = strtolower((string)$name);
+    $dbType = strtolower((string)$dbType);
+    
+    if (strpos($name, 'email') !== false) return 'email';
+    if (strpos($name, 'user') !== false || strpos($name, 'username') !== false) return 'username';
+    if (strpos($name, 'name') !== false) return 'name';
+    if (strpos($name, 'role') !== false) return 'role';
+    if (strpos($name, 'status') !== false) return 'status';
+    if (strpos($name, 'phone') !== false || strpos($name, 'tel') !== false) return 'phone';
+    if (strpos($name, 'pass') !== false) return 'password';
+    if (strpos($name, 'city') !== false) return 'city';
+    
+    if (strpos($dbType, 'int') !== false) return 'number';
+    if (strpos($dbType, 'date') !== false) return 'date';
+    if (strpos($dbType, 'text') !== false) return 'text';
+    if (strpos($dbType, 'bool') !== false) return 'boolean';
+    
+    return 'default';
 }
 
 // Deprecated wrapper functions for compatibility if needed, but we use load_config directly now
@@ -1153,6 +1185,12 @@ if ($is_logged_in) {
             ]
         );
         
+        // Apply Foreign Key Checks setting from session
+        if (isset($_SESSION['fk_checks'])) {
+            $fk_val = (int)$_SESSION['fk_checks'];
+            $pdo->exec("SET FOREIGN_KEY_CHECKS = $fk_val");
+        }
+        
         // Fetch semua database yang tersedia
         try {
             $stmt = $pdo->query("SHOW DATABASES");
@@ -1199,6 +1237,12 @@ if ($is_logged_in) {
                         PDO::ATTR_TIMEOUT => 5
                     ]
                 );
+                
+                // Apply Foreign Key Checks setting from session
+                if (isset($_SESSION['fk_checks'])) {
+                    $fk_val = (int)$_SESSION['fk_checks'];
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = $fk_val");
+                }
             } catch (Exception $e) {
                 error_log("Adminer reconnect with DB error: " . $e->getMessage());
                 // Jika gagal konek ke DB, reset state agar tidak crash di query selanjutnya
@@ -1847,66 +1891,147 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- SET FK CHECKS ---
+    elseif ($action === 'set_fk_checks') {
+        $val = (int)($_POST['value'] ?? 1);
+        $_SESSION['fk_checks'] = $val; // Save to session to persist across requests
+        try {
+            if ($pdo) {
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = $val");
+            }
+            $table = $_POST['table'] ?? '';
+            redirect("?table=$table&view=structure&msg=" . urlencode("Foreign Key Checks set to $val " . ($val ? 'ON' : 'OFF') . "."));
+        } catch (Exception $e) {
+            $error = $e->getMessage();
+        }
+    }
     // --- GENERATE DUMMY DATA ---
     elseif ($action === 'generate_dummy_data') {
         $count = (int)($_POST['count'] ?? 10);
         if ($count > 1000) $count = 1000;
         
+        $overrides = [];
+        if (!empty($_POST['overrides'])) {
+            $overrides = json_decode($_POST['overrides'], true) ?: [];
+        }
+        
         try {
             if (($_SESSION['db_mode'] ?? 'sql') === 'json') {
                 for ($i = 0; $i < $count; $i++) {
                     $dummy = [];
-                    // Small logic to guess data by key names in existing data
                     $existing = $jsonDb->select($table, [], 0, 1);
                     if (!empty($existing)) {
                         foreach (array_keys($existing[0]) as $key) {
                             if ($key === 'id') continue;
-                            $dummy[$key] = "Dummy " . bin2hex(random_bytes(4));
+                            
+                            if (isset($overrides[$key])) {
+                                if (is_array($overrides[$key])) {
+                                    $dummy[$key] = $overrides[$key][array_rand($overrides[$key])];
+                                } else {
+                                    $dummy[$key] = $overrides[$key];
+                                }
+                            } else {
+                                $type = guess_fake_type($key, 'string');
+                                $dummy[$key] = generate_fake_data($type, $i);
+                            }
                         }
                     }
                     $jsonDb->insert($table, $dummy);
                 }
             } else {
-                // SQL Mode
+                // SQL Mode - Pre-fetch ENUM and FK info
                 $stmt = $pdo->query("DESCRIBE `$table`");
                 $structure = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 
-                $cols = [];
+                $colMeta = [];
                 foreach ($structure as $col) {
-                    if (strpos($col['Extra'], 'auto_increment') === false) {
-                        $cols[] = $col;
+                    if (strpos($col['Extra'], 'auto_increment') !== false) continue;
+                    
+                    $field = $col['Field'];
+                    $type = $col['Type'];
+                    $options = null;
+                    
+                    // Handle ENUM
+                    if (stripos($type, 'enum') === 0) {
+                        preg_match("/^enum\((.*)\)$/i", $type, $matches);
+                        if (isset($matches[1])) {
+                            $options = str_getcsv($matches[1], ",", "'");
+                        }
                     }
+                    
+                    // Handle Foreign Key
+                    $fkValues = [];
+                    $sqlFK = "SELECT REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                              FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
+                    $stmtFK = $pdo->prepare($sqlFK);
+                    $stmtFK->execute([$table, $field]);
+                    $fk = $stmtFK->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($fk) {
+                        $refTable = $fk['REFERENCED_TABLE_NAME'];
+                        $refCol = $fk['REFERENCED_COLUMN_NAME'];
+                        try {
+                            $stmtRef = $pdo->query("SELECT `$refCol` FROM `$refTable` LIMIT 50");
+                            $fkValues = $stmtRef->fetchAll(PDO::FETCH_COLUMN);
+                        } catch(Exception $e) {}
+                    }
+                    
+                    $colMeta[$field] = [
+                        'type' => $type,
+                        'enum_options' => $options,
+                        'fk_values' => $fkValues
+                    ];
                 }
                 
                 for ($i = 0; $i < $count; $i++) {
                     $insertCols = [];
                     $params = [];
-                    foreach ($cols as $c) {
-                        $insertCols[] = "`".$c['Field']."`";
-                        $name = strtolower($c['Field']);
-                        $type = strtolower($c['Type']);
+                    foreach ($colMeta as $name => $meta) {
+                        $insertCols[] = "`$name`";
                         
-                        $val = '';
-                        if (strpos($name, 'email') !== false) $val = "user" . rand(100, 999) . "@example.com";
-                        elseif (strpos($name, 'user') !== false || strpos($name, 'name') !== false) $val = "User " . rand(100, 999);
-                        elseif (strpos($name, 'phone') !== false || strpos($name, 'tel') !== false) $val = "0812" . rand(10000000, 99999999);
-                        elseif (strpos($name, 'pass') !== false) $val = password_hash('password123', PASSWORD_DEFAULT);
-                        elseif (strpos($type, 'int') !== false) $val = rand(0, 100);
-                        elseif (strpos($type, 'date') !== false) $val = date('Y-m-d', strtotime('-' . rand(0, 365) . ' days'));
-                        elseif (strpos($type, 'text') !== false) $val = "This is a dummy text description for testing purposes generated at " . date('H:i:s');
-                        else $val = "Dummy Val " . rand(1, 100);
+                        // Priority 1: Manual Overrides (supports array for random choice)
+                        if (isset($overrides[$name])) {
+                            $val = is_array($overrides[$name]) ? $overrides[$name][array_rand($overrides[$name])] : $overrides[$name];
+                            
+                            // Check for special seeder command
+                            if (is_string($val) && strpos($val, '__SEED__:') === 0) {
+                                $forcedType = substr($val, 9);
+                                $val = generate_fake_data($forcedType, $i);
+                            }
+                        } 
+                        // Priority 2: ENUM options
+                        elseif ($meta['enum_options']) {
+                            $val = $meta['enum_options'][array_rand($meta['enum_options'])];
+                        }
+                        // Priority 3: Foreign Key values
+                        elseif ($meta['fk_values']) {
+                            $val = $meta['fk_values'][array_rand($meta['fk_values'])];
+                        }
+                        // Priority 4: Smart Fake Data
+                        else {
+                            $type = guess_fake_type($name, $meta['type']);
+                            $val = generate_fake_data($type, $i, $meta['type']);
+                        }
                         
                         $params[] = $val;
                     }
                     
-                    $sql = "INSERT INTO `$table` (" . implode(', ', $insertCols) . ") VALUES (" . implode(', ', array_fill(0, count($params), '?')) . ")";
+                    $insertKeyword = 'INSERT';
+                    $sql = "$insertKeyword INTO `$table` (" . implode(', ', $insertCols) . ") VALUES (" . implode(', ', array_fill(0, count($params), '?')) . ")";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute($params);
                 }
             }
             redirect("?table=$table&view=data&msg=" . urlencode("$count rows of dummy data generated successfully."));
         } catch (Exception $e) {
-            $error = $e->getMessage();
+            $error = "Successfully seeded " . ($i ?? 0) . " rows. (" . ($count - ($i ?? 0)) . " failed. Error: " . $e->getMessage() . ")";
+            if (strpos($error, '1264') !== false) {
+                $error .= "<br><br><div style='background:rgba(255,107,107,0.1); padding:10px; border-radius:4px; border:1px solid #ff6b6b; font-weight:bold; color:#ffb3b3;'>";
+                $error .= "<i class='fas fa-exclamation-triangle'></i> TIP: Nilai yang Anda masukkan mungkin terlalu besar untuk tipe kolom tersebut (misal: memasukkan 387 ke kolom TINYINT).<br>";
+                $error .= "<a href='?table=$table&view=structure' style='color:#fff; text-decoration:underline;'>Ubah tipe kolom ke INT di tab Structure &rarr;</a>";
+                $error .= "</div>";
+            }
         }
     }
     // --- DUPLICATE ROW ---
@@ -1933,18 +2058,22 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!$original) throw new Exception("Original row not found.");
                     
                     // Get columns meta to identify unique/primary keys
-                    $stmt = $pdo->query("SHOW COLUMNS FROM `$table` WHERE Extra NOT LIKE '%auto_increment%'");
+                    $stmt = $pdo->query("SHOW COLUMNS FROM `$table` ");
                     $colsMeta = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     
                     $insertCols = [];
                     $uniqueFields = [];
                     foreach ($colsMeta as $m) {
+                        if (strpos($m['Extra'], 'auto_increment') !== false) continue;
                         $insertCols[] = $m['Field'];
-                        // UNI = Unique, PRI = Primary Key (if not auto-inc)
-                        if ($m['Key'] === 'UNI' || $m['Key'] === 'PRI') {
+                        // UNI = Unique, PRI = Primary Key
+                        // We also check MUL because composite unique keys appear as MUL in DESCRIBE
+                        if ($m['Key'] === 'UNI' || $m['Key'] === 'PRI' || $m['Key'] === 'MUL') {
                             $uniqueFields[] = $m['Field'];
                         }
                     }
+                    
+                    $bypass = isset($_POST['bypass']) && $_POST['bypass'] == '1';
 
                     for ($i = 1; $i <= $count; $i++) {
                         $data = $original;
@@ -1975,11 +2104,14 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             $values[] = $data[$colName];
                         }
                         
-                        $sql = "INSERT INTO `$table` (" . implode(', ', $fields) . ") VALUES (" . implode(', ', $placeholders) . ")";
+                        $insertKeyword = 'INSERT';
+                        // Use IGNORE internally only if we really need to prevent crash on PRI/UNI
+                        $sql = "$insertKeyword INTO `$table` (" . implode(', ', $fields) . ") VALUES (" . implode(', ', $placeholders) . ")";
                         $stmt = $pdo->prepare($sql);
                         $stmt->execute($values);
                     }
-                    $msg = $count > 1 ? "$count rows duplicated successfully." : "Row duplicated successfully.";
+                    $msg = $count > 1 ? "$count rows processed." : "Row processed.";
+                    if ($bypass) $msg .= " (Duplicates were ignored/bypassed)";
                 }
                 redirect("?table=$table&view=data&msg=" . urlencode($msg));
             }
@@ -2660,7 +2792,45 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = $e->getMessage();
         }
     }
-    // --- ADD FOREIGN KEY ---
+    // --- TOGGLE UNIQUE / INDEX (Bypass Unique) ---
+    elseif ($action === 'convert_to_index' || $action === 'convert_to_unique') {
+        $name = $_POST['name'];
+        $toUnique = ($action === 'convert_to_unique');
+        
+        if ($name === 'PRIMARY') {
+            $error = "Cannot modify PRIMARY KEY.";
+        } else {
+            try {
+                // 1. Get current index columns
+                $stmt = $pdo->query("SHOW INDEX FROM `$table` WHERE Key_name = " . $pdo->quote($name));
+                $cols = [];
+                while($r = $stmt->fetch()) $cols[] = "`" . $r['Column_name'] . "`";
+                
+                if (!$cols) throw new Exception("Index info not found.");
+                $colsStr = implode(', ', $cols);
+                
+                // 2. Wrap in FK Check bypass AND use atomic ALTER TABLE
+                // Atomic ALTER TABLE (DROP and ADD in one go) is more likely to succeed 
+                // because the requirement for an index is checked at the end of the statement.
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                try {
+                    $type = $toUnique ? "UNIQUE INDEX" : "INDEX";
+                    $sql = "ALTER TABLE `$table` DROP INDEX `$name`, ADD $type `$name` ($colsStr)";
+                    $pdo->exec($sql);
+                } finally {
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                }
+                
+                $msg = $toUnique ? "Unique constraint restored for '$name'." : "Unique constraint removed. Index '$name' is now Normal.";
+                redirect("?table=$table&view=structure&msg=" . urlencode($msg));
+            } catch (Exception $e) {
+                $error = "Bypass Failed: " . $e->getMessage();
+                if ($toUnique && strpos($error, '1062') !== false) {
+                    $error = "Gagal mengaktifkan Unique: Terdapat data duplikat pada tabel. Bersihkan data duplikat terlebih dahulu.";
+                }
+            }
+        }
+    }
     elseif ($action === 'add_fk') {
         $name = $_POST['name'] ?? '';
         $col = $_POST['col'];
@@ -8241,13 +8411,35 @@ async function generatePhpHash() {
                                         <?php foreach($indexes as $name => $idx): ?>
                                             <tr>
                                                 <td>
-                                                    <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('Drop index ' . $name . '?') ?>)' style="display:inline;">
-                                                        <input type="hidden" name="action" value="drop_index">
-                                                        <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                                        <input type="hidden" name="name" value="<?=htmlspecialchars($name)?>">
-                                                        <input type="hidden" name="type" value="<?=htmlspecialchars($idx['type'])?>">
-                                                        <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger);"><i class="fas fa-trash-alt"></i></button>
-                                                    </form>
+                                                    <div style="display:flex; gap:8px; align-items:center;">
+                                                        <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('Drop index ' . $name . '?') ?>)' style="display:inline;">
+                                                            <input type="hidden" name="action" value="drop_index">
+                                                            <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                            <input type="hidden" name="name" value="<?=htmlspecialchars($name)?>">
+                                                            <input type="hidden" name="type" value="<?=htmlspecialchars($idx['type'])?>">
+                                                            <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger);" title="Drop Index"><i class="fas fa-trash-alt"></i></button>
+                                                        </form>
+                                                        
+                                                        <?php if ($idx['type'] === 'UNIQUE'): ?>
+                                                            <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('Bypass Unique: Convert ' . $name . ' to a Normal Index? This will allow duplicate rows.') ?>)' style="display:inline;">
+                                                                <input type="hidden" name="action" value="convert_to_index">
+                                                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                                <input type="hidden" name="name" value="<?=htmlspecialchars($name)?>">
+                                                                <button type="submit" style="background:rgba(251, 191, 36, 0.2); color:#fbbf24; border:1px solid rgba(251, 191, 36, 0.4); padding:2px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer; font-weight:bold;">
+                                                                    <i class="fas fa-unlock"></i> BYPASS UNIQUE
+                                                                </button>
+                                                            </form>
+                                                        <?php elseif ($idx['type'] === 'INDEX'): ?>
+                                                            <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('Restore Unique: Convert ' . $name . ' back to a Unique Constraint? This will fail if there are duplicate rows.') ?>)' style="display:inline;">
+                                                                <input type="hidden" name="action" value="convert_to_unique">
+                                                                <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                                                <input type="hidden" name="name" value="<?=htmlspecialchars($name)?>">
+                                                                <button type="submit" style="background:rgba(16, 185, 129, 0.2); color:#10b981; border:1px solid rgba(16, 185, 129, 0.4); padding:2px 8px; border-radius:4px; font-size:0.65rem; cursor:pointer; font-weight:bold;">
+                                                                    <i class="fas fa-lock"></i> RESTORE UNIQUE
+                                                                </button>
+                                                            </form>
+                                                        <?php endif; ?>
+                                                    </div>
                                                 </td>
                                                 <td><?=htmlspecialchars($name)?></td>
                                                 <td><?=htmlspecialchars($idx['type'])?></td>
@@ -8306,7 +8498,33 @@ async function generatePhpHash() {
                             } catch(Exception $e) {}
                     ?>
                     <div class="card" style="margin-top: 20px;" id="foreign-keys-section">
-                        <h3>Foreign Keys</h3>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                            <h3 style="margin:0;">Foreign Keys</h3>
+                            <?php if ($pdo): 
+                                $fk_checks = $pdo->query("SELECT @@FOREIGN_KEY_CHECKS")->fetchColumn();
+                                // Sync session if differ
+                                if (isset($_SESSION['fk_checks']) && $_SESSION['fk_checks'] != $fk_checks) {
+                                    $pdo->exec("SET FOREIGN_KEY_CHECKS = " . (int)$_SESSION['fk_checks']);
+                                    $fk_checks = $_SESSION['fk_checks'];
+                                }
+                            ?>
+                            <div style="display: flex; gap: 5px; align-items: center; background: rgba(0,0,0,0.2); padding: 5px 10px; border-radius: 20px; border: 1px solid #444;">
+                                <span style="font-size: 0.75rem; color: #888; font-weight: bold; margin-right: 5px; text-transform: uppercase; letter-spacing: 0.5px;">FK Checks:</span>
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="action" value="set_fk_checks">
+                                    <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                    <input type="hidden" name="value" value="0">
+                                    <button type="submit" style="background: <?= $fk_checks == 0 ? '#ff5252' : 'transparent' ?>; color: <?= $fk_checks == 0 ? '#fff' : '#888' ?>; border: none; padding: 2px 10px; border-radius: 12px; font-size: 0.7rem; cursor: pointer; font-weight: bold; transition: all 0.2s;">OFF</button>
+                                </form>
+                                <form method="POST" style="margin: 0;">
+                                    <input type="hidden" name="action" value="set_fk_checks">
+                                    <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
+                                    <input type="hidden" name="value" value="1">
+                                    <button type="submit" style="background: <?= $fk_checks == 1 ? '#4caf50' : 'transparent' ?>; color: <?= $fk_checks == 1 ? '#fff' : '#888' ?>; border: none; padding: 2px 10px; border-radius: 12px; font-size: 0.7rem; cursor: pointer; font-weight: bold; transition: all 0.2s;">ON</button>
+                                </form>
+                            </div>
+                            <?php endif; ?>
+                        </div>
                         <?php if($fks): ?>
                             <div class="table-wrapper">
                                 <table>
@@ -8718,26 +8936,106 @@ async function generatePhpHash() {
                             </div>
 
                             <!-- Data Generator -->
-                            <div class="card">
-                                <h3><i class="fas fa-seedling"></i> Data Generator</h3>
-                                <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:15px;">Generate dummy data untuk testing tabel.</p>
+                            <div class="card" id="data-generator-card">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                    <h3 style="margin:0;"><i class="fas fa-seedling"></i> Smart Data Seeder</h3>
+                                    <span class="badge" style="background:var(--accent); color:#000; font-size:0.7rem; padding:2px 8px; border-radius:10px;">V2</span>
+                                </div>
+                                <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:15px;">Generate dummy data for testing purposes. Choose the data type for each column.</p>
                                 
-                                <div class="form-group" style="margin-bottom:15px;">
-                                    <label>Target Table</label>
-                                    <input type="text" class="form-control" value="<?=htmlspecialchars($currentTable)?>" readonly style="opacity:0.6;">
+                                <div class="form-group" style="margin-bottom:15px; display:flex; align-items:center; gap:10px;">
+                                    <label style="margin:0; white-space:nowrap; font-size:0.9rem;">Number of Rows to Generate:</label>
+                                    <input type="number" id="gen-row-count" class="form-control" value="10" min="1" max="1000" style="width:100px; height:35px; background:var(--bg-input);">
                                 </div>
 
-                                <div class="form-group" style="margin-bottom:15px;">
-                                    <label>Number of Rows</label>
-                                    <input type="number" id="gen-row-count" class="form-control" value="10" min="1" max="1000">
+                                <div class="table-wrapper" style="max-height: 400px; overflow-y: auto; margin-bottom: 20px; border: 1px solid #333; border-radius:6px; background:rgba(0,0,0,0.2);">
+                                    <table id="seeder-columns-table" style="width:100%; border-collapse:collapse;">
+                                        <thead>
+                                            <tr style="background:rgba(255,255,255,0.05);">
+                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Column</th>
+                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Type</th>
+                                                <th style="font-size:0.75rem; padding:10px; text-align:left; border-bottom:1px solid #333;">Seeder Type</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php 
+                                            // Ensure we have table structure
+                                            if ($currentTable) {
+                                                try {
+                                                    $stmtS = $pdo->query("DESCRIBE `$currentTable` ");
+                                                    $colsS = $stmtS->fetchAll(PDO::FETCH_ASSOC);
+                                                    foreach ($colsS as $col): 
+                                                        if (strpos($col['Extra'], 'auto_increment') !== false) continue;
+                                                        $fieldName = $col['Field'];
+                                                        $fieldType = $col['Type'];
+                                                        
+                                                        // Identify defaults
+                                                        $defaultType = 'auto';
+                                                        $defaultValue = '';
+                                                        
+                                                        // Specific user request: target_id 387, target_type user
+                                                        if ($fieldName === 'target_id') {
+                                                            $defaultType = 'fixed';
+                                                            $defaultValue = '387';
+                                                        } elseif ($fieldName === 'target_type') {
+                                                            $defaultType = 'fixed';
+                                                            $defaultValue = 'user';
+                                                        }
+                                            ?>
+                                                <tr class="seeder-row" data-field="<?=htmlspecialchars($fieldName)?>" style="border-bottom:1px solid #222;">
+                                                    <td style="font-size:0.85rem; padding:10px; font-weight:bold; color:var(--text-primary);">
+                                                        <?=htmlspecialchars($fieldName)?>
+                                                        <?php if($col['Key']==='MUL'): ?>
+                                                            <i class="fas fa-link" style="font-size:0.6rem; color:var(--accent); margin-left:4px;" title="Has Foreign Key"></i>
+                                                        <?php endif; ?>
+                                                    </td>
+                                                    <td style="font-size:0.7rem; padding:10px; color:#666; font-family:monospace;">
+                                                        <?=htmlspecialchars($fieldType)?>
+                                                        <?php 
+                                                            if (stripos($fieldType, 'tinyint') !== false) echo '<br><span style="color:#fbbf24; font-size:0.6rem;">Max: ' . (stripos($fieldType, 'unsigned') !== false ? '255' : '127') . '</span>';
+                                                            elseif (stripos($fieldType, 'smallint') !== false) echo '<br><span style="color:#fbbf24; font-size:0.6rem;">Max: ' . (stripos($fieldType, 'unsigned') !== false ? '65535' : '32767') . '</span>';
+                                                        ?>
+                                                    </td>
+                                                    <td style="padding:10px; width:220px;">
+                                                        <div style="display:flex; gap:5px; flex-direction:column;">
+                                                            <select class="form-select seeder-type" style="font-size:0.75rem; padding:4px 8px; height:30px; background:var(--bg-input); border:1px solid #444; color:#eee;" onchange="toggleSeederValue(this)">
+                                                                <option value="auto" <?=$defaultType==='auto'?'selected':''?>>-- Skip / Auto --</option>
+                                                                <option value="fixed" <?=$defaultType==='fixed'?'selected':''?>>Fixed Value</option>
+                                                                <option value="name">Full Name</option>
+                                                                <option value="username">Username</option>
+                                                                <option value="email">Email</option>
+                                                                <option value="phone">Phone Number</option>
+                                                                <option value="number">Random Number</option>
+                                                                <option value="date">Random Date</option>
+                                                                <option value="text">Random Text</option>
+                                                            </select>
+                                                            <input type="text" class="form-control seeder-value" value="<?=htmlspecialchars($defaultValue)?>" style="font-size:0.75rem; padding:4px 10px; height:30px; display:<?= $defaultType==='fixed' ? 'block' : 'none' ?>; background:#000; border:1px solid var(--accent); color:#fff; margin-top:5px;" placeholder="Fixed value...">
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            <?php 
+                                                    endforeach;
+                                                } catch(Exception $e) { echo "<tr><td colspan='3' style='padding:20px; color:var(--danger);'>Error fetching structure: " . htmlspecialchars($e->getMessage()) . "</td></tr>"; }
+                                            } else {
+                                                echo "<tr><td colspan='3' style='text-align:center; padding:30px; color:#666;'><i class='fas fa-info-circle' style='display:block; font-size:1.5rem; margin-bottom:10px;'></i> Silakan pilih tabel untuk mengatur Data Seeder.</td></tr>";
+                                            }
+                                            ?>
+                                        </tbody>
+                                    </table>
                                 </div>
 
-                                <button type="button" class="btn btn-primary" style="width:100%;" onclick="generateDummyData()">
-                                    <i class="fas fa-bolt"></i> Generate & Execute
+                                <div class="form-group" style="margin-bottom:15px; display:none;">
+                                    <label>Custom Overrides (Hidden JSON)</label>
+                                    <textarea id="gen-overrides" class="form-control"></textarea>
+                                </div>
+
+                                <button type="button" class="btn btn-primary" style="width:100%; height:45px; font-weight:bold; font-size:1rem;" onclick="executeSmartSeeder()">
+                                    <i class="fas fa-bolt"></i> Generate Data Now
                                 </button>
                                 
-                                <div style="margin-top:20px; padding:15px; background:rgba(251, 191, 36, 0.1); border:1px solid rgba(251, 191, 36, 0.3); border-radius:6px;">
-                                    <small style="color:#fbbf24;"><i class="fas fa-exclamation-triangle"></i> Generate data akan langsung melakukan <b>INSERT</b> ke tabel aktif.</small>
+                                <div style="margin-top:20px; padding:15px; background:rgba(251, 191, 36, 0.05); border:1px solid rgba(251, 191, 36, 0.2); border-radius:6px; display:flex; gap:12px; align-items:center;">
+                                    <i class="fas fa-exclamation-triangle" style="color:#fbbf24; font-size:1.2rem;"></i>
+                                    <small style="color:#fbbf24; line-height:1.4;">Generate data akan menyisipkan baris baru (<b>INSERT</b>) ke dalam tabel <code><?=htmlspecialchars($currentTable)?></code> menggunakan logika seeder terpilih.</small>
                                 </div>
                             </div>
                         </div>
@@ -10862,20 +11160,60 @@ var queryBuilder = null;
                         });
                     }
 
+                    function toggleSeederValue(select) {
+                        const input = select.nextElementSibling;
+                        if (select.value === 'fixed') {
+                            input.style.display = 'block';
+                            input.focus();
+                        } else {
+                            input.style.display = 'none';
+                        }
+                    }
+
+                    function executeSmartSeeder() {
+                        const rows = document.querySelectorAll('.seeder-row');
+                        const overrides = {};
+                        
+                        rows.forEach(row => {
+                            const field = row.getAttribute('data-field');
+                            const type = row.querySelector('.seeder-type').value;
+                            const val = row.querySelector('.seeder-value').value;
+                            
+                            if (type === 'fixed') {
+                                overrides[field] = val;
+                            } else if (type !== 'auto') {
+                                overrides[field] = "__SEED__:" + type;
+                            }
+                        });
+                        
+                        document.getElementById('gen-overrides').value = JSON.stringify(overrides);
+                        generateDummyData();
+                    }
+
                     function generateDummyData() {
                         const count = document.getElementById('gen-row-count').value;
+                        const overrides = document.getElementById('gen-overrides').value;
                         const table = <?= json_encode($currentTable, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
                         
+                        // Validate JSON overrides if provided
+                        if (overrides) {
+                            try {
+                                JSON.parse(overrides);
+                            } catch (e) {
+                                Swal.fire('Invalid JSON', 'Format Custom Overrides tidak valid.', 'error');
+                                return;
+                            }
+                        }
+
                         Swal.fire({
                             title: 'Generate Dummy Data?',
-                            text: `This will insert ${count} rows into table ${table} using Faker logic.`,
+                            text: `This will process ${count} rows into table ${table}.`,
                             icon: 'question',
                             showCancelButton: true,
                             confirmButtonText: 'Generate Now',
                             confirmButtonColor: 'var(--accent)'
                         }).then((result) => {
                             if (result.isConfirmed) {
-                                // Create a dynamic form to submit the request
                                 const form = document.createElement('form');
                                 form.method = 'POST';
                                 
@@ -10893,10 +11231,16 @@ var queryBuilder = null;
                                 countInput.type = 'hidden';
                                 countInput.name = 'count';
                                 countInput.value = count;
+
+                                const overridesInput = document.createElement('input');
+                                overridesInput.type = 'hidden';
+                                overridesInput.name = 'overrides';
+                                overridesInput.value = overrides;
                                 
                                 form.appendChild(actionInput);
                                 form.appendChild(tableInput);
                                 form.appendChild(countInput);
+                                form.appendChild(overridesInput);
                                 document.body.appendChild(form);
                                 form.submit();
                             }
