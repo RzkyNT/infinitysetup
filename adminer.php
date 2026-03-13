@@ -4516,10 +4516,9 @@ if (!empty($tables)) {
             color: var(--accent);
         }
         .sql-nav-item.active {
-            background: linear-gradient(135deg, var(--accent), #0056b3);
+            background:var(--accent);
             color: white;
             font-weight: 600;
-            box-shadow: 0 4px 15px rgba(0, 123, 255, 0.4);
         }
         .sql-nav-item.active i {
             color: white;
