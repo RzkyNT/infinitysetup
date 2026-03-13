@@ -3257,7 +3257,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         return $data;
     }
 
-    if ($action === 'push_telegram_backup') {
+    elseif ($action === 'push_telegram_backup') {
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $cfg = load_config($configFile)['telegram'] ?? null;
@@ -3292,10 +3292,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
             
             $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
-            if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+            if (!is_dir($tmpDir)) {
+                if (!@mkdir($tmpDir, 0755, true)) {
+                    echo json_encode(['success' => false, 'message' => "Failed to create temp directory: $tmpDir. Please create it manually via FTP and set permissions to 755."]);
+                    exit;
+                }
+            }
             
             $finalFile = $tmpDir . DIRECTORY_SEPARATOR . $filename;
-            file_put_contents($finalFile, $sqlDump);
+            if (@file_put_contents($finalFile, $sqlDump) === false) {
+                echo json_encode(['success' => false, 'message' => "Failed to write backup file to $finalFile. Check disk space or folder permissions."]);
+                exit;
+            }
             $mimeType = 'text/plain';
 
             // ZIP Compression Logic
