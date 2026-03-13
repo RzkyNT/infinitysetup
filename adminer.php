@@ -770,7 +770,8 @@ function get_db_health($pdo, $dbName, $dbMode) {
                                 (SELECT SUM(TABLE_ROWS) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as total_rows,
                                 (SELECT SUM(DATA_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as data_size,
                                 (SELECT SUM(INDEX_LENGTH) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$dbName') as index_size");
-            if ($res && $res['tables_count'] > 0) {
+            $res = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($res && !empty($res['tables_count'])) {
                  $stats = $res;
             } else {
                 // Fallback for restricted informational_schema environments (like InfinityFree)
@@ -3209,8 +3210,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'save_telegram_config') {
         $cfg = load_config($configFile);
         $cfg['telegram'] = [
-            'token' => $_POST['tg_token'] ?? '',
-            'chat_id' => $_POST['tg_chat_id'] ?? '',
+            'token' => trim($_POST['tg_token'] ?? ''),
+            'chat_id' => trim($_POST['tg_chat_id'] ?? ''),
+            'base' => trim($_POST['tg_base'] ?? 'https://api.telegram.org'),
             'tag' => $_POST['tg_tag'] ?? 'unorganized',
             'auto' => $_POST['tg_auto'] ?? '',
             'use_zip' => isset($_POST['tg_zip']) && $_POST['tg_zip'] === '1' ? '1' : '0',
@@ -3283,7 +3285,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $apiUrl = "https://api.telegram.org/bot{$cfg['token']}/sendDocument";
+            $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
+            $apiUrl = "$apiBase/bot{$cfg['token']}/sendDocument";
             
             $postFields = [
                 'chat_id' => $cfg['chat_id'],
@@ -3472,7 +3475,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $message .= "\n🖥 <b>Server Status:</b>\n";
             $message .= "⚡ PHP: " . PHP_VERSION . " on " . PHP_OS . "\n";
-            if (function_exists('disk_free_space')) {
+            if (function_exists('disk_free_space') && function_exists('disk_total_space')) {
                 $free = @disk_free_space(".");
                 $total = @disk_total_space(".");
                 if ($free && $total) {
@@ -3480,7 +3483,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $apiUrl = "https://api.telegram.org/bot{$cfg['token']}/sendMessage";
+            $apiBase = rtrim($cfg['base'] ?? 'https://api.telegram.org', '/');
+            $apiUrl = "$apiBase/bot{$cfg['token']}/sendMessage";
             $ch = curl_init($apiUrl);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_POST, true);
@@ -7924,6 +7928,9 @@ var advancedFilters = null;
                         html: `<div style="text-align:left;">
                                 <label class="form-label">Bot Token</label>
                                 <input type="password" id="tg_token" class="swal2-input" value="${tg.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">API Base Hub (For InfinityFree)</label>
+                                <input type="text" id="tg_base" class="swal2-input" value="${tg.base || 'https://api.telegram.org'}" placeholder="https://api.telegram.org" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <small style="color:var(--text-secondary); font-size:0.75rem; display:block; margin:-10px 0 15px 0;">If InfinityFree blocks Telegram, use a reverse proxy URL.</small>
                                 <label class="form-label">Chat ID / Channel ID</label>
                                 <input type="text" id="tg_chat_id" class="swal2-input" value="${tg.chat_id || ''}" placeholder="-100xxxxxxxx" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
                                 <label class="form-label">Backup Tag (Folders)</label>
@@ -7948,6 +7955,7 @@ var advancedFilters = null;
                         preConfirm: () => ({
                             action: 'save_telegram_config',
                             tg_token: document.getElementById('tg_token').value,
+                            tg_base: document.getElementById('tg_base').value,
                             tg_chat_id: document.getElementById('tg_chat_id').value,
                             tg_tag: document.getElementById('tg_tag').value,
                             tg_auto: document.getElementById('tg_auto').value,
