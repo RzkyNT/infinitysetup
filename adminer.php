@@ -9185,7 +9185,6 @@ async function generatePhpHash() {
                             <!-- Advanced Filters Tab -->
                             <div id="advanced-filters" class="sql-v2-tab-content">
                                 <div class="sql-card-v2">
-                                    <h3><i class="fas fa-filter"></i> Advanced Filters</h3>
                                     <div id="advanced-filters-container"></div>
                                 </div>
                             </div>
