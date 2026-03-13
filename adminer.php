@@ -8097,11 +8097,11 @@ var advancedFilters = null;
                                         <th style="width: 40px; text-align:center;"><input type="checkbox" id="selectAll"></th>
                                         <th style="width: 80px;">Action</th>
                                     <?php foreach ($tableColumns as $col):
-                                        $newOrderDir = 'ASC';
+                                        $newOrderDir = 'DESC';
                                         $sortIcon = '';
                                         if ($orderBy === $col) {
-                                            $newOrderDir = ($orderDir === 'ASC') ? 'DESC' : 'ASC';
-                                            $sortIcon = ($orderDir === 'ASC') ? ' <i class="fas fa-sort-up"></i>' : ' <i class="fas fa-sort-down"></i>';
+                                            $newOrderDir = ($orderDir === 'DESC') ? 'DESC' : 'ASC';
+                                            $sortIcon = ($orderDir === 'DESC') ? '<i class="fas fa-sort-down"></i>' : '<i class="fas fa-sort-up"></i>';
                                         }
                                         $sortLink = "?table=" . htmlspecialchars($currentTable) . "&view=data"
                                                     . "&search_col=" . urlencode($searchColumn)
