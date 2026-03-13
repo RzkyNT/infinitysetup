@@ -205,7 +205,7 @@ class JsonDatabase {
      * SELECT query
      * For flat structure, converts to key-value-type rows
      */
-    public function select($table, $conditions = [], $orderBy = null, $orderDir = 'ASC', $limit = null, $offset = 0) {
+    public function select($table, $conditions = [], $orderBy = null, $orderDir = 'DESC', $limit = null, $offset = 0) {
         if ($this->isFlat) {
             // Convert flat structure to rows
             $results = [];
@@ -3016,6 +3016,24 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?msg=" . urlencode("Chart removed."));
     }
+    // --- FETCH DATA (AJAX for Load More) ---
+    elseif ($action === 'fetch_data') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        
+        $html = '';
+        foreach ($tableData as $row) {
+            $html .= render_data_row($row, $currentTable, $primaryKey, $colTypes ?? []);
+        }
+
+        echo json_encode([
+            'success' => true,
+            'html' => $html,
+            'count' => count($tableData),
+            'has_more' => ($offset + $limit < $totalDataCount)
+        ]);
+        exit;
+    }
     // --- GET CHART DATA (AJAX) ---
     elseif ($action === 'get_chart_data') {
         while (ob_get_level()) ob_end_clean();
@@ -4129,6 +4147,113 @@ $searchVal = $_GET['search_val'] ?? '';
 $orderBy = $_GET['order_by'] ?? null;
 $orderDir = $_GET['order_dir'] ?? 'ASC';
 
+// Pagination Mode
+if (isset($_GET['pagination_mode'])) {
+    $_SESSION['pagination_mode'] = $_GET['pagination_mode'];
+}
+$paginationMode = $_SESSION['pagination_mode'] ?? 'classic'; // 'classic' or 'load_more'
+
+$totalDataCount = 0;
+
+/**
+ * Reusable function to render a single data row
+ */
+function render_data_row($row, $currentTable, $primaryKey, $colTypes) {
+    ob_start();
+    ?>
+    <tr>
+        <td style="text-align:center;">
+            <?php if($primaryKey): ?>
+                <input type="checkbox" name="ids[]" value="<?=htmlspecialchars($row[$primaryKey])?>" class="row-checkbox">
+            <?php endif; ?>
+        </td>
+        <td>
+            <?php if($primaryKey):
+                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
+                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
+                ?><button type="button" class="btn-quick-duplicate" data-table="<?=htmlspecialchars($currentTable)?>" data-pk="<?=htmlspecialchars($primaryKey)?>" data-val="<?=htmlspecialchars($row[$primaryKey])?>" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0; margin-right:5px;" title="Quick Duplicate"><i class="fas fa-clone"></i></button><?php
+                ?><a href="?table=<?=urlencode($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
+            else:
+                ?><span style="opacity:0.3">-</span><?php 
+            endif; ?>
+        </td>
+        <?php foreach ($row as $key => $val):
+            $displayVal = $val !== null ? htmlspecialchars((string)$val) : '<span style="color:#666">NULL</span>';
+            
+            // Media Display Logic (Images)
+            $isMediaColumn = false;
+            if ($val !== null) {
+                $valStr = (string)$val;
+                // Check if it's a base64 image
+                if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
+                    $isMediaColumn = true;
+                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                        . '<img src="' . htmlspecialchars($valStr) . '" class="row-media-preview" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" title="Click to enlarge">'
+                        . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
+                        . '</div>';
+                }
+                // Check if it's a file path to an image
+                elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
+                        (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
+                         stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
+                         stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
+                         stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
+                    $isMediaColumn = true;
+                    $imgUrl = $valStr;
+                    if (!preg_match('/^https?:\/\//', $valStr)) {
+                        $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                    }
+                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                        . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                        . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
+                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
+                        . '</div>'
+                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                        . '</div>';
+                }
+                // JSON logic
+                elseif (strpos($valStr, '{') === 0 || strpos($valStr, '[') === 0) {
+                    $decoded = json_decode($valStr, true);
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                        $displayVal = '<div class="json-cell" data-raw="' . htmlspecialchars($valStr) . '" style="background:rgba(255,255,255,0.03); padding:8px; border-radius:4px; max-height:100px; overflow:hidden; font-family:monospace; font-size:0.8rem; cursor:pointer; border:1px solid rgba(255,255,255,0.1);" onclick="openJsonEditor(this)" title="Click to view/edit as Tree">'
+                                    . '<div style="color:var(--accent); font-weight:bold; font-size:0.7rem; margin-bottom:4px; text-transform:uppercase;"><i class="fas fa-file-code"></i> JSON Data</div>'
+                                    . '<div style="opacity:0.6;">' . htmlspecialchars(substr($valStr, 0, 80)) . (strlen($valStr) > 80 ? '...' : '') . '</div>'
+                                    . '</div>';
+                    }
+                }
+                // Video logic
+                elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
+                        (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
+                         stripos($key, 'media') !== false)) {
+                    $isMediaColumn = true;
+                    $videoUrl = $valStr;
+                    if (!preg_match('/^https?:\/\//', $valStr)) {
+                        $videoUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                    }
+                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                        . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                        . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" muted>'
+                        . '<source src="' . htmlspecialchars($videoUrl) . '">'
+                        . '</video>'
+                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
+                        . '</div>'
+                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                        . '</div>';
+                }
+            }
+            
+            // Foreign Keys
+            if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
+                $targetTable = substr($key, 0, -3) . 's';
+                $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
+            }
+            ?><td data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
+        endforeach; ?>
+    </tr>
+    <?php
+    return ob_get_clean();
+}
+
 if ($is_logged_in && $currentTable) {
     // Check if we're in JSON mode
     if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
@@ -4156,6 +4281,9 @@ if ($is_logged_in && $currentTable) {
                     }
                     // Note: Global search across all columns is not supported in JSON mode yet
                 }
+                
+                // Fetch Total Count
+                $totalDataCount = $jsonDb->count($currentTable, $conditions);
                 
                 // Fetch data from JSON database
                 $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
@@ -4211,6 +4339,12 @@ if ($is_logged_in && $currentTable) {
                 $sql .= " ORDER BY `$orderBy` " . ($orderDir === 'DESC' ? 'DESC' : 'ASC');
             }
             
+            // Calculate Total Count
+            $countSql = "SELECT COUNT(*) FROM ($sql) as sub";
+            $countStmt = $pdo->prepare($countSql);
+            $countStmt->execute($params);
+            $totalDataCount = $countStmt->fetchColumn();
+            
             $sql .= " LIMIT $limit OFFSET $offset";
             
             $stmt = $pdo->prepare($sql);
@@ -4252,11 +4386,25 @@ if ($is_logged_in && $currentTable) {
                 }
             }
             
-            // Add sorting
             if ($orderBy && in_array($orderBy, $tableColumns)) {
                 $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
                 $sql .= " ORDER BY `$orderBy` $orderDir";
             }
+            
+            // Calculate Total Count
+            $countSql = "SELECT COUNT(*) FROM (" . str_replace("SELECT *", "SELECT 1", $sql) . ") as sub";
+            if (strpos($sql, 'WHERE') === false) {
+                 $countSql = "SELECT COUNT(*) FROM `$currentTable`";
+                 if (!empty($params)) { // If we had global search but it didn't find WHERE (unlikely but safe)
+                      $countSql = "SELECT COUNT(*) FROM ($sql) as sub";
+                 }
+            } else {
+                 $countSql = "SELECT COUNT(*) FROM ($sql) as sub";
+            }
+            
+            $countStmt = $pdo->prepare($countSql);
+            $countStmt->execute($params);
+            $totalDataCount = (int)$countStmt->fetchColumn();
             
             $sql .= " LIMIT $limit OFFSET $offset";
             $stmt = $pdo->prepare($sql);
@@ -4460,7 +4608,83 @@ if (!empty($tables)) {
         .json-number { color: #3b82f6; }
         .json-boolean { color: #ef4444; }
         .json-toggle { cursor: pointer; color: var(--text-secondary); margin-right: 5px; }
-
+        /* Pagination V3 */
+        .pagination-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 20px;
+            background: var(--bg-hover);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        .pagination-info {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        .pagination-pages {
+            display: flex;
+            gap: 5px;
+        }
+        .page-link {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 32px;
+            height: 32px;
+            padding: 0 8px;
+            border-radius: 4px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .page-link:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .page-link.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+            font-weight: bold;
+        }
+        .page-link.disabled {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+        
+        .load-more-btn {
+            width: 100%;
+            margin-top: 15px;
+            padding: 12px;
+            text-align: center;
+            background: rgba(255,255,255,0.03);
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .load-more-btn:hover {
+            background: rgba(255,255,255,0.06);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .load-more-btn.loading {
+            pointer-events: none;
+            opacity: 0.7;
+        }
+        .load-more-btn.loading i {
+            animation: fa-spin 1s infinite linear;
+        }
         /* Performance Monitor List */
         .perf-item {
             display: flex;
@@ -4471,6 +4695,9 @@ if (!empty($tables)) {
         .perf-item:last-child { border-bottom: none; }
         .perf-label { color: var(--text-secondary); font-size: 0.9rem; }
         .perf-value { color: var(--text-primary); font-weight: 600; font-family: monospace; }
+        
+        /* Column Toggle Visibility */
+        #colToggleDropdown.show { display: block !important; }
     </style>
     <script>
         function switchSqlTab(tabId) {
@@ -7718,7 +7945,7 @@ var advancedFilters = null;
                                                 . "&search_val=" . urlencode($searchVal)
                                                 . "&order_by=" . urlencode($orderBy ?? '')
                                                 . "&order_dir=" . urlencode($orderDir);
-                            $pagination_params = $pagination_base . "&limit=" . (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50));
+                            $pagination_params = $pagination_base . "&limit=" . (($_SESSION['adminer_limit'] ?? 50) === 999999 ? 'all' : ($_SESSION['adminer_limit'] ?? 50)) . "&pagination_mode=" . $paginationMode;
                             ?>
                             
                             <div class="search-group" style="flex:1;">
@@ -7773,6 +8000,14 @@ var advancedFilters = null;
                                 </select>
                             </div>
 
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <i class="fas fa-pagination" style="color:var(--text-secondary); font-size:0.8rem;"></i>
+                                <select onchange="window.location.href='?table=<?=urlencode($currentTable)?>&view=data&pagination_mode=' + this.value + '<?=$pagination_params ?? ''?>'" class="form-select" style="width:130px; background:var(--bg-card); height:35px; font-size:0.85rem;">
+                                    <option value="classic" <?= $paginationMode === 'classic' ? 'selected' : '' ?>>Numeric Page</option>
+                                    <option value="load_more" <?= $paginationMode === 'load_more' ? 'selected' : '' ?>>Load More</option>
+                                </select>
+                            </div>
+
                             <div style="margin-left:auto; display:flex; gap:10px; align-items:center;" id="bulkActionsContainer" style="display:none;">
                                 <select id="bulkActionSelect" class="form-select" style="width:150px; display:none;">
                                     <option value="">With Selected:</option>
@@ -7818,116 +8053,113 @@ var advancedFilters = null;
                             </thead>
                             <tbody>
                                 <?php foreach ($tableData as $row):
-                                    ?>
-                                    <tr>
-                                        <td style="text-align:center;">
-                                            <?php if($primaryKey): ?>
-                                                <input type="checkbox" name="ids[]" value="<?=htmlspecialchars($row[$primaryKey])?>" class="row-checkbox">
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <?php if($primaryKey):
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
-                                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
-                                                ?><button type="button" class="btn-quick-duplicate" data-table="<?=htmlspecialchars($currentTable)?>" data-pk="<?=htmlspecialchars($primaryKey)?>" data-val="<?=htmlspecialchars($row[$primaryKey])?>" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0; margin-right:5px;" title="Quick Duplicate"><i class="fas fa-clone"></i></button><?php
-                                                ?><a href="?table=<?=urlencode($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
-                                            else:
-                                                ?><span style="opacity:0.3">-</span><?php 
-                                            endif; ?>
-                                        </td>
-                                        <?php foreach ($row as $key => $val):
-                                            $displayVal = $val !== null ? htmlspecialchars((string)$val) : '<span style="color:#666">NULL</span>';
-                                            
-                                            // Media Display Logic (Images)
-                                            $isMediaColumn = false;
-                                            if ($val !== null) {
-                                                $valStr = (string)$val;
-                                                // Check if it's a base64 image
-                                                if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
-                                                    $isMediaColumn = true;
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<img src="' . htmlspecialchars($valStr) . '" class="row-media-preview" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" title="Click to enlarge">'
-                                                        . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
-                                                        . '</div>';
-                                                }
-                                                // Check if it's a file path to an image (only show if column name suggests it's an image)
-                                                elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
-                                                        (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
-                                                         stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
-                                                         stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
-                                                         stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
-                                                    $isMediaColumn = true;
-                                                    // Try to construct a valid URL
-                                                    $imgUrl = $valStr;
-                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                                                        // Relative path - try to make it absolute
-                                                        $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                                                    }
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                                                        . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
-                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
-                                                        . '</div>'
-                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                                                        . '</div>';
-                                                }
-                                                // Check if it's a JSON string
-                                                elseif (strpos($valStr, '{') === 0 || strpos($valStr, '[') === 0) {
-                                                    $decoded = json_decode($valStr, true);
-                                                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                                                        $displayVal = '<div class="json-cell" data-raw="' . htmlspecialchars($valStr) . '" style="background:rgba(255,255,255,0.03); padding:8px; border-radius:4px; max-height:100px; overflow:hidden; font-family:monospace; font-size:0.8rem; cursor:pointer; border:1px solid rgba(255,255,255,0.1);" onclick="openJsonEditor(this)" title="Click to view/edit as Tree">'
-                                                                    . '<div style="color:var(--accent); font-weight:bold; font-size:0.7rem; margin-bottom:4px; text-transform:uppercase;"><i class="fas fa-file-code"></i> JSON Data</div>'
-                                                                    . '<div style="opacity:0.6;">' . htmlspecialchars(substr($valStr, 0, 80)) . (strlen($valStr) > 80 ? '...' : '') . '</div>'
-                                                                    . '</div>';
-                                                    }
-                                                }
-                                                // Check if it's a video file path
-                                                elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
-                                                        (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
-                                                         stripos($key, 'media') !== false)) {
-                                                    $isMediaColumn = true;
-                                                    $videoUrl = $valStr;
-                                                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                                                        $videoUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                                                    }
-                                                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                                                        . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                                                        . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" muted>'
-                                                        . '<source src="' . htmlspecialchars($videoUrl) . '">'
-                                                        . '</video>'
-                                                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
-                                                        . '</div>'
-                                                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                                                        . '</div>';
-                                                }
-                                            }
-                                            
-                                            // Clickable Foreign Keys Logic (only if not media)
-                                            if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
-                                                $targetTable = substr($key, 0, -3) . 's'; // simple pluralization
-                                                $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
-                                            }
-                                            ?><td data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
-                                        endforeach; ?>
-                                    </tr>
-                                <?php endforeach; ?>
+                                    echo render_data_row($row, $currentTable, $primaryKey, $colTypes ?? []);
+                                endforeach; ?>
                                 <?php if(empty($tableData)):
                                     ?><td colspan="<?=count($tableColumns)+1?>" style="text-align:center; padding:30px; color:var(--text-secondary);">No data found</td><?php 
                                 endif; ?>
                             </tbody>
                         </table>
                     </div>
-                    <!-- Pagination Simple -->
-                    <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
-                        <?php 
-                        // Already defined above
-                        if($offset > 0):
-                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=max(0, $offset-$limit)?><?=$pagination_params?>" class="btn">Previous</a><?php 
-                        endif; ?>
-                        <?php if(count($tableData) >= $limit):
-                            ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data&offset=<?=$offset+$limit?><?=$pagination_params?>" class="btn">Next</a><?php 
-                        endif; ?>
-                    </div>
+                    <!-- Pagination System V3 -->
+                    <?php if ($paginationMode === 'classic' || $limit > 10000): ?>
+                        <div class="pagination-container">
+                            <div class="pagination-info">
+                                Showing <b><?= min($totalDataCount, $offset + 1) ?></b> to <b><?= min($offset + count($tableData), $totalDataCount) ?></b> of <b><?= $totalDataCount ?></b> entries
+                            </div>
+                            <div class="pagination-pages">
+                                <?php 
+                                $totalPages = ceil($totalDataCount / $limit);
+                                $currentPage = floor($offset / $limit) + 1;
+                                $range = 2; // Number of pages to show before and after current
+                                
+                                if ($totalPages > 1):
+                                    // First Page & Previous
+                                    $prevOffset = max(0, $offset - $limit);
+                                    echo '<a href="?table='.urlencode($currentTable).'&view=data&offset=0'.$pagination_params.'" class="page-link '.($offset <= 0 ? 'disabled' : '').'" title="First"><i class="fas fa-angles-left"></i></a>';
+                                    echo '<a href="?table='.urlencode($currentTable).'&view=data&offset='.$prevOffset.$pagination_params.'" class="page-link '.($offset <= 0 ? 'disabled' : '').'" title="Previous"><i class="fas fa-angle-left"></i></a>';
+
+                                    for ($i = 1; $i <= $totalPages; $i++) {
+                                        if ($i == 1 || $i == $totalPages || ($i >= $currentPage - $range && $i <= $currentPage + $range)) {
+                                            $pageOffset = ($i - 1) * $limit;
+                                            $activeClass = ($i == $currentPage) ? 'active' : '';
+                                            echo '<a href="?table='.urlencode($currentTable).'&view=data&offset='.$pageOffset.$pagination_params.'" class="page-link '.$activeClass.'">'.$i.'</a>';
+                                        } elseif ($i == $currentPage - $range - 1 || $i == $currentPage + $range + 1) {
+                                            echo '<span class="page-link disabled">...</span>';
+                                        }
+                                    }
+
+                                    // Next & Last Page
+                                    $nextOffset = $offset + $limit;
+                                    echo '<a href="?table='.urlencode($currentTable).'&view=data&offset='.$nextOffset.$pagination_params.'" class="page-link '.($nextOffset >= $totalDataCount ? 'disabled' : '').'" title="Next"><i class="fas fa-angle-right"></i></a>';
+                                    $lastOffset = (max(1, $totalPages) - 1) * $limit;
+                                    echo '<a href="?table='.urlencode($currentTable).'&view=data&offset='.$lastOffset.$pagination_params.'" class="page-link '.($nextOffset >= $totalDataCount ? 'disabled' : '').'" title="Last"><i class="fas fa-angles-right"></i></a>';
+                                endif; 
+                                ?>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <!-- Load More Mode -->
+                        <div id="loadMoreContainer" style="margin-top:20px;">
+                            <?php if ($offset + count($tableData) < $totalDataCount): ?>
+                                <button type="button" id="btnLoadMore" class="load-more-btn" onclick="loadMoreRows()">
+                                    <i class="fas fa-plus"></i> Load More (Showing <?= $offset + count($tableData) ?> of <?= $totalDataCount ?>)
+                                </button>
+                            <?php else: ?>
+                                <div style="text-align:center; padding:15px; color:var(--text-secondary); font-size:0.9rem;">
+                                    <i class="fas fa-check-circle"></i> Showing all <?= $totalDataCount ?> entries.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <script>
+                        let currentOffset = <?= $offset + count($tableData) ?>;
+                        const pageLimit = <?= $limit ?>;
+                        const totalEntries = <?= $totalDataCount ?>;
+                        
+                        function loadMoreRows() {
+                            const btn = document.getElementById('btnLoadMore');
+                            if (!btn || btn.classList.contains('loading')) return;
+                            
+                            btn.classList.add('loading');
+                            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading...';
+                            
+                            const url = window.location.href + '&action=fetch_data&offset=' + currentOffset;
+                            
+                            fetch(url)
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.success) {
+                                        const tbody = document.querySelector('table[data-table="<?= $currentTable ?>"] tbody');
+                                        tbody.insertAdjacentHTML('beforeend', data.html);
+                                        
+                                        currentOffset += data.count;
+                                        
+                                        if (currentOffset >= totalEntries) {
+                                            document.getElementById('loadMoreContainer').innerHTML = 
+                                                '<div style="text-align:center; padding:15px; color:var(--text-secondary); font-size:0.9rem;"><i class="fas fa-check-circle"></i> All ' + totalEntries + ' entries loaded.</div>';
+                                        } else {
+                                            btn.classList.remove('loading');
+                                            btn.innerHTML = '<i class="fas fa-plus"></i> Load More (Showing ' + currentOffset + ' of ' + totalEntries + ')';
+                                        }
+                                        
+                                        // Initialize new tooltips or events if needed
+                                        if (typeof initTooltips === 'function') initTooltips();
+                                    } else {
+                                        Swal.fire('Error', 'Failed to load data: ' + (data.message || 'Unknown error'), 'error');
+                                        btn.classList.remove('loading');
+                                        btn.innerHTML = '<i class="fas fa-plus"></i> Try Again';
+                                    }
+                                })
+                                .catch(err => {
+                                    console.error(err);
+                                    Swal.fire('Error', 'Connection failed.', 'error');
+                                    btn.classList.remove('loading');
+                                    btn.innerHTML = '<i class="fas fa-plus"></i> Try Again';
+                                });
+                        }
+                        </script>
+                    <?php endif; ?>
                     </form>
 
                     <script>
@@ -7937,6 +8169,7 @@ function openToolsModal() {
         title: '<span style="color:var(--text-primary)">Generator Tools</span>',
         background: 'var(--bg-card)',
         color: 'var(--text-primary)',
+        html: `
             <div class="swal2-tabs">
                 <button class="active" onclick="switchToolTab(this, 'tool-php-hash')" style="font-weight:bold; color:#0d6efd;">PHP Bcrypt</button>
                 <button onclick="switchToolTab(this, 'tool-hash')">Hash</button>
@@ -7944,7 +8177,7 @@ function openToolsModal() {
                 <button onclick="switchToolTab(this, 'tool-base64')">Base64</button>
             </div>
 
-            <div id="tool-php-hash" class="swal2-tab-content">
+            <div id="tool-php-hash" class="swal2-tab-content active">
                 <p style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">
                     Generate hash PHP (<b>Bcrypt</b>) sesuai format <code>$2y$10$...</code>. Cocok untuk database MySQL Native PHP atau Laravel.
                 </p>
@@ -7960,7 +8193,7 @@ function openToolsModal() {
 
                 <div style="margin-top:15px; text-align:right;">
                     <button class="swal2-confirm swal2-styled" id="btnGenPhpHash" style="background-color:var(--accent); margin-right:5px;" onclick="generatePhpHash()">Generate Hash</button>
-                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius); border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
+                    <button class="swal2-styled" style="background-color:#444; border-radius: var(--swal2-confirm-button-border-radius);" onclick="copyToClipboard(document.getElementById('phpHashResult').innerText)">Copy</button>
                 </div>
             </div>
 
@@ -9984,8 +10217,8 @@ class QueryBuilder {
                     ${this.columns.map(col => `<option value="${col}">${col}</option>`).join('')}
                 </select>
                 <select class="form-select qb-order-dir" style="width:100px;">
-                    <option value="ASC">ASC</option>
-                    <option value="DESC">DESC</option>
+                <option value="DESC">DESC</option>
+                <option value="ASC">ASC</option>
                 </select>
                 <button type="button" class="btn btn-danger btn-sm" onclick="queryBuilder.removeOrderBy(${index})">
                     <i class="fas fa-times"></i>
