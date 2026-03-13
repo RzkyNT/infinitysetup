@@ -3162,6 +3162,178 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         save_config($configFile, $cfg);
         redirect("?msg=" . urlencode("GitHub settings saved."));
     }
+    // --- SAVE TELEGRAM CONFIG ---
+    elseif ($action === 'save_telegram_config') {
+        $cfg = load_config($configFile);
+        $cfg['telegram'] = [
+            'token' => $_POST['tg_token'] ?? '',
+            'chat_id' => $_POST['tg_chat_id'] ?? '',
+            'tag' => $_POST['tg_tag'] ?? 'unorganized',
+            'last_backup' => $cfg['telegram']['last_backup'] ?? 0,
+            'history' => $cfg['telegram']['history'] ?? []
+        ];
+        save_config($configFile, $cfg);
+        redirect("?msg=" . urlencode("Telegram settings saved."));
+    }
+    // --- PUSH BACKUP TO TELEGRAM ---
+    elseif ($action === 'push_telegram_backup') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $cfg = load_config($configFile)['telegram'] ?? null;
+        if (!$cfg || empty($cfg['token']) || empty($cfg['chat_id'])) {
+            echo json_encode(['success' => false, 'message' => 'Telegram not configured (Token and Chat ID required)']);
+            exit;
+        }
+
+        try {
+            $sqlDump = "-- Adminer Lite Backup\n-- Date: " . date('Y-m-d H:i:s') . "\n\n";
+            if ($dbMode === 'sql' && isset($pdo)) {
+                $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+                foreach ($tables as $t) {
+                    $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
+                    $sqlDump .= "\n\nDROP TABLE IF EXISTS `$t`;\n";
+                    $sqlDump .= $res['Create Table'] . ";\n\n";
+                    $rows = $pdo->query("SELECT * FROM `$t`")->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($rows as $row) {
+                        $keys = array_keys($row);
+                        $vals = array_map(function($v) use ($pdo) { 
+                            if ($v === null) return 'NULL';
+                            return $pdo->quote((string)$v); 
+                        }, array_values($row));
+                        $sqlDump .= "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ");\n";
+                    }
+                }
+            } else {
+                 echo json_encode(['success' => false, 'message' => 'Backup only supports SQL mode for now']);
+                 exit;
+            }
+
+            $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
+            $tmpFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $filename;
+            file_put_contents($tmpFile, $sqlDump);
+
+            $apiUrl = "https://api.telegram.org/bot{$cfg['token']}/sendDocument";
+            
+            $postFields = [
+                'chat_id' => $cfg['chat_id'],
+                'document' => new CURLFile($tmpFile, 'text/plain', $filename),
+                'caption' => "Database Backup: " . ($_SESSION['db_name'] ?? 'db') . "\nDate: " . date('Y-m-d H:i:s')
+            ];
+
+            $ch = curl_init($apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            @unlink($tmpFile);
+
+            if ($httpCode >= 200 && $httpCode < 300) {
+                $resData = json_decode($response, true);
+                $fileId = $resData['result']['document']['file_id'] ?? '';
+                
+                $config = load_config($configFile);
+                $config['telegram']['last_backup'] = time();
+                
+                // Add to history
+                if (!isset($config['telegram']['history'])) $config['telegram']['history'] = [];
+                array_unshift($config['telegram']['history'], [
+                    'name' => $filename,
+                    'date' => time(),
+                    'file_id' => $fileId,
+                    'message_id' => $resData['result']['message_id'] ?? '',
+                    'tag' => $cfg['tag'] ?? 'general',
+                    'size' => strlen($sqlDump)
+                ]);
+                
+                // Keep only last 20 history items
+                $config['telegram']['history'] = array_slice($config['telegram']['history'], 0, 20);
+                
+                save_config($configFile, $config);
+                echo json_encode(['success' => true, 'message' => 'Backup sent to Telegram & indexed successfully']);
+            } else {
+                $err = json_decode($response, true);
+                echo json_encode(['success' => false, 'message' => $err['description'] ?? 'Telegram API Error']);
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- RESTORE FROM TELEGRAM ---
+    elseif ($action === 'restore_telegram_backup') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $fileId = $_POST['file_id'] ?? '';
+        $cfg = load_config($configFile)['telegram'] ?? null;
+        
+        if (!$cfg || !$fileId) {
+            echo json_encode(['success' => false, 'message' => 'Invalid request']);
+            exit;
+        }
+
+        try {
+            // 1. Get File Path from Telegram
+            $getRes = file_get_contents("https://api.telegram.org/bot{$cfg['token']}/getFile?file_id=$fileId");
+            $getFile = json_decode($getRes, true);
+            if (!$getFile['ok']) throw new Exception("Telegram could not locate file");
+            
+            $filePath = $getFile['result']['file_path'];
+            $downloadUrl = "https://api.telegram.org/file/bot{$cfg['token']}/$filePath";
+            
+            // 2. Download content
+            $sql = file_get_contents($downloadUrl);
+            if (!$sql) throw new Exception("Failed to download file from Telegram");
+
+            // 3. Execute SQL
+            if ($dbMode === 'sql' && isset($pdo)) {
+                $pdo->exec($sql);
+                echo json_encode(['success' => true, 'message' => 'Restored successfully from Telegram!']);
+            } else {
+                 throw new Exception("Restore only supported in SQL mode");
+            }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- DELETE FROM TELEGRAM INDEX & CHAT ---
+    elseif ($action === 'delete_telegram_backup') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $dateId = $_POST['date_id'] ?? '';
+        $msgId = $_POST['message_id'] ?? '';
+        $config = load_config($configFile);
+        $cfg = $config['telegram'] ?? null;
+
+        if (!$cfg || !$dateId) {
+            echo json_encode(['success' => false, 'message' => 'Invalid request']);
+            exit;
+        }
+
+        try {
+            // 1. Try to delete from Telegram Chat (if message_id exists)
+            if ($msgId && !empty($cfg['token'])) {
+                @file_get_contents("https://api.telegram.org/bot{$cfg['token']}/deleteMessage?chat_id={$cfg['chat_id']}&message_id=$msgId");
+            }
+
+            // 2. Remove from Local Index
+            if (isset($config['telegram']['history'])) {
+                $config['telegram']['history'] = array_filter($config['telegram']['history'], function($h) use ($dateId) {
+                    return (string)$h['date'] !== (string)$dateId;
+                });
+                $config['telegram']['history'] = array_values($config['telegram']['history']);
+                save_config($configFile, $config);
+            }
+
+            echo json_encode(['success' => true, 'message' => 'Backup removed from index and chat.']);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- PUSH BACKUP TO GITHUB ---
     elseif ($action === 'push_github_backup') {
         while (ob_get_level()) ob_end_clean(); 
@@ -7313,17 +7485,18 @@ var advancedFilters = null;
                     <?php endforeach; endif; ?>
                 </div>
 
-                <!-- GITHUB BACKUP SECTION -->
-                <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-top:20px;">
+                <!-- BACKUP SECTION -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; margin-top:20px;">
+                    <!-- GITHUB BACKUP -->
                     <div class="card" style="margin-bottom:0;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                            <h4 style="margin:0;"><i class="fab fa-github"></i> GitHub Backup & Recovery (Private Repo)</h4>
+                            <h4 style="margin:0;"><i class="fab fa-github"></i> GitHub Backup</h4>
                             <div style="display:flex; gap:10px;">
                                 <button type="button" class="btn btn-sm" onclick="openGithubSettings()" style="background:#444;">
                                     <i class="fas fa-cog"></i> Settings
                                 </button>
                                 <button type="button" class="btn btn-primary btn-sm" onclick="pushBackupToGithub()">
-                                    <i class="fas fa-cloud-upload-alt"></i> Backup Now (Push)
+                                    <i class="fas fa-cloud-upload-alt"></i> Push
                                 </button>
                             </div>
                         </div>
@@ -7332,196 +7505,332 @@ var advancedFilters = null;
                         $ghCfg = load_config($configFile)['github'] ?? null;
                         if (!$ghCfg || empty($ghCfg['token'])): ?>
                             <div style="text-align:center; padding:20px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
-                                <i class="fas fa-info-circle"></i> GitHub not configured. Click "Settings" to link your private repository.
+                                <i class="fas fa-info-circle"></i> GitHub not configured.
                             </div>
                         <?php else: ?>
                             <div id="github-backups-container">
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                                     <span style="font-size:0.85rem; color:var(--text-secondary);">Recent Recovery Points (GitHub):</span>
-                                    <button onclick="loadGithubBackups()" class="btn btn-sm" style="background:none; border:none; color:var(--accent);"><i class="fas fa-sync"></i> Refresh List</button>
+                                    <button onclick="loadGithubBackups()" class="btn btn-sm" style="background:none; border:none; color:var(--accent);"><i class="fas fa-sync"></i> Refresh</button>
                                 </div>
-                                <div id="gh-backups-list" class="table-wrapper" style="max-height:200px; overflow:auto;">
+                                <div id="gh-backups-list" class="table-wrapper" style="max-height:150px; overflow:auto;">
                                     <div style="text-align:center; padding:20px;">Loading backups...</div>
                                 </div>
                             </div>
                         <?php endif; ?>
-                            <script>
-                            // --- GITHUB BACKUP FUNCTIONS (SCOPED TO DASHBOARD) ---
-                            function openGithubSettings() {
-                                const gh = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['github'] ?? (object)[]); ?>;
-                                Swal.fire({
-                                    title: '<i class="fab fa-github"></i> GitHub API Settings',
-                                    background: 'var(--bg-card)',
-                                    color: 'var(--text-primary)',
-                                    html: `<div style="text-align:left;">
-                                            <label class="form-label" style="display:block; margin-bottom:5px;">GitHub Username</label>
-                                            <input type="text" id="gh_user" class="swal2-input" value="${gh.user || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
-                                            <label class="form-label" style="display:block; margin-bottom:5px;">Private Repo Name</label>
-                                            <input type="text" id="gh_repo" class="swal2-input" value="${gh.repo || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
-                                            <label class="form-label" style="display:block; margin-bottom:5px;">Personal Access Token</label>
-                                            <input type="password" id="gh_token" class="swal2-input" value="${gh.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
-                                            <label class="form-label" style="display:block; margin-bottom:5px;">Folder Path</label>
-                                            <input type="text" id="gh_path" class="swal2-input" value="${gh.path || 'backups'}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
-                                            <label class="form-label" style="display:block; margin-bottom:5px;">Auto Backup Schedule</label>
-                                            <select id="gh_auto" class="swal2-input" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
-                                                <option value="">None / Manual Only</option>
-                                                <option value="3600" ${gh.auto == '3600' ? 'selected' : ''}>Every 1 Hour</option>
-                                                <option value="86400" ${gh.auto == '86400' ? 'selected' : ''}>Daily (24h)</option>
-                                                <option value="604800" ${gh.auto == '604800' ? 'selected' : ''}>Weekly (7d)</option>
-                                            </select>
-                                        </div>`,
-                                    showCancelButton: true,
-                                    confirmButtonText: 'Save Settings',
-                                    preConfirm: () => ({
-                                        action: 'save_github_config',
-                                        gh_user: document.getElementById('gh_user').value,
-                                        gh_repo: document.getElementById('gh_repo').value,
-                                        gh_token: document.getElementById('gh_token').value,
-                                        gh_path: document.getElementById('gh_path').value,
-                                        gh_auto: document.getElementById('gh_auto').value
-                                    })
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        const form = document.createElement('form');
-                                        form.method = 'POST';
-                                        for (let k in result.value) {
-                                            const input = document.createElement('input');
-                                            input.type = 'hidden';
-                                            input.name = k;
-                                            input.value = result.value[k];
-                                            form.appendChild(input);
-                                        }
-                                        document.body.appendChild(form);
-                                        form.submit();
-                                    }
-                                });
-                            }
+                    </div>
 
-                            async function fetchJson(url, options) {
-                                const res = await fetch(url, options);
-                                const text = await res.text();
-                                try {
-                                    return JSON.parse(text);
-                                } catch (e) {
-                                    console.error("Invalid JSON:", text);
-                                    throw new Error("Server returned invalid response. Check PHP errors.");
-                                }
-                            }
+                    <!-- TELEGRAM BACKUP -->
+                    <div class="card" style="margin-bottom:0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                            <h4 style="margin:0;"><i class="fab fa-telegram"></i> Telegram Backup</h4>
+                            <div style="display:flex; gap:10px;">
+                                <button type="button" class="btn btn-sm" onclick="openTelegramSettings()" style="background:#444;">
+                                    <i class="fas fa-cog"></i> Settings
+                                </button>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="pushBackupToTelegram()" style="background:#0088cc;">
+                                    <i class="fas fa-paper-plane"></i> Send Now
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <?php 
+                        $tgCfg = load_config($configFile)['telegram'] ?? null;
+                        if (!$tgCfg || empty($tgCfg['token'])): ?>
+                            <div style="text-align:center; padding:20px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
+                                <i class="fas fa-info-circle"></i> Telegram not configured. Click "Settings" to link your bot.
+                            </div>
+                        <?php else: ?>
+                            <div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:10px; border:1px solid rgba(255,255,255,0.05); margin-bottom:15px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <div style="display:flex; align-items:center;">
+                                        <div style="width:8px; height:8px; border-radius:50%; background:#2ecc71; margin-right:8px; box-shadow:0 0 8px #2ecc71;"></div>
+                                        <span style="font-size:0.85rem; color:var(--text-primary);">Bot Connected</span>
+                                    </div>
+                                    <span style="font-size:0.75rem; background:rgba(0,136,204,0.2); color:#0088cc; padding:2px 8px; border-radius:10px; border:1px solid rgba(0,136,204,0.3);">
+                                        <i class="fas fa-tag"></i> <?= htmlspecialchars($tgCfg['tag'] ?? 'general') ?>
+                                    </span>
+                                </div>
+                            </div>
 
-                            function loadGithubBackups() {
-                                const container = document.getElementById('gh-backups-list');
-                                if (!container) return;
-                                const params = new URLSearchParams();
-                                params.append('action', 'get_github_backups');
-                                fetchJson(window.location.pathname, { method: 'POST', body: params })
-                                .then(data => {
-                                    if (!data || data.length === 0) {
-                                        container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-secondary);">No backups found.</div>';
-                                        return;
-                                    }
-                                    let html = '<table style="width:100%; font-size:0.85rem; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--border-color);"><th style="text-align:left; padding:8px;">Filename</th><th style="text-align:right; padding:8px;">Size</th><th style="text-align:right; padding:8px;">Action</th></tr></thead><tbody>';
-                                    data.forEach(f => {
-                                        html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right; white-space:nowrap;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem; margin-right:5px;"><i class="fas fa-undo"></i> Restore</button><button onclick="deleteGithubBackup('${f.path}', '${f.name}', '${f.sha}')" class="btn btn-sm btn-danger" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-trash"></i></button></td></tr>`;
-                                    });
-                                    container.innerHTML = html + '</tbody></table>';
-                                }).catch(err => {
-                                    container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger);">${err.message}</div>`;
-                                });
-                            }
-
-                            function deleteGithubBackup(path, name, sha) {
-                                Swal.fire({
-                                    title: 'Delete Backup?',
-                                    text: `Are you sure you want to completely remove "${name}" from GitHub repository?`,
-                                    icon: 'warning',
-                                    showCancelButton: true,
-                                    confirmButtonColor: '#d33',
-                                    confirmButtonText: 'Yes, Delete it!',
-                                    showLoaderOnConfirm: true,
-                                    preConfirm: () => {
-                                        const formData = new FormData();
-                                        formData.append('action', 'delete_github_backup');
-                                        formData.append('path', path);
-                                        formData.append('sha', sha);
-                                        return fetchJson('?', { method: 'POST', body: formData })
-                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
-                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
-                                    }
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 3000, icon: 'success', title: 'Backup deleted' });
-                                        loadGithubBackups();
-                                    }
-                                });
-                            }
-
-                            function pushBackupToGithub() {
-                                Swal.fire({
-                                    title: 'Create Backup Point',
-                                    text: 'Push current database state to GitHub?',
-                                    icon: 'question',
-                                    showCancelButton: true,
-                                    confirmButtonText: 'Yes, Backup Now',
-                                    showLoaderOnConfirm: true,
-                                    preConfirm: () => {
-                                        const formData = new FormData();
-                                        formData.append('action', 'push_github_backup');
-                                        return fetchJson('?', { method: 'POST', body: formData })
-                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
-                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
-                                    }
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        Swal.fire('Success!', 'Backup uploaded!', 'success');
-                                        loadGithubBackups();
-                                    }
-                                });
-                            }
-
-                            function restoreFromGithub(url, name) {
-                                Swal.fire({
-                                    title: 'Restore Backup?',
-                                    text: `Overwrite database with "${name}"?`,
-                                    icon: 'warning',
-                                    showCancelButton: true,
-                                    confirmButtonColor: '#d33',
-                                    confirmButtonText: 'Yes, Restore it!',
-                                    showLoaderOnConfirm: true,
-                                    preConfirm: () => {
-                                        const formData = new FormData();
-                                        formData.append('action', 'restore_github_backup');
-                                        formData.append('url', url);
-                                        return fetchJson('?', { method: 'POST', body: formData })
-                                            .then(data => { if (!data.success) throw new Error(data.message); return data; })
-                                            .catch(err => Swal.showValidationMessage(`Error: ${err.message}`));
-                                    }
-                                }).then((result) => {
-                                    if (result.isConfirmed) {
-                                        Swal.fire('Restored!', 'Reloading...', 'success').then(() => location.reload());
-                                    }
-                                });
-                            }
-
-                            document.addEventListener('DOMContentLoaded', loadGithubBackups);
-                            
-                            // Auto Backup Pseudo-Cron Check
-                            <?php 
-                            $ghNow = time();
-                            $ghLast = $ghCfg['last_backup'] ?? 0;
-                            $ghInterval = (int)($ghCfg['auto'] ?? 0);
-                            if ($ghInterval > 0 && ($ghNow - $ghLast) >= $ghInterval): ?>
-                                document.addEventListener('DOMContentLoaded', () => {
-                                    const fd = new FormData();
-                                    fd.append('action', 'push_github_backup');
-                                    fetchJson('?', { method: 'POST', body: fd }).then(res => {
-                                        if (res.success && typeof loadGithubBackups === 'function') loadGithubBackups();
-                                        console.log(res.message);
-                                    }).catch(e => console.error('Auto backup failed', e));
-                                });
-                            <?php endif; ?>
-                            </script>
+                            <div id="telegram-history-container">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                    <span style="font-size:0.82rem; color:var(--text-secondary);">Recent Index (Telegram):</span>
+                                </div>
+                                <div id="tg-history-list" class="table-wrapper" style="max-height:160px; overflow:auto; background:rgba(0,0,0,0.1); border-radius:8px; border:1px solid var(--border-color);">
+                                    <?php 
+                                    $history = $tgCfg['history'] ?? [];
+                                    if (empty($history)): ?>
+                                        <div style="text-align:center; padding:15px; color:var(--text-secondary); font-size:0.8rem;">No backups indexed yet.</div>
+                                    <?php else: ?>
+                                        <table style="width:100%; font-size:0.8rem; border-collapse:collapse;">
+                                            <thead>
+                                                <tr style="border-bottom:1px solid var(--border-color); background:rgba(255,255,255,0.02);">
+                                                    <th style="text-align:left; padding:6px 10px;">Date</th>
+                                                    <th style="text-align:left; padding:6px 10px;">Tag</th>
+                                                    <th style="text-align:right; padding:6px 10px;">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <?php foreach ($history as $h): ?>
+                                                    <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+                                                        <td style="padding:6px 10px; color:var(--text-secondary);"><?= date('m/d H:i', $h['date']) ?></td>
+                                                        <td style="padding:6px 10px;"><span style="opacity:0.7;">#</span><?= htmlspecialchars($h['tag'] ?? 'gen') ?></td>
+                                                        <td style="padding:6px 10px; text-align:right;">
+                                                            <button onclick="restoreFromTelegram('<?= $h['file_id'] ?>', '<?= $h['name'] ?>')" class="btn btn-sm btn-success" style="padding:2px 6px; font-size:0.7rem;" title="Restore this version">
+                                                                <i class="fas fa-undo"></i>
+                                                            </button>
+                                                            <button onclick="deleteTelegramBackup('<?= $h['date'] ?>', '<?= $h['name'] ?>', '<?= $h['message_id'] ?? '' ?>')" class="btn btn-sm btn-danger" style="padding:2px 6px; font-size:0.7rem;" title="Remove from index & chat">
+                                                                <i class="fas fa-trash"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    <?php endif; ?>
+                                </div>
+                                <div style="margin-top:8px; font-size:0.7rem; color:var(--text-secondary); text-align:center;">
+                                    <i class="fas fa-info-circle"></i> Showing last 20 indexed backups.
+                                </div>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </div>
+
+                <script>
+                // --- SHARED UTILS ---
+                async function fetchJson(url, options) {
+                    const res = await fetch(url, options);
+                    const text = await res.text();
+                    try {
+                        return JSON.parse(text);
+                    } catch (e) {
+                        console.error("Invalid JSON:", text);
+                        throw new Error("Server returned invalid response. Check PHP errors.");
+                    }
+                }
+
+                function saSubmitData(data) {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    for (let k in data) {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = k;
+                        input.value = data[k];
+                        form.appendChild(input);
+                    }
+                    document.body.appendChild(form);
+                    form.submit();
+                }
+
+                // --- GITHUB BACKUP FUNCTIONS ---
+                function openGithubSettings() {
+                    const gh = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['github'] ?? (object)[]); ?>;
+                    Swal.fire({
+                        title: '<i class="fab fa-github"></i> GitHub API Settings',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        html: `<div style="text-align:left;">
+                                <label class="form-label">GitHub Username</label>
+                                <input type="text" id="gh_user" class="swal2-input" value="${gh.user || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Private Repo Name</label>
+                                <input type="text" id="gh_repo" class="swal2-input" value="${gh.repo || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Access Token</label>
+                                <input type="password" id="gh_token" class="swal2-input" value="${gh.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Folder Path</label>
+                                <input type="text" id="gh_path" class="swal2-input" value="${gh.path || 'backups'}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Auto Schedule</label>
+                                <select id="gh_auto" class="swal2-input" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
+                                    <option value="">None / Manual Only</option>
+                                    <option value="3600" ${gh.auto == '3600' ? 'selected' : ''}>Every 1 Hour</option>
+                                    <option value="86400" ${gh.auto == '86400' ? 'selected' : ''}>Daily (24h)</option>
+                                    <option value="604800" ${gh.auto == '604800' ? 'selected' : ''}>Weekly (7d)</option>
+                                </select>
+                            </div>`,
+                        showCancelButton: true,
+                        confirmButtonText: 'Save Settings',
+                        preConfirm: () => ({
+                            action: 'save_github_config',
+                            gh_user: document.getElementById('gh_user').value,
+                            gh_repo: document.getElementById('gh_repo').value,
+                            gh_token: document.getElementById('gh_token').value,
+                            gh_path: document.getElementById('gh_path').value,
+                            gh_auto: document.getElementById('gh_auto').value
+                        })
+                    }).then((result) => { if (result.isConfirmed) saSubmitData(result.value); });
+                }
+
+                function loadGithubBackups() {
+                    const container = document.getElementById('gh-backups-list');
+                    if (!container) return;
+                    const params = new URLSearchParams();
+                    params.append('action', 'get_github_backups');
+                    fetchJson(window.location.pathname, { method: 'POST', body: params })
+                    .then(data => {
+                        if (!data || data.length === 0) {
+                            container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-secondary);">No backups found.</div>';
+                            return;
+                        }
+                        let html = '<table style="width:100%; font-size:0.85rem; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--border-color);"><th style="text-align:left; padding:8px;">File</th><th style="text-align:right; padding:8px;">Size</th><th style="text-align:right; padding:8px;">Action</th></tr></thead><tbody>';
+                        data.forEach(f => {
+                            html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right; white-space:nowrap;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem; margin-right:5px;"><i class="fas fa-undo"></i></button><button onclick="deleteGithubBackup('${f.path}', '${f.name}', '${f.sha}')" class="btn btn-sm btn-danger" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-trash"></i></button></td></tr>`;
+                        });
+                        container.innerHTML = html + '</tbody></table>';
+                    }).catch(err => { container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger);">${err.message}</div>`; });
+                }
+
+                function deleteGithubBackup(path, name, sha) {
+                    Swal.fire({
+                        title: 'Delete Backup?',
+                        text: `Remove "${name}" from GitHub repository?`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Delete',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'delete_github_backup');
+                            fd.append('path', path);
+                            fd.append('sha', sha);
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Deleted' }); loadGithubBackups(); } });
+                }
+
+                function pushBackupToGithub() {
+                    Swal.fire({
+                        title: 'GitHub Backup',
+                        text: 'Push current state to repository?',
+                        icon: 'question',
+                        showCancelButton: true,
+                        confirmButtonText: 'Backup Now',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'push_github_backup');
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) { Swal.fire('Success!', 'Backup uploaded!', 'success'); loadGithubBackups(); } });
+                }
+
+                function restoreFromGithub(url, name) {
+                    Swal.fire({
+                        title: 'Restore Database',
+                        text: `Overwrite database with "${name}"?`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Restore',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'restore_github_backup');
+                            fd.append('url', url);
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading...', 'success').then(() => location.reload()); });
+                }
+
+                // --- TELEGRAM BACKUP FUNCTIONS ---
+                function openTelegramSettings() {
+                    const tg = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['telegram'] ?? (object)[]); ?>;
+                    Swal.fire({
+                        title: '<i class="fab fa-telegram"></i> Telegram Bot Settings',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        html: `<div style="text-align:left;">
+                                <label class="form-label">Bot Token</label>
+                                <input type="password" id="tg_token" class="swal2-input" value="${tg.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Chat ID / Channel ID</label>
+                                <input type="text" id="tg_chat_id" class="swal2-input" value="${tg.chat_id || ''}" placeholder="-100xxxxxxxx" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
+                                <label class="form-label">Backup Tag (mimic folders)</label>
+                                <input type="text" id="tg_tag" class="swal2-input" value="${tg.tag || 'production'}" placeholder="e.g. production, daily, testing" style="margin:0 0 5px 0; width:100%; box-sizing:border-box;">
+                                <small style="color:var(--text-secondary); font-size:0.8rem;">Current tag: <b>${tg.tag || 'none'}</b>. Used to categorize backups in the history list.</small>
+                            </div>`,
+                        showCancelButton: true,
+                        confirmButtonText: 'Save Settings',
+                        preConfirm: () => ({
+                            action: 'save_telegram_config',
+                            tg_token: document.getElementById('tg_token').value,
+                            tg_chat_id: document.getElementById('tg_chat_id').value,
+                            tg_tag: document.getElementById('tg_tag').value
+                        })
+                    }).then((result) => { if (result.isConfirmed) saSubmitData(result.value); });
+                }
+
+                function pushBackupToTelegram() {
+                    Swal.fire({ title: 'Sending...', text: 'Uploading SQL dump to Telegram...', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+                    const params = new URLSearchParams();
+                    params.append('action', 'push_telegram_backup');
+                    fetchJson(window.location.pathname, { method: 'POST', body: params })
+                    .then(data => {
+                        if (data.success) { Swal.fire({ icon: 'success', title: 'Sent!', text: data.message }).then(() => { window.location.reload(); }); }
+                        else { Swal.fire({ icon: 'error', title: 'Failed', text: data.message }); }
+                    }).catch(e => { Swal.fire({ icon: 'error', title: 'Request Failed', text: e.message }); });
+                }
+
+                function restoreFromTelegram(fileId, name) {
+                    Swal.fire({
+                        title: 'Restore from Telegram',
+                        text: `Import and Overwrite database with "${name}"?`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Yes, Restore',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'restore_telegram_backup');
+                            fd.append('file_id', fileId);
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
+                }
+
+                function deleteTelegramBackup(dateId, name, msgId) {
+                    Swal.fire({
+                        title: 'Remove Backup?',
+                        text: `Delete index for "${name}"? ${msgId ? 'This will also attempt to delete the file from the Telegram chat.' : ''}`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Delete',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'delete_telegram_backup');
+                            fd.append('date_id', dateId);
+                            fd.append('message_id', msgId);
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Removed' }).then(() => location.reload()); } });
+                }
+
+                // --- INITIALIZATION ---
+                document.addEventListener('DOMContentLoaded', function() {
+                    if (document.getElementById('gh-backups-list')) {
+                        loadGithubBackups();
+                    }
+                });
+                
+                // Auto Backup Pseudo-Cron for GitHub
+                <?php 
+                $ghNow = time();
+                $ghLast = $ghCfg['last_backup'] ?? 0;
+                $ghInterval = (int)($ghCfg['auto'] ?? 0);
+                if ($ghInterval > 0 && ($ghNow - $ghLast) >= $ghInterval): ?>
+                    document.addEventListener('DOMContentLoaded', () => {
+                        const fd = new FormData();
+                        fd.append('action', 'push_github_backup');
+                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                            if (res.success && typeof loadGithubBackups === 'function') loadGithubBackups();
+                            console.log('GitHub Auto-backup:', res.message);
+                        }).catch(e => console.error('GitHub Auto-backup failed', e));
+                    });
+                <?php endif; ?>
+                </script>
+
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; margin-top:20px;">
                     <!-- System Health & Data Dictionary -->
@@ -11779,5 +12088,7 @@ var queryBuilder = null;
                     }
                     // switchSqlTab moved to head for better reliability
                     </script>
+        </div>
+    </div>
 </body>
 </html>
