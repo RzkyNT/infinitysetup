@@ -8709,30 +8709,45 @@ var advancedFilters = null;
     <!-- MAIN CONTENT -->
     <div class="main-content">
         <div class="top-bar">
-            <div class="breadcrumb">
+            <!-- BREADCRUMB -->
+            <div class="breadcrumb" style="min-width: 150px;">
                 <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> <span>Dashboard</span></a>
                 <?php if ($currentTable): ?>
                     <span style="color:var(--text-secondary);">/</span>
                     <span><?=htmlspecialchars($currentTable)?></span>
                 <?php endif; ?>
             </div>
-            <div style="display:flex; align-items:center; gap:15px;">
-                <div style="display:flex; gap:10px; margin-right:10px; border-right:1px solid #333; padding-right:15px;">
-                    <a href="#" onclick="toggleTheme()" title="Toggle Theme" style="color:var(--text-secondary); font-size:1.1rem;">
+
+            <!-- CENTERED UNIVERSAL SEARCH -->
+            <div style="flex:1; display:flex; justify-content:center; padding: 0 20px; min-width: 0;">
+                <form action="?" method="GET" style="display:flex; width:100%; max-width:550px; position:relative; gap:8px;">
+                    <i class="fas fa-search" style="position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--text-secondary); opacity:0.6; pointer-events:none;"></i>
+                    <input type="text" name="uni_search" class="form-control" placeholder="Universal Search (All Tables)..." value="<?= htmlspecialchars($_GET['uni_search'] ?? '') ?>" style="background:rgba(255,255,255,0.04); border-radius:30px; padding: 10px 15px 10px 40px; border: 1px solid rgba(255,255,255,0.1); width:100%; font-size:0.9rem; transition:all 0.3s; outline:none;" onfocus="this.style.borderColor='var(--accent)'; this.style.background='rgba(255,255,255,0.07)'; this.style.boxShadow='0 0 15px rgba(26, 115, 232, 0.2)';" onblur="this.style.borderColor='rgba(255,255,255,0.1)'; this.style.background='rgba(255,255,255,0.04)'; this.style.boxShadow='none';">
+                </form>
+            </div>
+
+            <!-- RIGHT ACTIONS -->
+            <div style="display:flex; align-items:center; gap:20px; min-width: 250px; justify-content: flex-end;">
+                <div style="display:flex; gap:15px; align-items:center; border-right:1px solid rgba(255,255,255,0.1); padding-right:20px;">
+                    <a href="#" onclick="openQuickSqlModal()" title="Quick SQL Command" style="color:var(--accent); font-size:1.15rem; transition:transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'">
+                        <i class="fas fa-terminal"></i>
+                    </a>
+                    <a href="#" onclick="toggleTheme()" title="Toggle Dark/Light" style="color:var(--text-secondary); font-size:1.1rem;">
                         <i class="fas fa-adjust"></i>
                     </a>
-                    <a href="#" onclick="openToolsModal()" title="Generator Tools" style="color:var(--text-secondary); font-size:1.1rem;">
+                    <a href="#" onclick="openToolsModal()" title="System Tools" style="color:var(--text-secondary); font-size:1.1rem;">
                        <i class="fas fa-key"></i>
                    </a>
-                    <a href="index.php" title="Dashboard"><i class="fas fa-th"></i></a>
-                    <a href="filemanager.php" title="File Manager"><i class="fas fa-folder"></i></a>
+                    <a href="filemanager.php" title="File Manager" style="color:var(--text-secondary); font-size:1.1rem;"><i class="fas fa-folder"></i></a>
                 </div>
-                <span style="color:var(--text-secondary); font-size:0.85rem;" title="DB User: <?=htmlspecialchars($_SESSION['db_user'] ?? 'root')?>">
-                    <i class="fas fa-user-circle"></i> 
-                    <?= htmlspecialchars($_SESSION['username'] ?? 'Guest') ?> 
-                    (<?= ucfirst($_SESSION['role'] ?? 'guest') ?>)
-                </span>
-                <a href="?logout=1" class="logout-link"><i class="fas fa-sign-out-alt"></i> Logout</a>
+                
+                <div style="display:flex; align-items:center; gap:8px;">
+                     <div style="text-align:right; line-height:1.2;">
+                         <div style="font-size:0.8rem; font-weight:bold; color:var(--text-primary);"><?= htmlspecialchars($_SESSION['username'] ?? 'User') ?></div>
+                         <div style="font-size:0.65rem; color:var(--text-secondary); text-transform:uppercase;"><?= htmlspecialchars($_SESSION['role'] ?? 'Admin') ?></div>
+                     </div>
+                     <a href="?logout=1" title="Sign Out" style="color:var(--danger); font-size:1.1rem; margin-left:5px;"><i class="fas fa-power-off"></i></a>
+                </div>
             </div>
         </div>
 
@@ -8765,6 +8780,199 @@ var advancedFilters = null;
                     .compare-toggle { cursor:pointer; display:flex; align-items:center; gap:10px; transition:color 0.2s; }
                     .compare-toggle:hover { color:var(--accent); }
                 </style>
+<?php 
+                $uniSearch = $_GET['uni_search'] ?? '';
+                if ($uniSearch):
+                ?>
+                <div class="card" style="margin-top: 20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                        <h3 style="margin:0;"><i class="fas fa-search-plus"></i> Search Results for "<?= htmlspecialchars($uniSearch) ?>"</h3>
+                        <a href="?" class="btn btn-sm btn-danger"><i class="fas fa-times"></i> Close Results</a>
+                    </div>
+                    
+                    <div style="display:flex; gap:10px; align-items:center; background:rgba(255,255,255,0.03); padding:12px; border-radius:10px; border:1px solid var(--border-color); margin-bottom:20px;">
+                        <i class="fas fa-magic" style="color:var(--accent);"></i>
+                        <span style="font-size:0.85rem; color:var(--text-secondary); flex:1;">Mass Replace:</span>
+                        <input type="text" id="replace_query" class="form-control" placeholder="New value..." style="flex:2; font-size:0.85rem;">
+                        <button type="button" class="btn btn-accent btn-sm" onclick="universalReplace('all')"><i class="fas fa-sync"></i> Replace All</button>
+                    </div>
+                    <?php 
+                    if ($uniSearch):
+                        $resultsFound = 0;
+                        $searchQuery = trim($uniSearch);
+                        
+                        // Helper to render cell content with media support and highlighting
+                        $renderCell = function($val, $key, $query) {
+                            if ($val === null) return '<span style="color:#666">NULL</span>';
+                            $valStr = (string)$val;
+                            
+                            // Media Display Logic (Images)
+                            if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
+                                return '<img src="' . htmlspecialchars($valStr) . '" style="max-width:50px; max-height:50px; border-radius:4px; cursor:pointer;" onclick="showImageModal(this.src)" title="Base64 Image">';
+                            }
+                            
+                            if (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
+                                (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
+                                 stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
+                                 stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
+                                 stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
+                                
+                                $imgUrl = $valStr;
+                                if (!preg_match('/^https?:\/\//', $valStr)) {
+                                    $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                                }
+                                return '<div style="display:flex; align-items:center; gap:5px;">'
+                                    . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:40px; height:40px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="'.htmlspecialchars($valStr).'" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline\';">'
+                                    . '<span style="display:none; font-size:0.7rem; color:var(--text-secondary); line-height:1;">' . htmlspecialchars(basename($valStr)) . '</span>'
+                                    . '</div>';
+                            }
+
+                            // Highlighting for normal text
+                            if (!$query) return htmlspecialchars($valStr);
+                            return preg_replace('/(' . preg_quote(htmlspecialchars($query), '/') . ')/i', '<mark style="background:rgba(255,193,7,0.3); color:inherit; padding:0 2px; border-radius:2px;">$1</mark>', htmlspecialchars($valStr));
+                        };
+
+                        echo '<div id="universal-results" style="margin-top:20px;">';
+                        echo "<div style='margin-bottom:15px; color:var(--text-secondary); font-size:0.9rem;'>Searching for \"<b>".htmlspecialchars($searchQuery)."</b>\"...</div>";
+                        
+                        if ($dbMode === 'json' && isset($jsonDb)) {
+                            $tablesToSearch = $jsonDb->listTables();
+                            foreach ($tablesToSearch as $tName) {
+                                $data = $jsonDb->select($tName);
+                                $matchedRows = [];
+                                foreach ($data as $row) {
+                                    $rowText = implode(' ', array_map('strval', $row));
+                                    if (stripos($rowText, $searchQuery) !== false) {
+                                        $matchedRows[] = $row;
+                                    }
+                                }
+                                
+                                if (!empty($matchedRows)) {
+                                    $resultsFound += count($matchedRows);
+                                    echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
+                                            <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                                <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".count($matchedRows)." matches</span></span>
+                                                <a href='?table=" . urlencode($tName) . "&view=data' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Browse Table</a>
+                                            </div>
+                                            <div style='overflow-x:auto;'>
+                                                <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
+                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>";
+                                    foreach (array_keys($matchedRows[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
+                                    echo "</tr></thead><tbody>";
+                                    foreach (array_slice($matchedRows, 0, 5) as $row) {
+                                        echo "<tr>";
+                                        $pkVal = $row['id'] ?? null;
+                                        echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."' onchange='updateUniSelection()'></td>";
+                                        foreach ($row as $k => $v) {
+                                            $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                            echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
+                                        }
+                                        echo "</tr>";
+                                    }
+                                    echo "</tbody></table>";
+                                    if (count($matchedRows) > 5) echo "<div style='padding:8px; text-align:center; font-size:0.75rem; color:var(--text-secondary); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'>Showing 5 of ".count($matchedRows)." matches</div>";
+                                    echo "</div></div>";
+                                }
+                            }
+                        } elseif (($dbMode === 'sql' || $dbMode === 'sqlite') && isset($pdo)) {
+                            try {
+                                if ($dbMode === 'sql') {
+                                    $stmt = $pdo->query("SHOW TABLES");
+                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                } else {
+                                    $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                }
+                                
+                                foreach ($tablesToSearch as $tName) {
+                                    // Get columns to search in
+                                    if ($dbMode === 'sql') {
+                                        $cStmt = $pdo->query("DESCRIBE `$tName`");
+                                        $cols = $cStmt->fetchAll(PDO::FETCH_COLUMN);
+                                    } else {
+                                        $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
+                                        $cols = [];
+                                        foreach($cStmt->fetchAll() as $colInfo) $cols[] = $colInfo['name'];
+                                    }
+                                    
+                                    if (empty($cols)) continue;
+                                    
+                                    $whereConditions = [];
+                                    foreach ($cols as $c) {
+                                        $whereConditions[] = "`$c` LIKE " . $pdo->quote("%$searchQuery%");
+                                    }
+                                    
+                                    $sqlSelect = "SELECT * FROM `$tName` WHERE " . implode(" OR ", $whereConditions) . " LIMIT 11";
+                                    $sStmt = $pdo->query($sqlSelect);
+                                    $matches = $sStmt->fetchAll(PDO::FETCH_ASSOC);
+                                    
+                                    if (!empty($matches)) {
+                                        $matchCount = count($matches);
+                                        $resultsFound += $matchCount;
+                                        echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
+                                                <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                                    <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".($matchCount > 10 ? '10+' : $matchCount)." matches</span></span>
+                                                    <a href='?table=" . urlencode($tName) . "&view=data&search_val=".urlencode($searchQuery)."' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Full Search Results</a>
+                                                </div>
+                                                <div style='overflow-x:auto;'>
+                                                    <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
+                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>
+                                                            <th style='width:40px;'></th>";
+                                        foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
+                                        echo "</tr></thead><tbody>";
+                                        foreach (array_slice($matches, 0, 5) as $row) {
+                                            $pk = null;
+                                            $colTypes = [];
+                                            if ($dbMode === 'sql') {
+                                                $cStmt = $pdo->query("DESCRIBE `$tName`");
+                                                foreach($cStmt->fetchAll() as $c) {
+                                                    if ($c['Key'] === 'PRI') $pk = $c['Field'];
+                                                    $colTypes[$c['Field']] = $c['Type'];
+                                                }
+                                            } else {
+                                                $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
+                                                foreach($cStmt->fetchAll() as $c) {
+                                                    if ($c['pk']) $pk = $c['name'];
+                                                    $colTypes[$c['name']] = $c['type'] ?? 'text';
+                                                }
+                                            }
+                                            
+                                            echo "<tr>";
+                                            $pkVal = ($pk && isset($row[$pk])) ? $row[$pk] : null;
+                                            echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."'></td>";
+                                            foreach ($row as $k => $v) {
+                                                $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                                $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
+                                                echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
+                                            }
+                                            echo "</tr>";
+                                        }
+                                        echo "</tbody></table>";
+                                        if ($matchCount > 5) echo "<div style='padding:10px; text-align:center; font-size:0.75rem; color:var(--accent); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'><i class='fas fa-info-circle'></i> More matches found. <a href='?table=".urlencode($tName)."&view=data&search_val=".urlencode($searchQuery)."' style='text-decoration:underline; font-weight:bold; color:var(--accent);'>Explore Table</a></div>";
+                                        echo "</div></div>";
+                                    }
+                                }
+                            } catch (Exception $e) {
+                                echo "<div class='alert alert-danger'>Search Error: " . htmlspecialchars($e->getMessage()) . "</div>";
+                            }
+                        }
+                        
+                        if ($resultsFound === 0) {
+                            echo "<div style='text-align:center; padding:50px 20px; border:1px dashed var(--border-color); border-radius:10px; background:rgba(0,0,0,0.1);'>
+                                    <i class='fas fa-search-minus fa-3x' style='color:var(--text-secondary); margin-bottom:15px; opacity:0.5;'></i>
+                                    <h4 style='color:var(--text-primary);'>No Results Found</h4>
+                                    <p style='color:var(--text-secondary);'>We couldn't find any matches for \"<b>" . htmlspecialchars($searchQuery) . "</b>\" across your tables.</p>
+                                    <a href='?' class='btn' style='margin-top:10px;'>Try another term</a>
+                                  </div>";
+                        } else {
+                            echo "<div style='text-align:center; padding:20px; color:var(--text-secondary); font-size:0.85rem;'>End of search results. Total tables with matches: " . ($resultsFound > 0 ? "Multiple" : "None") . "</div>";
+                        }
+                        
+                        echo '</div>';
+                    endif;
+                    ?>
+                </div>
+            <?php endif; ?>
 
                 <div class="card" id="compare-section" style="margin-bottom: 25px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -9521,205 +9729,6 @@ var advancedFilters = null;
                     </div>
                 </div>
 
-                <?php 
-                $uniSearch = $_GET['uni_search'] ?? '';
-                ?>
-                <div class="card" style="margin-top: 20px;">
-                    <h3><i class="fas fa-search-plus"></i> Universal Search</h3>
-                    <p style="color:var(--text-secondary); margin-bottom:15px;">Search for any content across all tables in the current database/file.</p>
-                    <form method="GET" style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px; background:rgba(255,255,255,0.03); padding:15px; border-radius:10px; border:1px solid var(--border-color);">
-                        <div style="display:flex; gap:10px;">
-                            <input type="text" name="uni_search" class="form-control" placeholder="Search keywords..." value="<?= htmlspecialchars($uniSearch) ?>" style="flex:1;">
-                            <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Search All Tables</button>
-                            <?php if($uniSearch): ?>
-                                <a href="?" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a>
-                            <?php endif; ?>
-                        </div>
-                        <?php if($uniSearch): ?>
-                        <div style="display:flex; gap:10px; align-items:center; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
-                            <input type="text" id="replace_query" class="form-control" placeholder="Replace with..." style="flex:1;">
-                            <button type="button" class="btn btn-accent" onclick="universalReplace('all')"><i class="fas fa-sync"></i> Replace All</button>
-                            <button type="button" class="btn btn-accent btn-sm" onclick="universalReplace('selected')"><i class="fas fa-check-double"></i> Replace Selected</button>
-                        </div>
-                        <?php endif; ?>
-                    </form>
-                    <?php 
-                    if ($uniSearch):
-                        $resultsFound = 0;
-                        $searchQuery = trim($uniSearch);
-                        
-                        // Helper to render cell content with media support and highlighting
-                        $renderCell = function($val, $key, $query) {
-                            if ($val === null) return '<span style="color:#666">NULL</span>';
-                            $valStr = (string)$val;
-                            
-                            // Media Display Logic (Images)
-                            if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
-                                return '<img src="' . htmlspecialchars($valStr) . '" style="max-width:50px; max-height:50px; border-radius:4px; cursor:pointer;" onclick="showImageModal(this.src)" title="Base64 Image">';
-                            }
-                            
-                            if (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
-                                (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
-                                 stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
-                                 stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
-                                 stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
-                                
-                                $imgUrl = $valStr;
-                                if (!preg_match('/^https?:\/\//', $valStr)) {
-                                    $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                                }
-                                return '<div style="display:flex; align-items:center; gap:5px;">'
-                                    . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:40px; height:40px; border-radius:4px; cursor:pointer; object-fit:cover;" onclick="showImageModal(this.src)" title="'.htmlspecialchars($valStr).'" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline\';">'
-                                    . '<span style="display:none; font-size:0.7rem; color:var(--text-secondary); line-height:1;">' . htmlspecialchars(basename($valStr)) . '</span>'
-                                    . '</div>';
-                            }
-
-                            // Highlighting for normal text
-                            if (!$query) return htmlspecialchars($valStr);
-                            return preg_replace('/(' . preg_quote(htmlspecialchars($query), '/') . ')/i', '<mark style="background:rgba(255,193,7,0.3); color:inherit; padding:0 2px; border-radius:2px;">$1</mark>', htmlspecialchars($valStr));
-                        };
-
-                        echo '<div id="universal-results" style="margin-top:20px;">';
-                        echo "<div style='margin-bottom:15px; color:var(--text-secondary); font-size:0.9rem;'>Searching for \"<b>".htmlspecialchars($searchQuery)."</b>\"...</div>";
-                        
-                        if ($dbMode === 'json' && isset($jsonDb)) {
-                            $tablesToSearch = $jsonDb->listTables();
-                            foreach ($tablesToSearch as $tName) {
-                                $data = $jsonDb->select($tName);
-                                $matchedRows = [];
-                                foreach ($data as $row) {
-                                    $rowText = implode(' ', array_map('strval', $row));
-                                    if (stripos($rowText, $searchQuery) !== false) {
-                                        $matchedRows[] = $row;
-                                    }
-                                }
-                                
-                                if (!empty($matchedRows)) {
-                                    $resultsFound += count($matchedRows);
-                                    echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
-                                            <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
-                                                <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".count($matchedRows)." matches</span></span>
-                                                <a href='?table=" . urlencode($tName) . "&view=data' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Browse Table</a>
-                                            </div>
-                                            <div style='overflow-x:auto;'>
-                                                <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
-                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>";
-                                    foreach (array_keys($matchedRows[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
-                                    echo "</tr></thead><tbody>";
-                                    foreach (array_slice($matchedRows, 0, 5) as $row) {
-                                        echo "<tr>";
-                                        $pkVal = $row['id'] ?? null;
-                                        echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."' onchange='updateUniSelection()'></td>";
-                                        foreach ($row as $k => $v) {
-                                            $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
-                                            echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
-                                        }
-                                        echo "</tr>";
-                                    }
-                                    echo "</tbody></table>";
-                                    if (count($matchedRows) > 5) echo "<div style='padding:8px; text-align:center; font-size:0.75rem; color:var(--text-secondary); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'>Showing 5 of ".count($matchedRows)." matches</div>";
-                                    echo "</div></div>";
-                                }
-                            }
-                        } elseif (($dbMode === 'sql' || $dbMode === 'sqlite') && isset($pdo)) {
-                            try {
-                                if ($dbMode === 'sql') {
-                                    $stmt = $pdo->query("SHOW TABLES");
-                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                                } else {
-                                    $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
-                                    $tablesToSearch = $stmt->fetchAll(PDO::FETCH_COLUMN);
-                                }
-                                
-                                foreach ($tablesToSearch as $tName) {
-                                    // Get columns to search in
-                                    if ($dbMode === 'sql') {
-                                        $cStmt = $pdo->query("DESCRIBE `$tName`");
-                                        $cols = $cStmt->fetchAll(PDO::FETCH_COLUMN);
-                                    } else {
-                                        $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
-                                        $cols = [];
-                                        foreach($cStmt->fetchAll() as $colInfo) $cols[] = $colInfo['name'];
-                                    }
-                                    
-                                    if (empty($cols)) continue;
-                                    
-                                    $whereConditions = [];
-                                    foreach ($cols as $c) {
-                                        $whereConditions[] = "`$c` LIKE " . $pdo->quote("%$searchQuery%");
-                                    }
-                                    
-                                    $sqlSelect = "SELECT * FROM `$tName` WHERE " . implode(" OR ", $whereConditions) . " LIMIT 11";
-                                    $sStmt = $pdo->query($sqlSelect);
-                                    $matches = $sStmt->fetchAll(PDO::FETCH_ASSOC);
-                                    
-                                    if (!empty($matches)) {
-                                        $matchCount = count($matches);
-                                        $resultsFound += $matchCount;
-                                        echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
-                                                <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
-                                                    <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".($matchCount > 10 ? '10+' : $matchCount)." matches</span></span>
-                                                    <a href='?table=" . urlencode($tName) . "&view=data&search_val=".urlencode($searchQuery)."' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Full Search Results</a>
-                                                </div>
-                                                <div style='overflow-x:auto;'>
-                                                    <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
-                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>
-                                                            <th style='width:40px;'></th>";
-                                        foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
-                                        echo "</tr></thead><tbody>";
-                                        foreach (array_slice($matches, 0, 5) as $row) {
-                                            $pk = null;
-                                            $colTypes = [];
-                                            if ($dbMode === 'sql') {
-                                                $cStmt = $pdo->query("DESCRIBE `$tName`");
-                                                foreach($cStmt->fetchAll() as $c) {
-                                                    if ($c['Key'] === 'PRI') $pk = $c['Field'];
-                                                    $colTypes[$c['Field']] = $c['Type'];
-                                                }
-                                            } else {
-                                                $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
-                                                foreach($cStmt->fetchAll() as $c) {
-                                                    if ($c['pk']) $pk = $c['name'];
-                                                    $colTypes[$c['name']] = $c['type'] ?? 'text';
-                                                }
-                                            }
-                                            
-                                            echo "<tr>";
-                                            $pkVal = ($pk && isset($row[$pk])) ? $row[$pk] : null;
-                                            echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."'></td>";
-                                            foreach ($row as $k => $v) {
-                                                $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
-                                                $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
-                                                echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
-                                            }
-                                            echo "</tr>";
-                                        }
-                                        echo "</tbody></table>";
-                                        if ($matchCount > 5) echo "<div style='padding:10px; text-align:center; font-size:0.75rem; color:var(--accent); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'><i class='fas fa-info-circle'></i> More matches found. <a href='?table=".urlencode($tName)."&view=data&search_val=".urlencode($searchQuery)."' style='text-decoration:underline; font-weight:bold; color:var(--accent);'>Explore Table</a></div>";
-                                        echo "</div></div>";
-                                    }
-                                }
-                            } catch (Exception $e) {
-                                echo "<div class='alert alert-danger'>Search Error: " . htmlspecialchars($e->getMessage()) . "</div>";
-                            }
-                        }
-                        
-                        if ($resultsFound === 0) {
-                            echo "<div style='text-align:center; padding:50px 20px; border:1px dashed var(--border-color); border-radius:10px; background:rgba(0,0,0,0.1);'>
-                                    <i class='fas fa-search-minus fa-3x' style='color:var(--text-secondary); margin-bottom:15px; opacity:0.5;'></i>
-                                    <h4 style='color:var(--text-primary);'>No Results Found</h4>
-                                    <p style='color:var(--text-secondary);'>We couldn't find any matches for \"<b>" . htmlspecialchars($searchQuery) . "</b>\" across your tables.</p>
-                                    <a href='?' class='btn' style='margin-top:10px;'>Try another term</a>
-                                  </div>";
-                        } else {
-                            echo "<div style='text-align:center; padding:20px; color:var(--text-secondary); font-size:0.85rem;'>End of search results. Total tables with matches: " . ($resultsFound > 0 ? "Multiple" : "None") . "</div>";
-                        }
-                        
-                        echo '</div>';
-                    endif;
-                    ?>
-                </div>
-
                 <?php if ($dbMode === 'sql' && !$hasSelectedDatabase): ?>
                     <div class="card">
                         <h3>Pilih Database</h3>
@@ -10243,6 +10252,39 @@ function openToolsModal() {
         customClass: {
             popup: 'dark-modal'
         }
+}
+
+function openQuickSqlModal() {
+    Swal.fire({
+        title: '<i class="fas fa-terminal"></i> Quick SQL Command',
+        background: 'var(--bg-card)',
+        color: 'var(--text-primary)',
+        html: `
+            <div style="text-align:left; margin-top:10px;">
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:12px;">Run a direct query on <b><?= htmlspecialchars($_SESSION['db_name'] ?? 'Default') ?></b>. Results will be shown in the full SQL view.</p>
+                <form id="quickSqlForm" method="POST" action="?view=sql">
+                    <input type="hidden" name="action" value="sql_query">
+                    <textarea name="query" id="quickSqlInput" class="form-control" style="width:100%; height:220px; font-family:'Fira Code', monospace; background:#080808; color:#a5d6ff; padding:15px; border:1px solid #333; border-radius:10px; font-size:13px; line-height:1.5;" placeholder="SELECT * FROM table_name LIMIT 10..."></textarea>
+                </form>
+                <div style="margin-top:20px; display:flex; justify-content:space-between; align-items:center;">
+                    <small style="color:var(--text-secondary);"><i class="fas fa-info-circle"></i> Hotkey: Ctrl+Enter</small>
+                    <button class="btn btn-primary" onclick="document.getElementById('quickSqlForm').submit()" style="padding:10px 25px;"><i class="fas fa-play"></i> Execute Query</button>
+                </div>
+            </div>
+        `,
+        didOpen: () => {
+            const textarea = document.getElementById('quickSqlInput');
+            textarea.focus();
+            textarea.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.key === 'Enter') {
+                    document.getElementById('quickSqlForm').submit();
+                }
+            });
+        },
+        showConfirmButton: false,
+        showCloseButton: true,
+        width: '650px',
+        customClass: { popup: 'dark-modal' }
     });
 }
 
