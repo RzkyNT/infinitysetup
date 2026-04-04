@@ -15,6 +15,30 @@ function get_auth_db() {
     if ($db === null) {
         $db = new PDO("sqlite:$dbFile");
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        
+        // Initialize Tables
+        $db->exec("CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT,
+            permissions TEXT,
+            must_change_password INTEGER DEFAULT 1
+        )");
+
+        $db->exec("CREATE TABLE IF NOT EXISTS settings (
+            key_name TEXT PRIMARY KEY,
+            value_data TEXT
+        )");
+
+        // Seed default admin if no users exist
+        $stmt = $db->query("SELECT COUNT(*) FROM users");
+        if ($stmt->fetchColumn() == 0) {
+            $pass = password_hash('admin123', PASSWORD_DEFAULT);
+            $perms = json_encode(['filemanager' => 'full', 'database' => 'full']);
+            $db->prepare("INSERT INTO users (username, password, role, permissions, must_change_password) VALUES (?, ?, ?, ?, 1)")
+               ->execute(['admin', $pass, 'admin', $perms]);
+        }
     }
     return $db;
 }
@@ -59,6 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['auth_login'])) {
             $_SESSION['username'] = $userData['username'];
             $_SESSION['role'] = $userData['role'];
             $_SESSION['permissions'] = json_decode($userData['permissions'], true);
+            $_SESSION['must_change_password'] = (int)$userData['must_change_password'];
             $_SESSION['portal_logged_in'] = true; // Legacy support
             
             // Load Real DB Credentials from 'settings' table
@@ -263,6 +288,12 @@ if (!is_authenticated()) {
     exit;
 }
 
+// Force password change redirect
+if (isset($_SESSION['must_change_password']) && $_SESSION['must_change_password'] == 1 && $current_page !== 'index.php') {
+    header("Location: index.php");
+    exit;
+}
+
 // Only show dashboard tool logic if we are directly on index.php
 if ($current_page === 'index.php') {
     // Load tools config
@@ -274,6 +305,19 @@ if ($current_page === 'index.php') {
     $updateAlert = null;
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_action'])) {
         // Simplified update logic placeholder
+    }
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
+        $new_pass = $_POST['new_password'] ?? '';
+        if ($new_pass) {
+            $db = get_auth_db();
+            $hash = password_hash($new_pass, PASSWORD_DEFAULT);
+            $stmt = $db->prepare("UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?");
+            $stmt->execute([$hash, $_SESSION['user_id']]);
+            $_SESSION['must_change_password'] = 0;
+            header("Location: index.php?password_changed=1");
+            exit;
+        }
     }
 ?>
 <!DOCTYPE html>
@@ -301,6 +345,39 @@ if ($current_page === 'index.php') {
         .label { font-size: 1.2rem; font-weight: 600; }
         .status { font-size: 0.8rem; color: #888; margin-top: auto; }
         .user-info { font-size: 0.85rem; color: #94a3b8; margin-right: 1rem; }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(8px);
+            display: none; align-items: center; justify-content: center; z-index: 1000;
+        }
+        .modal-card {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 16px;
+            padding: 2.5rem; width: 100%; max-width: 400px; box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            animation: modalPop 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+        }
+        @keyframes modalPop {
+            from { opacity: 0; transform: scale(0.9) translateY(20px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-header { text-align: center; margin-bottom: 2rem; }
+        .modal-header i { font-size: 2.5rem; color: #6366f1; margin-bottom: 1rem; }
+        .modal-header h2 { margin: 0; font-size: 1.5rem; }
+        .modal-header p { color: #888; font-size: 0.9rem; margin-top: 0.5rem; }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; color: #aaa; font-size: 0.85rem; }
+        .form-input { 
+            width: 100%; background: #0f0f0f; border: 1px solid #333; border-radius: 8px; 
+            padding: 0.8rem 1rem; color: white; font-size: 1rem; box-sizing: border-box;
+            transition: 0.3s;
+        }
+        .form-input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2); }
+        .btn-submit {
+            width: 100%; background: #6366f1; color: white; border: none; border-radius: 8px;
+            padding: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.3s; margin-top: 0.5rem;
+        }
+        .btn-submit:hover { background: #4f46e5; transform: translateY(-1px); }
     </style>
 </head>
 <body>
@@ -338,6 +415,42 @@ if ($current_page === 'index.php') {
             <?php endforeach; ?>
         </div>
     </div>
+
+    <!-- Password Change Modal -->
+    <div id="pwdModal" class="modal-overlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <i class="fas fa-shield-halved"></i>
+                <h2>Security Update</h2>
+                <p>You must change your default password to continue.</p>
+            </div>
+            <form method="POST">
+                <input type="hidden" name="change_password" value="1">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" class="form-input" value="<?= htmlspecialchars($_SESSION['username']) ?>" disabled>
+                </div>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" name="new_password" class="form-input" placeholder="Enter secure password" required minlength="6">
+                </div>
+                <button type="submit" class="btn-submit">Update Password</button>
+            </form>
+        </div>
+    </div>
+
+    <?php if (isset($_SESSION['must_change_password']) && $_SESSION['must_change_password'] == 1): ?>
+    <script>
+        document.getElementById('pwdModal').style.display = 'flex';
+    </script>
+    <?php endif; ?>
+
+    <?php if (isset($_GET['password_changed'])): ?>
+    <script>
+        alert('Password updated successfully!');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    </script>
+    <?php endif; ?>
 </body>
 </html>
 <?php 
