@@ -304,7 +304,48 @@ if ($current_page === 'index.php') {
 
     $updateAlert = null;
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_action'])) {
-        // Simplified update logic placeholder
+        $linkFileUrl = "https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/link.txt";
+        
+        $context = stream_context_create([
+            "http" => ["header" => "User-Agent: PHP\r\n"]
+        ]);
+
+        $links = @file_get_contents($linkFileUrl, false, $context);
+        
+        if ($links !== false) {
+            $urls = array_filter(array_map('trim', explode("\n", $links)));
+            $success_count = 0;
+            $errors = [];
+
+            foreach ($urls as $url) {
+                if (empty($url)) continue;
+                $filename = basename($url);
+                $content = @file_get_contents($url, false, $context);
+                
+                if ($content !== false) {
+                    if (@file_put_contents(__DIR__ . '/' . $filename, $content) !== false) {
+                        $success_count++;
+                    } else {
+                        $errors[] = "Failed to write $filename";
+                    }
+                } else {
+                    $errors[] = "Failed to download $url";
+                }
+            }
+            
+            if ($success_count > 0) {
+                $_SESSION['update_msg'] = "Successfully updated $success_count files.";
+                if (!empty($errors)) {
+                    $_SESSION['update_msg'] .= " Errors: " . implode(", ", $errors);
+                }
+                header("Location: index.php?updated=1");
+                exit;
+            } else {
+                $updateAlert = "Update failed: " . implode(", ", $errors);
+            }
+        } else {
+            $updateAlert = "Failed to fetch update list from GitHub.";
+        }
     }
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
