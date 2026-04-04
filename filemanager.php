@@ -2930,7 +2930,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       }
                   }
               ?>
-                  <tr data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>">
+                   <tr data-type="folder" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-url="?p=<?php echo urlencode(trim(FM_PATH . '/' . $f, '/')) ?>">
                       <?php if (!FM_READONLY): ?>
                           <td class="custom-checkbox-td">
                               <div class="custom-control custom-checkbox">
@@ -2999,7 +2999,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       }
                   }
               ?>
-                  <tr data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>">
+                   <tr data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>" data-url="<?php echo $http_url ?>">
                       <?php if (!FM_READONLY): ?>
                           <td class="custom-checkbox-td">
                               <div class="custom-control custom-checkbox">
@@ -5994,11 +5994,30 @@ function fm_foldersize($path) {
                   background-color: #dc3545;
                   color: white;
               }
-              
-              #snackbar.toast-warning {
-                  background-color: #ffc107;
-                  color: #212529;
-              }
+                             .fm-dragging {
+                   opacity: 0.5;
+                   border: 2px dashed #007bff !important;
+               }
+               .fm-drop-target {
+                   background-color: rgba(13, 110, 253, 0.15) !important;
+                   border: 2px solid #0d6efd !important;
+               }
+               #fm-context-menu {
+                   background: #1a1a1a !important;
+                   border: 1px solid #333 !important;
+                   box-shadow: 0 10px 25px rgba(0,0,0,0.5) !important;
+                   color: #eee !important;
+               }
+               #fm-context-menu .fm-cm-item:hover {
+                   background: #333 !important;
+                   color: #fff !important;
+               }
+               #fm-context-menu .fm-cm-sep {
+                   background: #333 !important;
+               }
+               #fm-context-menu .fm-cm-item {
+                   color: #ccc !important;
+               }
               
               #snackbar.toast-info {
                   background-color: #17a2b8;
@@ -6925,29 +6944,7 @@ function fm_foldersize($path) {
       function fm_show_footer()
       {
           ?>
-          <!-- Context Menu -->
-    <div id="context-menu" class="context-menu">
-        <ul>
-            <li><a href="#" id="cm-open"><i class="fa fa-folder-open"></i> <?php echo lng('Open') ?></a></li>
-            <li><a href="#" id="cm-preview"><i class="fa fa-eye"></i> Preview</a></li>
-            <li class="context-menu-separator"></li>
-            <li><a href="#" id="cm-rename"><i class="fa fa-pencil-square-o"></i> <?php echo lng('Rename') ?></a></li>
-            <li><a href="#" id="cm-copy"><i class="fa fa-files-o"></i> <?php echo lng('Copy') ?></a></li>
-            <li><a href="#" id="cm-move"><i class="fa fa-arrow-right"></i> <?php echo lng('Move') ?></a></li>
-            <li><a href="#" id="cm-download"><i class="fa fa-download"></i> <?php echo lng('Download') ?></a></li>
-            <li><a href="#" id="cm-link"><i class="fa fa-link"></i> <?php echo lng('DirectLink') ?></a></li>
-            <li><a href="#" id="cm-extract"><i class="fa fa-folder-open"></i> Extract Archive</a></li>
-            <li class="context-menu-separator"></li>
-            <li><a href="#" id="cm-delete" class="text-danger"><i class="fa fa-trash-o"></i> <?php echo lng('Delete') ?></a></li>
-        </ul>
-    </div>
-
-    <div id="body-context-menu" class="context-menu">
-        <ul>
-            <li><a href="#" id="body-context-new-file"><i class="fa fa-file-o"></i> <?php echo lng('File') ?></a></li>
-            <li><a href="#" id="body-context-new-folder"><i class="fa fa-folder"></i> <?php echo lng('Folder') ?></a></li>
-        </ul>
-    </div>
+          <!-- Context Menus replaced by JS-generated system -->
     </div>
     <script type="text/javascript">
         window.csrf = '<?php echo $_SESSION['token']; ?>';
@@ -6983,220 +6980,191 @@ function fm_foldersize($path) {
                   return new Function(code.replace(/[\r\t\n]/g, '')).apply(options)
               }
 
-              /* CONTEXT MENU LOGIC */
               $(document).ready(function() {
-                  const $contextMenu = $('#context-menu');
-                  const $bodyContextMenu = $('#body-context-menu');
-                  const $wrapper = $('#wrapper');
+                  /* CONTEXT MENU LOGIC */
+                  window.showToast = function(msg) {
+                        const toast = document.createElement('div');
+                        toast.className = 'fm-toast';
+                        toast.innerText = msg;
+                        document.body.appendChild(toast);
+                        setTimeout(() => toast.classList.add('show'), 10);
+                        setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 500); }, 3000);
+                    };
+                    let clipboard = { action: null, items: [] };
+                   window.openCreateModal = function(type) {
+                       const selector = '#createNewItem input[name="newfile"][value="' + type + '"]';
+                       $(selector).prop('checked', true);
+                       $('#createNewItem').modal('show');
+                       setTimeout(function() { $('#newfilename').trigger('focus'); }, 400);
+                   };
 
-                  function hideAllContextMenus() {
-                      $contextMenu.hide();
-                      $bodyContextMenu.hide();
-                  }
+                   function initContextMenu(){
+                       let menu = document.createElement('div');
+                       menu.id = 'fm-context-menu';
+                       menu.style.position = 'fixed';
+                       menu.style.zIndex = 100000;
+                       menu.style.minWidth = '180px';
+                       menu.style.display = 'none';
+                       menu.style.padding = '6px 4px';
+                       menu.style.borderRadius = '8px';
+                       menu.innerHTML = `
+                           <div class="fm-cm-item" data-act="open"><i class="fa fa-folder-open" style="width:18px;margin-right:8px;"></i>Open</div>
+                           <div class="fm-cm-item" data-act="preview"><i class="fa fa-eye" style="width:18px;margin-right:8px;"></i>Preview</div>
+                           <div class="fm-cm-item" data-act="download"><i class="fa fa-download" style="width:18px;margin-right:8px;"></i>Download</div>
+                           <div class="fm-cm-item" data-act="link"><i class="fa fa-link" style="width:18px;margin-right:8px;"></i>Copy Direct Link</div>
+                           <div class="fm-cm-sep" style="height:1px;margin:6px 0;background:#333"></div>
+                           <div class="fm-cm-item" data-act="create-file"><i class="fa fa-file-o" style="width:18px;margin-right:8px;"></i>Create File</div>
+                           <div class="fm-cm-item" data-act="create-folder"><i class="fa fa-folder" style="width:18px;margin-right:8px;"></i>Create Folder</div>
+                           <div class="fm-cm-sep" style="height:1px;margin:6px 0;background:#333"></div>
+                           <div class="fm-cm-item" data-act="rename"><i class="fa fa-pencil-square-o" style="width:18px;margin-right:8px;"></i>Rename</div>
+                           <div class="fm-cm-item" data-act="copy"><i class="fa fa-files-o" style="width:18px;margin-right:8px;"></i>Copy / Duplicate</div>
+                           <div class="fm-cm-item" data-act="move"><i class="fa fa-arrows" style="width:18px;margin-right:8px;"></i>Move To...</div>
+                           <div class="fm-cm-item" data-act="extract" style="display:none"><i class="fa fa-archive" style="width:18px;margin-right:8px;"></i>Extract Here</div>
+                           <div class="fm-cm-sep" style="height:1px;margin:6px 0;background:#333"></div>
+                           <div class="fm-cm-item" data-act="delete" style="color:#ff6666"><i class="fa fa-trash-o" style="width:18px;margin-right:8px;"></i>Delete</div>
+                       `;
+                       document.body.appendChild(menu);
 
-                  function showContextMenu(e, element) {
-                      hideAllContextMenus();
-                      if(e) e.preventDefault();
-                      
-                      let target = $(element);
-                      // If triggered by ellipsis inside, find parent
-                      if(!target.attr('data-type')) {
-                         target = target.closest('[data-type]');
-                      }
-                      
-                      const type = target.data('type');
-                      const path = target.data('path');
-                      const name = target.data('name');
-                      const ext = target.data('ext');
-                      const fullPath = (path ? path + '/' : '') + name;
+                       const style = document.createElement('style');
+                       style.innerHTML = `
+                           #fm-context-menu .fm-cm-item{padding:10px 12px;cursor:pointer;border-radius:6px;font-size:0.9rem;display:flex;align-items:center;}
+                           #fm-context-menu .fm-cm-item:hover{background:#333;color:#fff;}
+                           #fm-context-menu .fm-cm-item[aria-disabled="true"]{opacity:0.3;pointer-events:none;}
+                           .fm-toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:#fff;padding:8px 16px;border-radius:20px;z-index:999999;transition:all 0.5s;opacity:0;visibility:hidden;}
+                           .fm-toast.show{opacity:1;visibility:visible;bottom:50px;}
+                       `;
+                       document.head.appendChild(style);
 
-                      // Open
-                      if (type === 'folder') {
-                          $('#cm-open').attr('href', '?p=' + encodeURIComponent(fullPath)).parent().show();
-                          $('#cm-preview').parent().hide();
-                      } else {
-                          $('#cm-open').parent().hide();
-                          $('#cm-preview').parent().show();
-                          
-                          $('#cm-preview').off('click').on('click', function(evt) {
-                              evt.preventDefault();
-                              // Try to find the preview button/action
-                              const row = $('tr[data-name="'+name.replace(/"/g, '\\"')+'"]');
-                              const eyeBtn = row.find('.fa-eye').parent();
-                              const gridItem = $('.grid-item[data-name="'+name.replace(/"/g, '\\"')+'"]');
+                       let currentTarget = null;
 
-                              if(eyeBtn.length) { 
-                                  eyeBtn.click(); 
-                              } else if (gridItem.length) {
-                                  gridItem.click();
-                              }
-                          });
-                      }
+                       function showMenu(x, y, target) {
+                           currentTarget = target;
+                           menu.style.left = x + 'px';
+                           menu.style.top = y + 'px';
+                           const type = target.getAttribute('data-type');
+                           const ext = (target.getAttribute('data-ext') || '').toLowerCase();
+                           const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz'];
+                           const isArchive = archiveExts.includes(ext);
+                           
+                           menu.querySelectorAll('.fm-cm-item').forEach(item => { 
+                               item.removeAttribute('aria-disabled'); 
+                               item.style.display = 'flex'; 
+                               const act = item.dataset.act;
+                               if (type === 'folder' && ['preview','download','extract'].includes(act)) item.style.display = 'none';
+                               if (type === 'file' && act === 'extract' && !isArchive) item.style.display = 'none';
+                           });
+                           menu.style.display = 'block';
+                           
+                           // Boundary check
+                           const rect = menu.getBoundingClientRect();
+                           if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
+                           if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
+                       }
 
-                      // Direct Link
-                      const directUrl = window.fm_root_url + (path ? '/' + path : '') + '/' + name + (type === 'folder' ? '/' : '');
-                      $('#cm-link').attr('href', directUrl).attr('target', '_blank');
+                       function hideMenu(){ menu.style.display = 'none'; currentTarget = null; }
 
-                      // Rename
-                      $('#cm-rename').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           rename(path, name);
-                      });
+                       document.addEventListener('click', e => { if (!e.target.closest('#fm-context-menu')) hideMenu(); });
+                       document.addEventListener('contextmenu', e => {
+                           const target = $(e.target);
+                           if (target.closest('input, textarea, select, [contenteditable="true"], .modal, .swal2-container').length) return;
+                           e.preventDefault();
+                           const el = e.target.closest('[data-type]');
+                           if (el) showMenu(e.clientX, e.clientY, el); else hideMenu();
+                       });
 
-                      // Copy
-                      const copyLink = '?p=' + encodeURIComponent(path) + '&duplicate=' + encodeURIComponent(name) + '&token=' + window.csrf;
-                      $('#cm-copy').attr('href', copyLink);
-                      $('#cm-copy').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           confirmDailog(evt, 1029, '<?php echo lng("Copy"); ?>', name, copyLink);
-                      });
+                       document.addEventListener('click', e => {
+                           const trigger = e.target.closest('.context-menu-trigger');
+                           if (!trigger) return;
+                           e.preventDefault(); e.stopPropagation();
+                           const el = trigger.closest('[data-type]');
+                           if (el) {
+                               const rect = trigger.getBoundingClientRect();
+                               showMenu(rect.left - 150, rect.bottom + 6, el);
+                           }
+                       });
 
-                      // Move
-                      $('#cm-move').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           move(path, name);
-                      });
+                        menu.addEventListener('click', function(e) {
+                           const act = e.target.closest('.fm-cm-item')?.dataset?.act;
+                           if (!act || !currentTarget) return;
+                           
+                           const type = currentTarget.getAttribute('data-type');
+                           const name = currentTarget.getAttribute('data-name');
+                           const path = currentTarget.getAttribute('data-path') || '';
+                           const url = currentTarget.getAttribute('data-url') || '';
+                           const ext = (currentTarget.getAttribute('data-ext') || '').toLowerCase();
+                           
+                           hideMenu();
+                           
+                           if (act === 'open') {
+                               window.location.href = url;
+                           } else if (act === 'preview') {
+                               if (typeof preview_file === 'function') preview_file(url, ext, name);
+                           } else if (act === 'download') {
+                               window.location.href = '?p='+encodeURIComponent(path)+'&dl='+encodeURIComponent(name);
+                           } else if (act === 'link') {
+                               const directUrl = window.location.origin + window.location.pathname.replace('filemanager.php', '') + (path ? path + '/' : '') + name;
+                               if (navigator.clipboard) navigator.clipboard.writeText(directUrl).then(() => { if (window.showToast) window.showToast('Copied!'); else window.showToast('Copied to clipboard'); });
+                               else window.open(directUrl, '_blank');
+                           } else if (act === 'create-file') { openCreateModal('file'); }
+                           else if (act === 'create-folder') { openCreateModal('folder'); }
+                           else if (act === 'rename') {
+                               if (typeof rename === 'function') rename(null, name);
+                           } else if (act === 'copy') {
+                               const copyLink = '?p=' + encodeURIComponent(path) + '&duplicate=' + encodeURIComponent(name) + '&token=' + window.csrf;
+                               if (typeof confirmDailog === 'function') confirmDailog(e, 1029, 'Copy', name, copyLink);
+                           } else if (act === 'move') {
+                               if (typeof move === 'function') move(null, name);
+                           } else if (act === 'extract') {
+                               if (typeof extract === 'function') extract(path, name);
+                           } else if (act === 'delete') {
+                               const delLink = '?p=' + encodeURIComponent(path) + '&del=' + encodeURIComponent(name);
+                               if (typeof confirmDailog === 'function') confirmDailog(e, 888, 'Delete', name, delLink);
+                           }
+                       });
+                   }
 
-                      // Download
-                      const dlLink = '?p=' + encodeURIComponent(path) + '&dl=' + encodeURIComponent(name);
-                      $('#cm-download').attr('href', dlLink);
-                      $('#cm-download').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           confirmDailog(evt, 1211, '<?php echo lng("Download"); ?>', name, dlLink);
-                      });
+                   function enableDragDrop() {
+                       const rows = document.querySelectorAll('tr[data-type], .grid-item[data-type]');
+                       rows.forEach(r => {
+                           r.setAttribute('draggable', 'true');
+                           r.addEventListener('dragstart', function(ev) {
+                               ev.dataTransfer.setData('application/json', JSON.stringify({ name: this.dataset.name, type: this.dataset.type, path: this.dataset.path }));
+                               this.classList.add('fm-dragging');
+                           });
+                           r.addEventListener('dragend', function() { this.classList.remove('fm-dragging'); });
+                       });
 
-                      // Delete
-                      const delLink = '?p=' + encodeURIComponent(path) + '&del=' + encodeURIComponent(name);
-                      $('#cm-delete').attr('href', delLink);
-                      $('#cm-delete').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           confirmDailog(evt, 1028, '<?php echo lng("Delete"); ?>', name, delLink);
-                      });
+                       const targets = document.querySelectorAll('[data-type="folder"]');
+                       targets.forEach(t => {
+                           t.addEventListener('dragover', function(ev) { ev.preventDefault(); this.classList.add('fm-drop-target'); });
+                           t.addEventListener('dragleave', function() { this.classList.remove('fm-drop-target'); });
+                           t.addEventListener('drop', function(ev) {
+                               ev.preventDefault(); this.classList.remove('fm-drop-target');
+                               const files = ev.dataTransfer.files;
+                               const dest = (this.dataset.path ? this.dataset.path + '/' : '') + this.dataset.name;
+                               if (files.length) {
+                                   Array.from(files).forEach(file => {
+                                       const fd = new FormData();
+                                       fd.append('file', file); fd.append('fullpath', dest + '/' + file.name); fd.append('token', window.csrf);
+                                       fetch(window.location.pathname + '?p='+encodeURIComponent('<?php echo FM_PATH; ?>'), { method: 'POST', body: fd });
+                                   });
+                                   setTimeout(() => location.reload(), 1200);
+                               } else {
+                                   let payload = ev.dataTransfer.getData('application/json');
+                                   if (payload) {
+                                       payload = JSON.parse(payload);
+                                       if (typeof moveItemAjax === 'function') moveItemAjax(payload.name, dest, window.csrf, (s) => { if(s) location.reload(); });
+                                   }
+                               }
+                           });
+                       });
+                   }
 
-                      // Extract Archive
-                      $('#cm-extract').off('click').on('click', function(evt) {
-                           evt.preventDefault();
-                           extract(path, name);
-                      });
+                   initContextMenu();
+                   enableDragDrop();
+               });
 
-                      // Position
-                      let top, left;
-                      if (e && e.type === 'contextmenu') {
-                          top = e.pageY;
-                          left = e.pageX;
-                      } else {
-                          // Triggered by click on ellipsis (element is the trigger button or icon)
-                          const btn = $(element).closest('.context-menu-trigger');
-                          if (btn.length) {
-                              const rect = btn.offset();
-                              top = rect.top + 25;
-                              left = rect.left - 150;
-                          } else {
-                              top = 100; left = 100;
-                          }
-                      }
-                      
-                      // Boundary check
-                      if(left < 0) left = 10;
-                      
-                      $contextMenu.css({
-                          top: top + 'px',
-                          left: left + 'px'
-                      }).fadeIn(100);
-                  }
 
-                  function showBodyContextMenu(e) {
-                      hideAllContextMenus();
-                      const target = $(e.target);
-
-                      // allow native menu inside inputs, editor areas, modals, and context menus themselves
-                      if (
-                          target.closest('input, textarea, select, [contenteditable="true"], .editor-textarea, .modal, .swal2-container, #context-menu, #body-context-menu').length
-                      ) {
-                          return;
-                      }
-
-                      // only trigger within main wrapper area
-                      if (!$wrapper.length || (!target.closest('#wrapper').length && !$wrapper.is(target))) {
-                          return;
-                      }
-
-                      e.preventDefault();
-
-                      const viewportWidth = $(window).width();
-                      const viewportHeight = $(window).height();
-                      let left = e.pageX;
-                      let top = e.pageY;
-
-                      const menuWidth = $bodyContextMenu.outerWidth();
-                      const menuHeight = $bodyContextMenu.outerHeight();
-
-                      if (left + menuWidth > viewportWidth) {
-                          left = viewportWidth - menuWidth - 10;
-                      }
-                      if (top + menuHeight > viewportHeight + $(window).scrollTop()) {
-                          top = viewportHeight + $(window).scrollTop() - menuHeight - 10;
-                      }
-
-                      $bodyContextMenu.css({
-                          top: top + 'px',
-                          left: Math.max(left, 10) + 'px'
-                      }).fadeIn(100);
-                  }
-
-                  // Hide menu on click elsewhere
-                  $(document).on('click', function(e) {
-                      if (!$(e.target).closest('.context-menu').length) {
-                          hideAllContextMenus();
-                      }
-                  });
-
-                  $(window).on('scroll resize', hideAllContextMenus);
-
-                  // Right click handler
-                  $(document).on('contextmenu', 'tr[data-type], .grid-item[data-type]', function(e) {
-                      e.preventDefault();
-                      showContextMenu(e, this);
-                  });
-                  
-                  // Ellipsis click handler
-                  $(document).on('click', '.context-menu-trigger', function(e) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      showContextMenu(null, this);
-                  });
-
-                  // Body/background context menu
-                  $(document).on('contextmenu', function(e) {
-                      if (
-                          $(e.target).closest('tr[data-type], .grid-item[data-type], .context-menu-trigger').length
-                      ) {
-                          return;
-                      }
-                      showBodyContextMenu(e);
-                  });
-
-                  function openCreateModal(type) {
-                      const selector = '#createNewItem input[name="newfile"][value="' + type + '"]';
-                      $(selector).prop('checked', true);
-                      $('#createNewItem').modal('show');
-                      setTimeout(function() {
-                          $('#newfilename').trigger('focus');
-                      }, 200);
-                  }
-
-                  $('#body-context-new-file').on('click', function(e) {
-                      e.preventDefault();
-                      hideAllContextMenus();
-                      openCreateModal('file');
-                  });
-
-                  $('#body-context-new-folder').on('click', function(e) {
-                      e.preventDefault();
-                      hideAllContextMenus();
-                      openCreateModal('folder');
-                  });
-              });
 
               function rename(e, t) {
                   if (t) {
