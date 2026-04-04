@@ -4753,7 +4753,7 @@ function fm_foldersize($path) {
                        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
                    }
 
-                   // Initial save of current path
+                   // Initial save
                    saveToHistory('<?php echo addslashes(FM_PATH); ?>');
 
                    window.showPathEditor = function() {
@@ -4761,33 +4761,28 @@ function fm_foldersize($path) {
                        if (!breadcrumbDiv.length) return;
                        
                        const currentPath = '<?php echo addslashes(FM_PATH); ?>';
-                       const offset = breadcrumbDiv.offset();
-                       const width = breadcrumbDiv.outerWidth();
-                       const height = breadcrumbDiv.outerHeight();
+                       const rect = breadcrumbDiv[0].getBoundingClientRect();
                        
-                       // Remove existing if any
                        $('#path-editor-wrapper').remove();
 
-                       // Create wrapper for input + dropdown
-                       const wrapper = $('<div id="path-editor-wrapper" style="position: absolute !important; z-index: 1000000; box-sizing: border-box;"></div>');
+                       // Wrapper - FIXED to follow viewport
+                       const wrapper = $('<div id="path-editor-wrapper" style="position: fixed !important; z-index: 1000000; box-sizing: border-box;"></div>');
                        wrapper.css({
-                           top: offset.top + 'px',
-                           left: offset.left + 'px',
-                           width: width + 'px'
+                           top: rect.top + 'px',
+                           left: rect.left + 'px',
+                           width: rect.width + 'px'
                        });
 
-                       // Flex container for input and history toggle
-                       const inputGroup = $('<div style="display: flex; height: '+height+'px; border: 2px solid #007bff; border-radius: 6px; overflow: hidden; background: #222; box-shadow: 0 4px 15px rgba(0,0,0,0.5);"></div>');
+                       const inputGroup = $('<div style="display: flex; height: '+rect.height+'px; border: 2px solid #007bff; border-radius: 6px; overflow: hidden; background: #222; box-shadow: 0 4px 15px rgba(0,0,0,0.5);"></div>');
                        
                        const input = $('<input type="text" id="path-editor-input" class="form-control" style="flex: 1; border: none !important; background: transparent !important; color: #fff !important; padding: 0 12px; font-family: monospace; font-size: 0.9rem; height: 100%;">');
                        input.val(currentPath);
 
-                       const historyBtn = $('<button type="button" style="width: 32px; background: #333; border: none; border-left: 1px solid #444; color: #888; cursor: pointer;"><i class="fa fa-chevron-down" style="font-size: 10px;"></i></button>');
+                       const historyBtn = $('<button type="button" id="path-history-toggle" style="width: 32px; background: #333; border: none; border-left: 1px solid #444; color: #888; cursor: pointer;"><i class="fa fa-chevron-down" style="font-size: 10px;"></i></button>');
                        
                        inputGroup.append(input).append(historyBtn);
                        wrapper.append(inputGroup);
 
-                       // Suggestions/History Dropdown
                        const dropdown = $('<div id="path-dropdown" style="display: none; background: #1a1a1a; border: 1px solid #333; border-radius: 0 0 6px 6px; border-top: none; max-height: 300px; overflow-y: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5);"></div>');
                        wrapper.append(dropdown);
 
@@ -4807,7 +4802,8 @@ function fm_foldersize($path) {
                                const text = typeof item === 'string' ? item : item.path;
                                const el = $('<div class="dropdown-item" style="padding: 8px 12px; cursor: pointer; color: #ccc; font-size: 0.85rem; border-bottom: 1px solid #222; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>');
                                el.html((isHistory ? '<i class="fa fa-history text-muted me-2" style="font-size: 10px;"></i>' : '<i class="fa fa-folder text-primary me-2" style="font-size: 10px;"></i>') + text);
-                               el.on('mousedown', function() {
+                               el.on('mousedown', function(e) {
+                                   e.preventDefault();
                                    input.val(text);
                                    navigate(text);
                                });
@@ -4826,16 +4822,10 @@ function fm_foldersize($path) {
                            const parts = val.split('/');
                            const lastPart = parts.pop();
                            const parentPath = parts.join('/');
-                           
                            $.ajax({
                                type: "POST",
                                url: window.location.href,
-                               data: {
-                                   ajax: true,
-                                   type: 'get_folders',
-                                   path: parentPath,
-                                   token: window.csrf
-                               },
+                               data: { ajax: true, type: 'get_folders', path: parentPath, token: window.csrf },
                                success: function(data) {
                                    try {
                                        const folders = JSON.parse(data);
@@ -4848,11 +4838,8 @@ function fm_foldersize($path) {
 
                        input.on('input', function() {
                            const val = $(this).val();
-                           if (val.length > 0) {
-                               fetchSuggestions(val);
-                           } else {
-                               updateDropdown([]);
-                           }
+                           if (val.length > 0) fetchSuggestions(val);
+                           else updateDropdown([]);
                        });
 
                        input.on('keydown', function(e) {
@@ -4861,35 +4848,39 @@ function fm_foldersize($path) {
                                e.preventDefault();
                                selectedIndex = (selectedIndex + 1) % items.length;
                                items.css('background', 'transparent');
-                               $(items[selectedIndex]).css('background', '#333').focus();
+                               $(items[selectedIndex]).css('background', '#333');
                            } else if (e.key === 'ArrowUp') {
                                e.preventDefault();
                                selectedIndex = (selectedIndex - 1 + items.length) % items.length;
                                items.css('background', 'transparent');
-                               $(items[selectedIndex]).css('background', '#333').focus();
+                               $(items[selectedIndex]).css('background', '#333');
                            } else if (e.key === 'Enter') {
-                               if (selectedIndex >= 0) {
-                                   const selectedText = $(items[selectedIndex]).text().trim();
-                                   navigate(selectedText);
-                               } else {
-                                   navigate($(this).val().trim());
-                               }
+                               if (selectedIndex >= 0) navigate($(items[selectedIndex]).text().trim());
+                               else navigate($(this).val().trim());
                            } else if (e.key === 'Escape') {
                                wrapper.remove();
                            }
                        });
 
-                       historyBtn.on('click', function() {
-                           const history = getHistory();
-                           updateDropdown(history, true);
+                       historyBtn.on('click', function(e) {
+                           e.stopPropagation();
+                           if (dropdown.is(':visible')) dropdown.hide();
+                           else {
+                               const history = getHistory();
+                               updateDropdown(history, true);
+                           }
                            input.focus();
                        });
 
-                       // Close on outside click
                        $(document).one('mousedown', function(e) {
                            if (!$(e.target).closest('#path-editor-wrapper').length) {
                                wrapper.remove();
                            }
+                       });
+
+                       // Close on scroll to prevent misalignment if navbar isn't perfectly fixed
+                       $(window).one('scroll', function() {
+                           wrapper.remove();
                        });
                    };
 
