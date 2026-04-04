@@ -480,6 +480,12 @@ if ($current_page === 'index.php') {
         </div>
     </div>
 
+    <?php if ($updateAlert): ?>
+    <div style="background: rgba(239, 68, 68, 0.1); color: #f87171; padding: 1rem; margin: 1rem 2rem; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.2); text-align: center;">
+        <i class="fas fa-exclamation-triangle"></i> <?= htmlspecialchars($updateAlert) ?>
+    </div>
+    <?php endif; ?>
+
     <?php if (isset($_SESSION['must_change_password']) && $_SESSION['must_change_password'] == 1): ?>
     <script>
         document.getElementById('pwdModal').style.display = 'flex';
@@ -492,6 +498,13 @@ if ($current_page === 'index.php') {
         window.history.replaceState({}, document.title, window.location.pathname);
     </script>
     <?php endif; ?>
+
+    <?php if (isset($_GET['updated']) && isset($_SESSION['update_msg'])): ?>
+    <script>
+        alert('<?= addslashes($_SESSION['update_msg']) ?>');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    </script>
+    <?php unset($_SESSION['update_msg']); endif; ?>
 </body>
 </html>
 <?php 
