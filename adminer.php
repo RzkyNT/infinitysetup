@@ -12094,26 +12094,154 @@ function readFileContent(file) {
 
                 </div>
 
-                <div style="display:grid; grid-template-columns: 1fr; gap:20px; margin-bottom:20px;">
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap:20px; margin-bottom:20px;">
                     <!-- Recent Tables -->
                     <div class="card" style="margin-bottom:0;">
-                        <h3><i class="fas fa-history"></i> Recently Modified</h3>
+                        <h3><i class="fas fa-history"></i> Recently Modified Tables</h3>
                         <?php
                             try {
-                                $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 10");
-                                $recentTables = $recentStmt->fetchAll();
+                                if ($dbMode === 'sql' && isset($pdo)) {
+                                    $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 8");
+                                    $recentTables = $recentStmt->fetchAll();
+                                } else {
+                                    $recentTables = []; // SQLite/JSON don't support UPDATE_TIME easily
+                                }
                             } catch (Exception $e) { $recentTables = []; }
                         ?>
-                        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap:10px;">
+                        <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
                             <?php if ($recentTables): foreach ($recentTables as $rt): ?>
-                                <div style="padding:10px; border:1px solid var(--border-color); border-radius:6px; display:flex; justify-content:space-between; align-items:center; background:var(--bg-hover);">
-                                    <a href="?table=<?=htmlspecialchars($rt['TABLE_NAME'])?>" style="color:var(--text-primary); text-decoration:none; display:flex; align-items:center; gap:8px;">
-                                        <i class="fas fa-table" style="color:var(--text-secondary);"></i> <?=htmlspecialchars($rt['TABLE_NAME'])?>
-                                    </a>
-                                    <small style="color:var(--text-secondary);"><?= date('M d H:i', strtotime($rt['UPDATE_TIME'])) ?></small>
+                                <div style="padding:10px 12px; border:1px solid var(--border-color); border-radius:8px; display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.02); transition:0.2s; cursor:pointer;" onclick="location.href='?table=<?=urlencode($rt['TABLE_NAME'])?>'">
+                                    <div style="display:flex; align-items:center; gap:10px;">
+                                        <div style="width:32px; height:32px; border-radius:6px; background:rgba(13,110,253,0.1); color:var(--accent); display:flex; align-items:center; justify-content:center;">
+                                            <i class="fas fa-table" style="font-size:0.9rem;"></i>
+                                        </div>
+                                        <span style="font-weight:500; font-size:0.9rem;"><?=htmlspecialchars($rt['TABLE_NAME'])?></span>
+                                    </div>
+                                    <small style="color:var(--text-secondary); background:rgba(0,0,0,0.2); padding:2px 8px; border-radius:12px; font-size:0.75rem;"><?= date('H:i, d M', strtotime($rt['UPDATE_TIME'])) ?></small>
                                 </div>
                             <?php endforeach; else: ?>
-                                <div style="padding:10px; color:var(--text-secondary);">No recent activity recorded.</li>
+                                <div style="padding:30px; color:var(--text-secondary); text-align:center; border:1px dashed #444; border-radius:8px;">
+                                    <i class="fas fa-info-circle" style="display:block; font-size:1.5rem; margin-bottom:10px; opacity:0.5;"></i>
+                                    No recent table modifications.
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <!-- Recent Data Activity -->
+                    <div class="card" style="margin-bottom:0;">
+                        <h3><i class="fas fa-bolt"></i> Recent Records Activity</h3>
+                        <?php
+                        $recentActivity = [];
+                        if (isset($pdo)) {
+                            try {
+                                // 1. Determine which tables to scan for recent records
+                                // We take the top 5 tables that were modified (SQL) or just first 5 (any)
+                                $tablesToScan = [];
+                                if ($dbMode === 'sql') {
+                                    $scanStmt = $pdo->query("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 4");
+                                    $tablesToScan = $scanStmt->fetchAll(PDO::FETCH_COLUMN);
+                                }
+                                
+                                // Supplement or fallback if no meta or not sql
+                                if (empty($tablesToScan) && !empty($tables)) {
+                                    $tablesToScan = array_slice(array_column($tables, 'Name'), 0, 4);
+                                }
+
+                                foreach ($tablesToScan as $curT) {
+                                    // Try to find a sortable column (id or timestamp-like)
+                                    $sortCol = 'id';
+                                    $sortType = 'id';
+                                    try {
+                                        if ($dbMode === 'sql') {
+                                            $colsStmt = $pdo->query("DESCRIBE `$curT` ");
+                                            $colsInfo = $colsStmt->fetchAll();
+                                            $colNames = array_column($colsInfo, 'Field');
+                                            
+                                            if (in_array('updated_at', $colNames)) { $sortCol = 'updated_at'; $sortType = 'time'; }
+                                            elseif (in_array('created_at', $colNames)) { $sortCol = 'created_at'; $sortType = 'time'; }
+                                            elseif (in_array('timestamp', $colNames)) { $sortCol = 'timestamp'; $sortType = 'time'; }
+                                            elseif (in_array('date', $colNames)) { $sortCol = 'date'; $sortType = 'time'; }
+                                            else {
+                                                // Look for PK
+                                                foreach($colsInfo as $c) if($c['Key'] === 'PRI') $sortCol = $c['Field'];
+                                            }
+                                        } else {
+                                            $colsStmt = $pdo->query("PRAGMA table_info(`$curT`)");
+                                            $colsInfo = $colsStmt->fetchAll();
+                                            foreach($colsInfo as $c) {
+                                                if ($c['pk']) $sortCol = $c['name'];
+                                                if (in_array($c['name'], ['updated_at', 'created_at', 'timestamp', 'date'])) {
+                                                    $sortCol = $c['name'];
+                                                    $sortType = 'time';
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        $dataStmt = $pdo->query("SELECT * FROM `$curT` ORDER BY `$sortCol` DESC LIMIT 3");
+                                        while ($r = $dataStmt->fetch(PDO::FETCH_ASSOC)) {
+                                            $pk = 'id'; // Default pk fallback
+                                            $activityItem = [
+                                                'table' => $curT,
+                                                'id' => $r['id'] ?? reset($r),
+                                                'summary' => '',
+                                                'time_label' => $r[$sortCol] ?? 'N/A',
+                                                'sort_val' => $r[$sortCol] ?? 0
+                                            ];
+                                            
+                                            // Create a small summary (skip ID, show next 2 meaningful cols)
+                                            $summaryParts = [];
+                                            $count = 0;
+                                            foreach ($r as $key => $val) {
+                                                if (in_array($key, ['id', 'password', 'token', 'secret', 'updated_at', 'created_at'])) continue;
+                                                if ($val === null || $val === '') continue;
+                                                $summaryParts[] = '<b>' . htmlspecialchars($key) . ':</b> ' . htmlspecialchars(mb_substr($val, 0, 30));
+                                                if (++$count >= 2) break;
+                                            }
+                                            $activityItem['summary'] = implode(' | ', $summaryParts);
+                                            $recentActivity[] = $activityItem;
+                                        }
+                                    } catch (Exception $e) {}
+                                }
+
+                                // Global sort by time/id
+                                usort($recentActivity, function($a, $b) { 
+                                    return $b['sort_val'] <=> $a['sort_val'];
+                                });
+                                $recentActivity = array_slice($recentActivity, 0, 10);
+                            } catch (Exception $e) {}
+                        }
+                        ?>
+                        <div class="activity-feed" style="display:flex; flex-direction:column; gap:10px;">
+                            <?php if ($recentActivity): foreach($recentActivity as $act): ?>
+                                <div style="display:flex; gap:12px; padding:12px; background:rgba(255,255,255,0.03); border-radius:10px; border:1px solid var(--border-color); position:relative; overflow:hidden;">
+                                    <div style="width:3px; height:60%; background:var(--accent); position:absolute; left:0; top:20%; border-radius:0 2px 2px 0;"></div>
+                                    <div style="flex:1;">
+                                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:5px;">
+                                            <a href="?table=<?=urlencode($act['table'])?>&view=data" style="text-decoration:none;">
+                                                <span class="badge" style="background:rgba(255,255,255,0.05); color:var(--accent); border:1px solid rgba(255,255,255,0.1); font-size:0.7rem; font-weight:bold; padding:2px 8px; border-radius:4px;">
+                                                    <i class="fas fa-database" style="font-size:0.6rem; margin-right:4px;"></i> <?=htmlspecialchars($act['table'])?>
+                                                </span>
+                                            </a>
+                                            <small style="color:var(--text-secondary); font-size:0.7rem;"><i class="far fa-clock"></i> <?= is_numeric($act['time_label']) ? date('H:i', $act['time_label']) : htmlspecialchars($act['time_label']) ?></small>
+                                        </div>
+                                        <div style="font-size:0.85rem; color:var(--text-primary); margin-bottom:2px; line-height:1.4;">
+                                            <?= $act['summary'] ?: '<span style="color:var(--text-secondary); font-style:italic;">No descriptive data fields</span>' ?>
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; align-items:center;">
+                                        <a href="?table=<?=urlencode($act['table'])?>&view=data&search_col=id&search_val=<?=urlencode($act['id']??'')?>" class="btn btn-sm" style="background:rgba(255,255,255,0.05); border:1px solid #333; padding:4px; height:28px; width:28px; display:flex; align-items:center; justify-content:center; border-radius:50%;" title="View Record">
+                                            <i class="fas fa-eye" style="font-size:0.75rem;"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                            <?php endforeach; else: ?>
+                                <div style="text-align:center; padding:40px 20px; color:var(--text-secondary);">
+                                    <i class="fas fa-stream fa-2x" style="opacity:0.3; margin-bottom:15px; display:block;"></i>
+                                    No recent record activity detected. 
+                                    <p style="font-size:0.8rem; margin-top:10px;">Tracking relies on <code>id</code>, <code>created_at</code>, or <code>updated_at</code> columns.</p>
+                                </div>
                             <?php endif; ?>
                         </div>
                     </div>
