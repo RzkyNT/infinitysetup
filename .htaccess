@@ -1,0 +1,11 @@
+# Prevent direct access to SQLite and JSON files
+<FilesMatch "\.(sqlite|db|json|bak)$">
+    Order deny,allow
+    Deny from all
+</FilesMatch>
+
+# Prevent access to .htaccess itself
+<Files .htaccess>
+    Order allow,deny
+    Deny from all
+</Files>

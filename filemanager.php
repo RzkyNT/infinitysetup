@@ -1,7 +1,17 @@
-﻿<?php
+<?php
+require_once __DIR__ . '/index.php';
+
+// RBAC Check for FileManager
+if (!has_permission('filemanager', 'read')) {
+    die("<div style='background:#1e293b; color:#f87171; padding:2rem; text-align:center; height:100vh; font-family:Inter, sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center;'>
+            <i class='fas fa-lock' style='font-size:4rem; margin-bottom:1rem;'></i>
+            <h1 style='margin:0'>Access Denied</h1>
+            <p style='color:#94a3b8'>You do not have permission to access File Manager.</p>
+            <a href='?logout=1' style='color:#6366f1; text-decoration:none; margin-top:1rem; font-weight:600'>Switch Account</a>
+         </div>");
+}
+
 ob_start(); // Start output buffering to prevent "headers already sent" errors
-//Default Configuration
-$CONFIG = '{"lang":"en","error_reporting":true,"show_hidden":true,"hide_Cols":true,"theme":"dark","show_disk_usage":true}';
 
   /**
    * H3K ~ RFILE Manager V2.6
@@ -18,10 +28,12 @@ $CONFIG = '{"lang":"en","error_reporting":true,"show_hidden":true,"hide_Cols":tr
 
   // --- EDIT BELOW CONFIGURATION CAREFULLY ---
 
+  $CONFIG = '{"lang":"en","error_reporting":false,"show_hidden":false,"hide_Cols":false}';
+
   // Auth with login/password
   // set true/false to enable/disable it
   // Is independent from IP white- and blacklisting
-  $use_auth = true;
+  $use_auth = false;
 
   // Login user name and password
   // Users: array('Username' => 'Password', 'Username2' => 'Password2', ...)
@@ -249,11 +261,11 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           if ($code == 2) {
               session_abort();
               session_id(session_create_id());
-              @session_start();
+              if (session_status() === PHP_SESSION_NONE) @session_start();
           }
       }
       set_error_handler('session_error_handling_function');
-      session_start();
+      if (session_status() === PHP_SESSION_NONE) session_start();
       restore_error_handler();
 
       // SSO Logic from Portal
@@ -413,14 +425,18 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       exit;
   }
 
-  defined('FM_SHOW_HIDDEN') || define('FM_SHOW_HIDDEN', $show_hidden_files);
-  defined('FM_ROOT_PATH') || define('FM_ROOT_PATH', $root_path);
-  defined('FM_LANG') || define('FM_LANG', $lang);
-  defined('FM_FILE_EXTENSION') || define('FM_FILE_EXTENSION', $allowed_file_extensions);
-  defined('FM_UPLOAD_EXTENSION') || define('FM_UPLOAD_EXTENSION', $allowed_upload_extensions);
-  defined('FM_EXCLUDE_ITEMS') || define('FM_EXCLUDE_ITEMS', (version_compare(PHP_VERSION, '7.0.0', '<') ? serialize($exclude_items) : $exclude_items));
-  defined('FM_DOC_VIEWER') || define('FM_DOC_VIEWER', $online_viewer);
-  define('FM_READONLY', $global_readonly || ($use_auth && !empty($readonly_users) && isset($_SESSION[FM_SESSION_ID]['logged']) && in_array($_SESSION[FM_SESSION_ID]['logged'], $readonly_users)));
+  define('FM_SHOW_HIDDEN', $show_hidden_files);
+  define('FM_ROOT_PATH', $root_path);
+  define('FM_LANG', $lang);
+  define('FM_FILE_EXTENSION', $allowed_file_extensions);
+  define('FM_UPLOAD_EXTENSION', $allowed_upload_extensions);
+  define('FM_EXCLUDE_ITEMS', (version_compare(PHP_VERSION, '7.0.0', '<') ? serialize($exclude_items) : $exclude_items));
+  define('FM_DOC_VIEWER', $online_viewer);
+  
+  // RBAC Integration for ReadOnly
+  $fm_is_readonly = !has_permission('filemanager', 'write');
+  define('FM_READONLY', $fm_is_readonly);
+  
   define('FM_IS_WIN', DIRECTORY_SEPARATOR == '\\');
 
   // always use ?p=
@@ -5006,16 +5022,14 @@ function fm_foldersize($path) {
                                   <a title="<?php echo lng('Logout') ?>" class="dropdown-item nav-link" href="?logout=1"><i class="fa fa-sign-out" aria-hidden="true"></i> <?php echo lng('Logout') ?></a>
                               </div>
                           </li>
-                      <?php else: ?>
-                          <?php if (!FM_READONLY): ?>
-                              <li class="nav-item">
-                                  <a title="Git FTP" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;git_ftp=1"><i class="fa fa-git" aria-hidden="true"></i> Git FTP</a>
-                              </li>
-                              <li class="nav-item">
-                                  <a title="<?php echo lng('Settings') ?>" class="dropdown-item nav-link" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;settings=1"><i class="fa fa-cog" aria-hidden="true"></i> <?php echo lng('Settings') ?></a>
-                              </li>
-                          <?php endif; ?>
                       <?php endif; ?>
+                      <li class="nav-item d-flex align-items-center ms-2" style="color:rgba(255,255,255,0.6); font-size:0.85rem;">
+                          <span class="d-none d-md-inline" style="margin-right: 1rem;">
+                              <i class="fa fa-user-circle"></i> 
+                              <?php echo htmlspecialchars($_SESSION['username'] ?? 'Guest'); ?> 
+                              (<?php echo ucfirst($_SESSION['role'] ?? 'guest'); ?>)
+                          </span>
+                      </li>
                   </ul>
               </div>
           </div>

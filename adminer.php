@@ -1,8 +1,17 @@
 <?php
+require_once __DIR__ . '/index.php';
+
+// RBAC Check for Adminer
+if (!has_permission('adminer', 'read')) {
+    die("<div style='background:#1e293b; color:#f87171; padding:2rem; text-align:center; height:100vh; font-family:Inter, sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center;'>
+            <i class='fas fa-lock' style='font-size:4rem; margin-bottom:1rem;'></i>
+            <h1 style='margin:0'>Access Denied</h1>
+            <p style='color:#94a3b8'>You do not have permission to access Adminer.</p>
+            <a href='?logout=1' style='color:#6366f1; text-decoration:none; margin-top:1rem; font-weight:600'>Switch Account</a>
+         </div>");
+}
+
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
-session_start();
-ob_start();
 /**
  * JsonDatabase - A simple JSON-based database system
  * Provides SQL-like operations on JSON files
@@ -713,7 +722,7 @@ if (isset($_GET['api']) && $_GET['api'] === 'generate_md5') {
 }
 
 // ... kode function get_asset_url dan seterusnya tetap ada di bawah sini ...
-$configFile = __DIR__ . '/adminer.config.json';
+$configFile = __DIR__ . '/adminer.sqlite';
 function get_asset_url($localPath, $cdnUrl) {
     if (file_exists(__DIR__ . '/' . $localPath)) {
         return $localPath;
@@ -721,8 +730,43 @@ function get_asset_url($localPath, $cdnUrl) {
     return $cdnUrl;
 }
 
+function get_db_handle($path) {
+    static $dbs = [];
+    if (!isset($dbs[$path])) {
+        $exists = file_exists($path);
+        $dbs[$path] = new PDO("sqlite:$path");
+        $dbs[$path]->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        if (!$exists) {
+            $dbs[$path]->exec("CREATE TABLE settings (key_name TEXT PRIMARY KEY, value_data TEXT)");
+            $dbs[$path]->exec("CREATE TABLE backup_history (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date INTEGER, file_id TEXT, message_id INTEGER, tag TEXT, size INTEGER)");
+        }
+    }
+    return $dbs[$path];
+}
+
 function load_config($path)
 {
+    if (strpos($path, '.sqlite') !== false) {
+        try {
+            $db = get_db_handle($path);
+            $res = $db->query("SELECT key_name, value_data FROM settings");
+            $data = [];
+            while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
+                $val = json_decode($row['value_data'], true);
+                $data[$row['key_name']] = (json_last_error() === JSON_ERROR_NONE) ? $val : $row['value_data'];
+            }
+            
+            // Re-merge history into telegram array for compatibility
+            $res = $db->query("SELECT * FROM backup_history ORDER BY date DESC");
+            if (!isset($data['telegram'])) $data['telegram'] = [];
+            $data['telegram']['history'] = $res->fetchAll(PDO::FETCH_ASSOC);
+            
+            return array_merge(['host' => '', 'user' => '', 'pass' => '', 'databases' => []], $data);
+        } catch (Exception $e) {
+            return ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
+        }
+    }
+
     if (!file_exists($path)) {
         return ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
     }
@@ -739,9 +783,49 @@ function load_config($path)
 
 function save_config($path, $data)
 {
+    if (strpos($path, '.sqlite') !== false) {
+        try {
+            $db = get_db_handle($path);
+            $db->beginTransaction();
+            
+            $existing = load_config($path);
+            $new = array_merge($existing, $data);
+            
+            // Ensure databases is always an array unique
+            if (isset($new['databases']) && is_array($new['databases'])) {
+                $new['databases'] = array_values(array_unique($new['databases']));
+            }
+            
+            // Sync history separately if it exists in the data
+            if (isset($data['telegram']['history'])) {
+                $db->exec("DELETE FROM backup_history");
+                $stmt = $db->prepare("INSERT INTO backup_history (name, date, file_id, message_id, tag, size) VALUES (?, ?, ?, ?, ?, ?)");
+                foreach ($data['telegram']['history'] as $h) {
+                    $stmt->execute([
+                        $h['name'] ?? '', $h['date'] ?? 0, $h['file_id'] ?? '',
+                        $h['message_id'] ?? 0, $h['tag'] ?? '', $h['size'] ?? 0
+                    ]);
+                }
+                unset($new['telegram']['history']);
+            }
+
+            // Sync other settings
+            $stmt = $db->prepare("INSERT OR REPLACE INTO settings (key_name, value_data) VALUES (?, ?)");
+            foreach ($new as $key => $value) {
+                if ($key === 'telegram' && isset($value['history'])) unset($value['history']);
+                $stmt->execute([$key, is_array($value) ? json_encode($value) : $value]);
+            }
+            
+            $db->commit();
+            return true;
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            return false;
+        }
+    }
+
     $existing = load_config($path);
     $new = array_merge($existing, $data);
-    // Ensure databases is always an array unique
     if (isset($new['databases']) && is_array($new['databases'])) {
         $new['databases'] = array_values(array_unique($new['databases']));
     } else {
@@ -1013,22 +1097,446 @@ function render_db_setup($defaults = [], $error = '', $success = '')
     exit;
 }
 
-// Migration from old files
+// Migration from legacy JSON config files to SQLite
 if (!file_exists($configFile)) {
-    $oldDbConfig = __DIR__ . '/adminer.db.json';
-    $oldDbList = __DIR__ . '/adminer.databases.json';
-    if (file_exists($oldDbConfig)) {
-        $oldData = json_decode(file_get_contents($oldDbConfig), true) ?? [];
-        $oldList = file_exists($oldDbList) ? (json_decode(file_get_contents($oldDbList), true) ?? []) : [];
-        $migrated = [
-            'host' => $oldData['host'] ?? '',
-            'user' => $oldData['user'] ?? '',
-            'pass' => $oldData['pass'] ?? '',
-            'databases' => $oldList
-        ];
-        file_put_contents($configFile, json_encode($migrated, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    $migrated = ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
+    $hasOldData = false;
+
+    // 1. Migrate from adminer.config.json (main settings)
+    $legacyMain = __DIR__ . '/adminer.config.json';
+    if (file_exists($legacyMain)) {
+        $data = json_decode(file_get_contents($legacyMain), true) ?? [];
+        $migrated = array_merge($migrated, $data);
+        $hasOldData = true;
+    }
+
+    // 2. Migrate from adminer.db.json (DB credentials)
+    $legacyDb = __DIR__ . '/adminer.db.json';
+    if (file_exists($legacyDb)) {
+        $oldData = json_decode(file_get_contents($legacyDb), true) ?? [];
+        $migrated['host'] = $oldData['host'] ?? $migrated['host'];
+        $migrated['user'] = $oldData['user'] ?? $migrated['user'];
+        $migrated['pass'] = $oldData['pass'] ?? $migrated['pass'];
+        $hasOldData = true;
+    }
+
+    // 3. Migrate from adminer.databases.json (DB list)
+    $legacyList = __DIR__ . '/adminer.databases.json';
+    if (file_exists($legacyList)) {
+        $oldList = json_decode(file_get_contents($legacyList), true) ?? [];
+        if (is_array($oldList)) {
+            $migrated['databases'] = array_merge((array)$migrated['databases'], $oldList);
+        }
+        $hasOldData = true;
+    }
+
+    if ($hasOldData) {
+        // Use save_config to correctly create and populate adminer.sqlite
+        // 5. Shared Storage (from migrated structure)
+        save_config($configFile, $migrated);
     }
 }
+
+// Load DB Comparison Library
+
+/**
+ * DB Structure Comparison Library
+ * Extracted from compare_struct.php for integration into Adminer Lite
+ */
+
+function splitByComma($str) {
+    $parts = [];
+    $depth = 0;
+    $inString = false;
+    $stringChar = '';
+    $current = '';
+    $len = strlen($str);
+    for ($i = 0; $i < $len; $i++) {
+        $ch = $str[$i];
+        $prev = $i > 0 ? $str[$i - 1] : '';
+        if ($inString) {
+            $current .= $ch;
+            if ($ch === $stringChar && $prev !== '\\') $inString = false;
+            continue;
+        }
+        if ($ch === "'" || $ch === '"') {
+            $inString = true;
+            $stringChar = $ch;
+            $current .= $ch;
+            continue;
+        }
+        if ($ch === '(') $depth++;
+        elseif ($ch === ')') $depth--;
+        elseif ($ch === ',' && $depth === 0) {
+            $parts[] = trim($current);
+            $current = '';
+            continue;
+        }
+        $current .= $ch;
+    }
+    if (trim($current)) $parts[] = trim($current);
+    return $parts;
+}
+
+function normalizeType($type) {
+    $type = preg_replace('/\b(int|tinyint|smallint|mediumint|bigint)\(\d+\)/i', '$1', $type);
+    $type = preg_replace('/\b(float|double)\(\d+,\d+\)/i', '$1', $type);
+    return strtolower(trim($type));
+}
+
+function normalizeDefault($default, $type) {
+    if ($default === null) return null;
+    $default = trim($default);
+    if (strtoupper($default) === 'NULL') return null;
+    if (preg_match('/^current_timestamp\s*\(\s*\)$/i', $default)) return 'CURRENT_TIMESTAMP';
+    if (preg_match('/^(int|tinyint|smallint|mediumint|bigint|float|double|decimal)/i', $type)) {
+        $unquoted = trim($default, "'");
+        if (is_numeric($unquoted)) return $unquoted;
+    }
+    return $default;
+}
+
+function parseColumn($def) {
+    if (preg_match('/^\s*(PRIMARY\s+KEY|UNIQUE\s+(?:KEY|INDEX)?\s|KEY\s|INDEX\s|CONSTRAINT\s|FOREIGN\s+KEY)/i', $def)) {
+        return null;
+    }
+    if (preg_match('/^`([^`]+)`/', $def, $m)) {
+        $name = $m[1];
+        $rest = substr($def, strlen($m[0]));
+    } elseif (preg_match('/^(\w+)/', $def, $m)) {
+        $name = $m[1];
+        $rest = substr($def, strlen($m[0]));
+    } else {
+        return null;
+    }
+    $rest = trim($rest);
+
+    if (preg_match('/^(\w+(?:\s*\([^)]*\))?)/i', $rest, $m)) {
+        $rawType = trim($m[1]);
+        $rest = trim(substr($rest, strlen($m[0])));
+    } else return null;
+
+    $normType = normalizeType($rawType);
+
+    $unsigned = '';
+    while (preg_match('/^(UNSIGNED|ZEROFILL)\s*/i', $rest, $m)) {
+        $unsigned .= ' ' . strtoupper($m[1]);
+        $rest = trim(substr($rest, strlen($m[0])));
+    }
+    $normType .= $unsigned;
+
+    if (preg_match('/^(?:CHARACTER\s+SET|CHARSET)\s+\S+\s*/i', $rest, $m)) {
+        $rest = trim(substr($rest, strlen($m[0])));
+    }
+
+    $collate = null;
+    if (preg_match('/^COLLATE\s+(\S+)\s*/i', $rest, $m)) {
+        $collate = $m[1];
+        $rest = trim(substr($rest, strlen($m[0])));
+    }
+
+    $nullable = true;
+    if (preg_match('/^NOT\s+NULL\s*/i', $rest, $m)) {
+        $nullable = false;
+        $rest = trim(substr($rest, strlen($m[0])));
+    } elseif (preg_match('/^NULL\s*/i', $rest, $m)) {
+        $nullable = true;
+        $rest = trim(substr($rest, strlen($m[0])));
+    }
+
+    $default = null;
+    $hasDefault = false;
+    $onUpdate = '';
+    if (preg_match('/^DEFAULT\s+/i', $rest)) {
+        $rest = trim(substr($rest, 8));
+        $hasDefault = true;
+        if (preg_match('/^(CURRENT_TIMESTAMP(?:\s*\(\s*\))?)\s*(ON\s+UPDATE\s+CURRENT_TIMESTAMP(?:\s*\(\s*\))?)?\s*(.*)$/is', $rest, $m)) {
+            $default = 'CURRENT_TIMESTAMP';
+            $rest = trim($m[3]);
+            if (!empty($m[2])) $onUpdate = 'ON UPDATE CURRENT_TIMESTAMP';
+        } elseif (preg_match('/^NULL\s*(.*)$/is', $rest, $m)) {
+            $default = null;
+            $rest = trim($m[1]);
+        } elseif (preg_match("/^'((?:[^'\\\\]|\\\\.)*?)'\s*(.*)$/s", $rest, $m)) {
+            $default = "'" . $m[1] . "'";
+            $rest = trim($m[2]);
+        } elseif (preg_match('/^(-?\d+(?:\.\d+)?)\s*(.*)$/s', $rest, $m)) {
+            $default = $m[1];
+            $rest = trim($m[2]);
+        }
+    }
+
+    if (empty($onUpdate) && preg_match('/^ON\s+UPDATE\s+CURRENT_TIMESTAMP(?:\s*\(\s*\))?\s*(.*)$/is', $rest, $m)) {
+        $onUpdate = 'ON UPDATE CURRENT_TIMESTAMP';
+        $rest = trim($m[1]);
+    }
+
+    $autoIncrement = false;
+    if (preg_match('/^AUTO_INCREMENT\s*(.*)$/is', $rest, $m)) {
+        $autoIncrement = true;
+        $rest = trim($m[1]);
+    }
+
+    if (!$collate && preg_match('/^COLLATE\s+(\S+)\s*/i', $rest, $m)) {
+        $collate = $m[1];
+        $rest = trim(substr($rest, strlen($m[0])));
+    }
+
+    if (preg_match("/^COMMENT\s+'(?:[^'\\\\]|\\\\.)*'\s*(.*)$/is", $rest, $m)) {
+        $rest = trim($m[1]);
+    }
+
+    $extra = '';
+    if ($autoIncrement) $extra .= 'AUTO_INCREMENT';
+    if ($onUpdate) $extra .= ($extra ? ' ' : '') . $onUpdate;
+
+    return [
+        'name' => $name, 'type' => $normType, 'nullable' => $nullable,
+        'hasDefault' => $hasDefault, 'default' => normalizeDefault($default, $normType),
+        'extra' => $extra, 'collate' => $collate,
+    ];
+}
+
+function parseIndexColumns($str) {
+    $cols = [];
+    foreach (explode(',', $str) as $p) {
+        $p = trim($p);
+        if (preg_match('/`([^`]+)`/', $p, $m)) $cols[] = $m[1];
+        elseif (preg_match('/(\w+)/', $p, $m)) $cols[] = $m[1];
+    }
+    return $cols;
+}
+
+function parseIndexOrConstraint($def) {
+    $def = trim($def);
+    if (preg_match('/^PRIMARY\s+KEY\s*\(([^)]+)\)/i', $def, $m)) {
+        return ['type' => 'PRIMARY KEY', 'name' => 'PRIMARY', 'columns' => parseIndexColumns($m[1])];
+    }
+    if (preg_match('/^UNIQUE\s+(?:KEY|INDEX)\s+`?(\w+)`?\s*\(([^)]+)\)/i', $def, $m)) {
+        return ['type' => 'UNIQUE', 'name' => $m[1], 'columns' => parseIndexColumns($m[2])];
+    }
+    if (preg_match('/^(?:KEY|INDEX)\s+`?(\w+)`?\s*\(([^)]+)\)/i', $def, $m)) {
+        return ['type' => 'INDEX', 'name' => $m[1], 'columns' => parseIndexColumns($m[2])];
+    }
+    if (preg_match('/^CONSTRAINT\s+`?(\w+)`?\s+FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+`?(\w+)`?\s*\(([^)]+)\)(?:\s+ON\s+DELETE\s+(CASCADE|SET\s+NULL|RESTRICT|NO\s+ACTION))?(?:\s+ON\s+UPDATE\s+(CASCADE|SET\s+NULL|RESTRICT|NO\s+ACTION))?/i', $def, $m)) {
+        return [
+            'type' => 'FOREIGN KEY', 'name' => $m[1],
+            'columns' => parseIndexColumns($m[2]),
+            'refTable' => $m[3], 'refColumns' => parseIndexColumns($m[4]),
+            'onDelete' => strtoupper($m[5] ?? 'RESTRICT'),
+            'onUpdate' => strtoupper($m[6] ?? 'RESTRICT'),
+        ];
+    }
+    if (preg_match('/^FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+`?(\w+)`?\s*\(([^)]+)\)/i', $def, $m)) {
+        return [
+            'type' => 'FOREIGN KEY', 'name' => '',
+            'columns' => parseIndexColumns($m[1]),
+            'refTable' => $m[2], 'refColumns' => parseIndexColumns($m[3]),
+            'onDelete' => 'RESTRICT', 'onUpdate' => 'RESTRICT',
+        ];
+    }
+    return null;
+}
+
+function parseSqlDump($sql) {
+    $tables = [];
+    if (!preg_match_all('/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\(/is', $sql, $matches, PREG_OFFSET_CAPTURE)) {
+        return $tables;
+    }
+    foreach ($matches[0] as $idx => $fullMatch) {
+        $tableName = $matches[1][$idx][0];
+        $startPos = $matches[0][$idx][1];
+        $parenStart = strpos($sql, '(', $startPos);
+        if ($parenStart === false) continue;
+
+        $depth = 0;
+        $parenEnd = false;
+        for ($i = $parenStart; $i < strlen($sql); $i++) {
+            if ($sql[$i] === '(') $depth++;
+            elseif ($sql[$i] === ')') { $depth--; if ($depth === 0) { $parenEnd = $i; break; } }
+        }
+        if ($parenEnd === false) continue;
+
+        $body = substr($sql, $parenStart + 1, $parenEnd - $parenStart - 1);
+        $afterParen = substr($sql, $parenEnd + 1);
+        preg_match('/ENGINE\s*=\s*(\w+).*?DEFAULT\s+CHARSET\s*=\s*(\w+)(?:\s+COLLATE\s*=\s*(\S+))?(?:\s*;|\s*$)/is', $afterParen, $optMatch);
+
+        $table = [
+            'name' => $tableName, 'columns' => [], 'indexes' => [], 'constraints' => [],
+            'engine' => $optMatch[1] ?? 'InnoDB',
+            'charset' => strtolower($optMatch[2] ?? 'utf8mb4'),
+            'collate' => isset($optMatch[3]) ? strtolower($optMatch[3]) : null,
+        ];
+
+        foreach (splitByComma($body) as $part) {
+            $part = trim($part);
+            if (empty($part)) continue;
+            $col = parseColumn($part);
+            if ($col) { $table['columns'][] = $col; continue; }
+            $idx = parseIndexOrConstraint($part);
+            if ($idx) {
+                if ($idx['type'] === 'FOREIGN KEY') $table['constraints'][] = $idx;
+                else $table['indexes'][] = $idx;
+            }
+        }
+        $tables[strtolower($tableName)] = $table;
+    }
+    return $tables;
+}
+
+function compareColumns($local, $prod) {
+    if ($local['type'] !== $prod['type']) return 'type';
+    if ($local['nullable'] !== $prod['nullable']) return 'nullable';
+    $lEff = ($local['nullable'] && ($local['default'] === null || !$local['hasDefault'])) ? '__IMPLICIT_NULL__' : $local['default'];
+    $pEff = ($prod['nullable'] && ($prod['default'] === null || !$prod['hasDefault'])) ? '__IMPLICIT_NULL__' : $prod['default'];
+    if ($lEff !== $pEff) return 'default';
+    if ($local['extra'] !== $prod['extra']) return 'extra';
+    return null;
+}
+
+function buildColumnDef($col) {
+    $def = "`{$col['name']}` {$col['type']}";
+    if (!$col['nullable']) $def .= " NOT NULL";
+    if ($col['hasDefault']) {
+        $def .= ($col['default'] === null) ? " DEFAULT NULL" : " DEFAULT {$col['default']}";
+    }
+    if ($col['extra']) $def .= " {$col['extra']}";
+    return $def;
+}
+
+function buildIndexDef($idx) {
+    $cols = '`' . implode('`,`', $idx['columns']) . '`';
+    if ($idx['type'] === 'PRIMARY KEY') return "ADD PRIMARY KEY ({$cols})";
+    if ($idx['type'] === 'UNIQUE') return "ADD UNIQUE KEY `{$idx['name']}` ({$cols})";
+    return "ADD KEY `{$idx['name']}` ({$cols})";
+}
+
+function buildFkDef($fk) {
+    $cols = '`' . implode('`,`', $fk['columns']) . '`';
+    $refCols = '`' . implode('`,`', $fk['refColumns']) . '`';
+    $name = $fk['name'] ? "`{$fk['name']}` " : '';
+    return "ADD CONSTRAINT {$name}FOREIGN KEY ({$cols}) REFERENCES `{$fk['refTable']}` ({$refCols}) ON DELETE {$fk['onDelete']} ON UPDATE {$fk['onUpdate']}";
+}
+
+function buildCreateTable($table) {
+    $lines = [];
+    foreach ($table['columns'] as $col) $lines[] = "  " . buildColumnDef($col);
+    foreach ($table['indexes'] as $idx) {
+        $cols = '`' . implode('`,`', $idx['columns']) . '`';
+        if ($idx['type'] === 'PRIMARY KEY') $lines[] = "  PRIMARY KEY ({$cols})";
+        elseif ($idx['type'] === 'UNIQUE') $lines[] = "  UNIQUE KEY `{$idx['name']}` ({$cols})";
+        else $lines[] = "  KEY `{$idx['name']}` ({$cols})";
+    }
+    foreach ($table['constraints'] as $fk) $lines[] = "  " . buildFkDef($fk);
+    $charset = $table['charset'] ?? 'utf8mb4';
+    $collate = $table['collate'] ? " COLLATE={$table['collate']}" : '';
+    $engine = $table['engine'] ?? 'InnoDB';
+    return "CREATE TABLE IF NOT EXISTS `{$table['name']}` (\n" . implode(",\n", $lines) . "\n) ENGINE={$engine} DEFAULT CHARSET={$charset}{$collate};";
+}
+
+function generateMigration($local, $prod, &$summary) {
+    $sql = [];
+    $sql[] = "-- MIGRASI PRODUCTION -> LOCALHOST";
+    $sql[] = "-- Generated: " . date('Y-m-d H:i:s');
+    $sql[] = "";
+
+    $newTableCount = 0; $newColCount = 0; $modColCount = 0;
+    $dropColCount = 0; $newIdxCount = 0; $dropIdxCount = 0;
+    $newFkCount = 0; $charsetChanges = 0; $onlyInProd = [];
+
+    foreach ($local as $name => $lTable) {
+        if (!isset($prod[$name])) {
+            $sql[] = "-- [NEW TABLE] `{$lTable['name']}`";
+            $sql[] = buildCreateTable($lTable);
+            $sql[] = "";
+            $newTableCount++;
+        }
+    }
+
+    foreach ($local as $name => $lTable) {
+        if (!isset($prod[$name])) continue;
+        $pTable = $prod[$name];
+        $pColumns = [];
+        foreach ($pTable['columns'] as $col) $pColumns[strtolower($col['name'])] = $col;
+        $lColNames = [];
+        foreach ($lTable['columns'] as $col) $lColNames[strtolower($col['name'])] = true;
+        $addParts = []; $modifyParts = []; $indexParts = []; $fkParts = [];
+        $lastKnownCol = null;
+
+        foreach ($lTable['columns'] as $lCol) {
+            $colKey = strtolower($lCol['name']);
+            if (!isset($pColumns[$colKey])) {
+                $afterClause = $lastKnownCol ? " AFTER `{$lastKnownCol}`" : ' FIRST';
+                $addParts[] = "  ADD COLUMN " . buildColumnDef($lCol) . $afterClause;
+                $lastKnownCol = $lCol['name'];
+                $newColCount++;
+            } else {
+                $diff = compareColumns($lCol, $pColumns[$colKey]);
+                if ($diff !== null) {
+                    $modifyParts[] = "  MODIFY COLUMN " . buildColumnDef($lCol);
+                    $modColCount++;
+                }
+                $lastKnownCol = $lCol['name'];
+            }
+        }
+
+        foreach ($pTable['columns'] as $pCol) {
+            if (!isset($lColNames[strtolower($pCol['name'])])) $dropColCount++;
+        }
+
+        $pIdxMap = [];
+        foreach ($pTable['indexes'] as $idx) $pIdxMap[strtolower($idx['type'] . ':' . $idx['name'] . ':' . implode(',', $idx['columns']))] = true;
+        foreach ($lTable['indexes'] as $lIdx) {
+            $key = strtolower($lIdx['type'] . ':' . $lIdx['name'] . ':' . implode(',', $lIdx['columns']));
+            if (!isset($pIdxMap[$key])) { $indexParts[] = "  " . buildIndexDef($lIdx); $newIdxCount++; }
+        }
+
+        $lIdxMap = [];
+        foreach ($lTable['indexes'] as $idx) $lIdxMap[strtolower($idx['type'] . ':' . $idx['name'] . ':' . implode(',', $idx['columns']))] = true;
+        foreach ($pTable['indexes'] as $pIdx) {
+            $key = strtolower($pIdx['type'] . ':' . $pIdx['name'] . ':' . implode(',', $pIdx['columns']));
+            if (!isset($lIdxMap[$key])) $dropIdxCount++;
+        }
+        
+        // FKs
+        $pFkMap = [];
+        foreach ($pTable['constraints'] as $fk) $pFkMap[strtolower($fk['name'])] = true;
+        foreach ($lTable['constraints'] as $lFk) {
+            if (!isset($pFkMap[strtolower($lFk['name'])])) { $fkParts[] = "  " . buildFkDef($lFk); $newFkCount++; }
+        }
+
+        if (strtolower($lTable['charset'] ?? '') !== strtolower($pTable['charset'] ?? '') ||
+            strtolower($lTable['collate'] ?? '') !== strtolower($pTable['collate'] ?? '')) {
+            $charsetChanges++;
+        }
+
+        $alterParts = array_merge($addParts, $modifyParts, $indexParts, $fkParts);
+        if (!empty($alterParts)) {
+            $sql[] = "-- [ALTER] `{$lTable['name']}`";
+            $sql[] = "ALTER TABLE `{$lTable['name']}`\n" . implode(",\n", $alterParts) . ";\n";
+        }
+    }
+
+    $summary = [
+        'newTables' => $newTableCount, 'newColumns' => $newColCount,
+        'modColumns' => $modColCount, 'dropColumns' => $dropColCount,
+        'newIndexes' => $newIdxCount, 'dropIndexes' => $dropIdxCount,
+        'newFks' => $newFkCount, 'charsetChanges' => $charsetChanges,
+        'onlyInProd' => count($onlyInProd),
+    ];
+    return count($sql) > 2 ? implode("\n", $sql) : "__NONE__";
+}
+
+function highlightSql($text) {
+    $text = htmlspecialchars($text);
+    $text = preg_replace('/(#[^\n]*|--[^\n]*)/', '<span class="sql-cmt">$1</span>', $text);
+    $text = preg_replace('/(`[^`]+`)/', '<span class="sql-str">$1</span>', $text);
+    $text = preg_replace("/('[^']*')/", '<span class="sql-str">$1</span>', $text);
+    $keywords = '/\b(ALTER|TABLE|ADD|COLUMN|DROP|MODIFY|CREATE|IF|NOT|EXISTS|INDEX|UNIQUE|KEY|PRIMARY|FOREIGN|REFERENCES|CONSTRAINT|AFTER|FIRST|NULL|DEFAULT|AUTO_INCREMENT|ENGINE|CHARSET|COLLATE|CONVERT|CHARACTER|TO|INT|VARCHAR|TEXT|TIMESTAMP|DATETIME|DECIMAL|FLOAT)\b/i';
+    $text = preg_replace($keywords, '<span class="sql-kw">$1</span>', $text);
+    return $text;
+}
+
 
 $dbConfig = load_config($configFile);
 $user_defined_databases = $dbConfig['databases'] ?? [];
@@ -1104,11 +1612,40 @@ $jsonDb = new JsonDatabase(__DIR__ . '/json_db/');
 // ===== SQLITE FILE SELECTION =====
 if (isset($_GET['select_sqlite_file'])) {
     $sqliteFile = $_GET['select_sqlite_file'];
-    $sqlitePath = __DIR__ . '/sqlite_db/' . basename($sqliteFile);
+    $isExternal = isset($_GET['external']) && $_GET['external'] === '1';
     
-    if (file_exists($sqlitePath)) {
+    if ($isExternal) {
+        $root = $_SERVER['DOCUMENT_ROOT'] ?? __DIR__;
+        // If the path already starts with the root, don't prepend it again
+        if (strpos(str_replace('\\', '/', $sqliteFile), str_replace('\\', '/', $root)) === 0) {
+            $fullPath = $sqliteFile;
+        } else {
+            $fullPath = rtrim($root, '/\\') . DIRECTORY_SEPARATOR . ltrim(str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $sqliteFile), DIRECTORY_SEPARATOR);
+        }
+        
+        $realPath = realpath($fullPath);
+        $docRoot = realpath($root);
+
+        if ($realPath && file_exists($realPath)) {
+            $sqlitePath = $realPath;
+        } else {
+            // Last resort: check if it's relative to current dir
+            $altPath = realpath(__DIR__ . DIRECTORY_SEPARATOR . basename($sqliteFile));
+            if ($altPath && file_exists($altPath)) {
+                $sqlitePath = $altPath;
+            } else {
+                error_log("SQLite selection failed: $sqliteFile | Full: $fullPath | Root: $root");
+                $sqlitePath = ''; 
+            }
+        }
+    } else {
+        $sqlitePath = __DIR__ . '/sqlite_db/' . basename($sqliteFile);
+    }
+    
+    if ($sqlitePath && file_exists($sqlitePath)) {
         $_SESSION['sqlite_file'] = $sqliteFile;
         $_SESSION['sqlite_file_path'] = $sqlitePath;
+        $_SESSION['db_name'] = basename($sqlitePath);
         $_SESSION['db_mode'] = 'sqlite';
         
         // Reconnect to SQLite
@@ -1236,18 +1773,14 @@ if (!$is_logged_in) {
     exit;
 }
 
-// ===== DB CONNECTION (IF LOGGED IN) =====// ===== DB CONNECTION (IF LOGGED IN) =====
 // ===== DB CONNECTION (IF LOGGED IN) =====
-$pdo = null;
+$is_sql_mode = (($_SESSION['db_mode'] ?? 'sql') === 'sql');
 $databases = []; // List of databases
 $sqlResults = [];
 $lastResultSet = null;
 $hostProfile = detect_host_profile($dbConfig['host'] ?? $_SESSION['db_host'] ?? '');
 
-// Debug log
-error_log("Adminer: is_logged_in=$is_logged_in, hasSelectedDatabase=$hasSelectedDatabase, DB_NAME=" . ($_SESSION['db_name'] ?? 'empty'));
-
-if ($is_logged_in) {
+if ($is_sql_mode && $is_logged_in) {
     try {
         // Selalu buat koneksi dasar (tanpa database) dulu
         $dsn = "mysql:host={$_SESSION['db_host']};charset=utf8mb4";
@@ -1277,11 +1810,6 @@ if ($is_logged_in) {
             // Prioritaskan database dari server
             if (!empty($databases_from_server)) {
                 $databases = $databases_from_server;
-            } elseif ($hostProfile === 'local') {
-                // Jika di localhost, kita asumsikan full akses.
-                // Jika SHOW DATABASES kosong, berarti memang tidak ada database (atau error koneksi),
-                // jadi jangan fallback ke JSON (sesuai request user).
-                $databases = $databases_from_server; 
             } elseif (!empty($user_defined_databases)) {
                 // Fallback ke user defined databases
                 $databases = $user_defined_databases;
@@ -1296,8 +1824,6 @@ if ($is_logged_in) {
             }
             
         } catch (Exception $e) {
-            // Silently fail if SHOW DATABASES is denied (common on shared hosting)
-            // error_log("Adminer SHOW DATABASES error: " . $e->getMessage());
             $databases = $user_defined_databases;
         }
         
@@ -1323,18 +1849,18 @@ if ($is_logged_in) {
                 }
             } catch (Exception $e) {
                 error_log("Adminer reconnect with DB error: " . $e->getMessage());
-                // Jika gagal konek ke DB, reset state agar tidak crash di query selanjutnya
                 $_SESSION['db_name'] = '';
                 $hasSelectedDatabase = false;
                 $DB_NAME = '';
             }
         }
-        
     } catch (Exception $e) {
         session_destroy();
-        die("Database Connection Error: " . htmlspecialchars($e->getMessage()) . 
-            ". Check your credentials in adminer.db.json or contact administrator.");
+        die("Database Connection Error: " . htmlspecialchars($e->getMessage()));
     }
+} elseif (($_SESSION['db_mode'] ?? 'sql') === 'sqlite') {
+    $hasSelectedDatabase = true;
+    $DB_NAME = $_SESSION['db_name'] ?? 'SQLite';
 }
 
 // ===== HELPER FUNCTIONS =====
@@ -1620,8 +2146,133 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $table = $_POST['table'] ?? '';
     $dbMode = $_SESSION['db_mode'] ?? 'sql';
-    $configFile = __DIR__ . '/adminer.config.json';
-    
+
+    // --- UNIVERSAL REPLACE ---
+    if ($action === 'universal_replace') {
+        header('Content-Type: application/json');
+        $search = $_POST['search_query'] ?? '';
+        $replace = $_POST['replace_query'] ?? '';
+        $mode = $_POST['replace_mode'] ?? 'all'; // 'all' or 'selected'
+        $selected = $_POST['selected'] ?? []; // Array of "table|col|pk"
+
+        if (empty($search)) {
+            echo json_encode(['success' => false, 'message' => 'Search term cannot be empty.']);
+            exit;
+        }
+
+        try {
+            $affectedTotal = 0;
+            if ($mode === 'selected' && !empty($selected)) {
+                // Replace only selected cells
+                foreach ($selected as $item) {
+                    list($t, $c, $pk) = explode('|', $item);
+                    if ($dbMode === 'json' && isset($jsonDb)) {
+                        $row = $jsonDb->select($t, ['id' => ['operator' => '=', 'value' => $pk]]);
+                        if (!empty($row)) {
+                            $newVal = str_ireplace($search, $replace, $row[0][$c]);
+                            $jsonDb->update($t, [$c => $newVal], ['id' => ['operator' => '=', 'value' => $pk]]);
+                            $affectedTotal++;
+                        }
+                    } else {
+                        $stmt = $pdo->prepare("SELECT `$c` FROM `$t` WHERE `id` = ?");
+                        $stmt->execute([$pk]);
+                        $oldVal = $stmt->fetchColumn();
+                        if ($oldVal !== false) {
+                            $newVal = str_ireplace($search, $replace, $oldVal);
+                            $uStmt = $pdo->prepare("UPDATE `$t` SET `$c` = ? WHERE `id` = ?");
+                            $uStmt->execute([$newVal, $pk]);
+                            $affectedTotal++;
+                        }
+                    }
+                }
+            } else {
+                // Replace in ALL tables where search term matches
+                if ($dbMode === 'json' && isset($jsonDb)) {
+                    foreach ($jsonDb->listTables() as $t) {
+                        $data = $jsonDb->select($t);
+                        foreach ($data as $row) {
+                            $changed = false;
+                            $updates = [];
+                            foreach ($row as $col => $val) {
+                                if (is_string($val) && stripos($val, $search) !== false) {
+                                    $updates[$col] = str_ireplace($search, $replace, $val);
+                                    $changed = true;
+                                }
+                            }
+                            if ($changed) {
+                                $jsonDb->update($t, $updates, ['id' => ['operator' => '=', 'value' => $row['id']]]);
+                                $affectedTotal++;
+                            }
+                        }
+                    }
+                } else {
+                    $tables = [];
+                    if ($dbMode === 'sql') {
+                        $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+                    } else {
+                        $tables = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_COLUMN);
+                    }
+
+                    foreach ($tables as $t) {
+                        $cols = [];
+                        if ($dbMode === 'sql') {
+                            $cols = $pdo->query("DESCRIBE `$t`")->fetchAll(PDO::FETCH_COLUMN);
+                        } else {
+                            foreach($pdo->query("PRAGMA table_info(`$t`)")->fetchAll() as $ci) $cols[] = $ci['name'];
+                        }
+                        
+                        foreach ($cols as $c) {
+                            $sql = "UPDATE `$t` SET `$c` = REPLACE(`$c`, ?, ?) WHERE `$c` LIKE ?";
+                            $stmt = $pdo->prepare($sql);
+                            $stmt->execute([$search, $replace, "%$search%"]);
+                            $affectedTotal += $stmt->rowCount();
+                        }
+                    }
+                }
+            }
+            echo json_encode(['success' => true, 'message' => "Successfully replaced $affectedTotal occurrences."]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($action === 'compare_structures') {
+        header('Content-Type: application/json');
+        $localhostSql = $_POST['localhost_sql'] ?? '';
+        $productionSql = $_POST['production_sql'] ?? '';
+        
+        if (empty($localhostSql) || empty($productionSql)) {
+            echo json_encode(['success' => false, 'message' => 'Both SQL structures are required.']);
+            exit;
+        }
+
+        try {
+            $localTables = parseSqlDump($localhostSql);
+            $prodTables = parseSqlDump($productionSql);
+            
+            if (empty($localTables) || empty($prodTables)) {
+                throw new Exception('Failed to parse SQL. Ensure format is "CREATE TABLE ...".');
+            }
+            
+            $summary = [];
+            $sqlResult = generateMigration($localTables, $prodTables, $summary);
+            
+            if ($sqlResult === '__NONE__') {
+                $sqlResult = '-- No structural differences detected.';
+            }
+
+            echo json_encode([
+                'success' => true,
+                'sql' => $sqlResult,
+                'summary' => $summary,
+                'highlighted' => highlightSql($sqlResult)
+            ]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- SQL QUERY ---
     if ($action === 'sql_query') {
         $sql = $_POST['query'] ?? '';
@@ -1803,20 +2454,40 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         try {
             $filePath = __DIR__ . '/sqlite_db/' . basename($filename);
+            
             if (file_exists($filePath)) {
-                if (unlink($filePath)) {
-                    // Clear session if deleting current file
-                    if ($_SESSION['sqlite_file'] === $filename) {
-                        unset($_SESSION['sqlite_file']);
-                        unset($_SESSION['sqlite_file_path']);
-                    }
-                    echo json_encode(['success' => true, 'message' => 'SQLite database deleted successfully']);
-                } else {
-                    echo json_encode(['success' => false, 'message' => 'Failed to delete file']);
+                unlink($filePath);
+                
+                // Clear session if it was the selected one
+                if (($_SESSION['sqlite_file'] ?? '') === $filename) {
+                    unset($_SESSION['sqlite_file']);
+                    unset($_SESSION['sqlite_file_path']);
+                    $_SESSION['db_mode'] = 'sql';
                 }
+                
+                echo json_encode(['success' => true, 'message' => 'SQLite database deleted successfully']);
             } else {
                 echo json_encode(['success' => false, 'message' => 'File not found']);
             }
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- SAVE JSON TABLE (TREE EDITOR) ---
+    elseif ($action === 'save_json_table') {
+        header('Content-Type: application/json');
+        $table = $_POST['table'] ?? '';
+        $jsonData = $_POST['json_data'] ?? '';
+        
+        try {
+            $data = json_decode($jsonData, true);
+            if (!is_array($data)) {
+                throw new Exception('Invalid JSON data provided.');
+            }
+            
+            $jsonDb->importTable($table, $data);
+            echo json_encode(['success' => true, 'message' => 'Table updated successfully']);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
@@ -4531,77 +5202,87 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes) {
             endif; ?>
         </td>
         <?php foreach ($row as $key => $val):
-            $displayVal = $val !== null ? htmlspecialchars((string)$val) : '<span style="color:#666">NULL</span>';
-            
-            // Media Display Logic (Images)
+            $jsonAttr = '';
             $isMediaColumn = false;
+            $valStr = (string)$val;
+            $displayVal = $val !== null ? htmlspecialchars($valStr) : '<span style="color:#666">NULL</span>';
+            
             if ($val !== null) {
-                $valStr = (string)$val;
-                // Check if it's a base64 image
-                if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
-                    $isMediaColumn = true;
-                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                        . '<img src="' . htmlspecialchars($valStr) . '" class="row-media-preview" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" title="Click to enlarge">'
-                        . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
-                        . '</div>';
-                }
-                // Check if it's a file path to an image
-                elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
-                        (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
-                         stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
-                         stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
-                         stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
-                    $isMediaColumn = true;
-                    $imgUrl = $valStr;
-                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                        $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
-                    }
-                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                        . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                        . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
-                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
-                        . '</div>'
-                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                        . '</div>';
-                }
-                // JSON logic
-                elseif (strpos($valStr, '{') === 0 || strpos($valStr, '[') === 0) {
-                    $decoded = json_decode($valStr, true);
-                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                        $displayVal = '<div class="json-cell" data-raw="' . htmlspecialchars($valStr) . '" style="background:rgba(255,255,255,0.03); padding:8px; border-radius:4px; max-height:100px; overflow:hidden; font-family:monospace; font-size:0.8rem; cursor:pointer; border:1px solid rgba(255,255,255,0.1);" onclick="openJsonEditor(this)" title="Click to view/edit as Tree">'
-                                    . '<div style="color:var(--accent); font-weight:bold; font-size:0.7rem; margin-bottom:4px; text-transform:uppercase;"><i class="fas fa-file-code"></i> JSON Data</div>'
-                                    . '<div style="opacity:0.6;">' . htmlspecialchars(substr($valStr, 0, 80)) . (strlen($valStr) > 80 ? '...' : '') . '</div>'
+                // 1. JSON Detection
+                if (strpos($valStr, '{') === 0 || strpos($valStr, '[') === 0) {
+                    $decoded = json_decode($valStr);
+                    if (json_last_error() === JSON_ERROR_NONE && (is_object($decoded) || is_array($decoded))) {
+                        $jsonAttr = ' data-json-raw="' . htmlspecialchars($valStr) . '" ';
+                        $displayVal = '<div class="json-cell-wrapper" style="display:flex; align-items:center; gap:8px;">'
+                                    . '<span style="font-family:monospace; background:var(--bg-hover); padding:2px 4px; border-radius:3px; font-size:0.75em; color:var(--accent); cursor:help;" title="Valid JSON Structure">JSON</span> '
+                                    . '<span style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' . $displayVal . '</span>'
+                                    . '<button type="button" onclick="openJsonEditorInModal(this.closest(\'td\'))" style="background:none; border:none; cursor:pointer; color:var(--accent); font-size:0.9em;" title="Open JSON Tree Editor"><i class="fas fa-project-diagram"></i></button>'
                                     . '</div>';
+                        $isMediaColumn = true; 
                     }
                 }
-                // Video logic
-                elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
-                        (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
-                         stripos($key, 'media') !== false)) {
-                    $isMediaColumn = true;
-                    $videoUrl = $valStr;
-                    if (!preg_match('/^https?:\/\//', $valStr)) {
-                        $videoUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+
+                // 2. Media Detection (only if not already matched as JSON)
+                if (!$isMediaColumn) {
+                    // Base64 Images
+                    if (preg_match('/^data:image\/(png|jpg|jpeg|gif|webp|svg\+xml);base64,/', $valStr)) {
+                        $isMediaColumn = true;
+                        $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                            . '<img src="' . htmlspecialchars($valStr) . '" class="row-media-preview" style="max-width:60px; max-height:60px; border-radius:4px; cursor:pointer; object-fit:cover;" title="Click to enlarge">'
+                            . '<span style="font-size:0.8em; color:var(--text-secondary);">[Base64]</span>'
+                            . '</div>';
                     }
-                    $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
-                        . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
-                        . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" muted>'
-                        . '<source src="' . htmlspecialchars($videoUrl) . '">'
-                        . '</video>'
-                        . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
-                        . '</div>'
-                        . '<span style="font-size:0.85em; color:var(--text-secondary); word-break:break-all; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
-                        . '</div>';
+                    // Image Files
+                    elseif (preg_match('/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i', $valStr) && 
+                            (stripos($key, 'image') !== false || stripos($key, 'img') !== false || 
+                             stripos($key, 'photo') !== false || stripos($key, 'picture') !== false ||
+                             stripos($key, 'avatar') !== false || stripos($key, 'thumbnail') !== false ||
+                             stripos($key, 'icon') !== false || stripos($key, 'logo') !== false)) {
+                        $isMediaColumn = true;
+                        $imgUrl = $valStr;
+                        if (!preg_match('/^https?:\/\//', $valStr)) {
+                            $imgUrl = (strpos($valStr, '/') === 0) ? $valStr : '/' . $valStr;
+                        }
+                        $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                            . '<div style="position:relative; width:60px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                            . '<img src="' . htmlspecialchars($imgUrl) . '" style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showImageModal(this.src)" title="Click to enlarge" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" loading="lazy">'
+                            . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Image</div>'
+                            . '</div>'
+                            . '<span style="font-size:0.8em; color:var(--text-secondary); word-break:break-all; max-width:150px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                            . '</div>';
+                    }
+                    // Video Files
+                    elseif (preg_match('/\.(mp4|webm|ogg|mov|avi)$/i', $valStr) &&
+                            (stripos($key, 'video') !== false || stripos($key, 'movie') !== false || 
+                             stripos($key, 'media') !== false)) {
+                        $isMediaColumn = true;
+                        $videoUrl = $valStr;
+                        if (!preg_match('/^https?:\/\//', $valStr)) {
+                            $videoUrl = (strpos($valStr, '/') === 0) ? $videoUrl : '/' . $videoUrl;
+                        }
+                        $displayVal = '<div style="display:flex; align-items:center; gap:8px;">'
+                            . '<div style="position:relative; width:80px; height:60px; background:#1a1a1a; border-radius:4px; overflow:hidden;">'
+                            . '<video style="width:100%; height:100%; object-fit:cover; cursor:pointer;" onclick="showVideoModal(this.querySelector(\'source\').src)" title="Click to play" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'flex\';" interrupted muted>'
+                            . '<source src="' . htmlspecialchars($videoUrl) . '">'
+                            . '</video>'
+                            . '<div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.7em; text-align:center; padding:5px;">No Video</div>'
+                            . '</div>'
+                            . '<span style="font-size:0.8em; color:var(--text-secondary); word-break:break-all; max-width:150px; overflow:hidden; text-overflow:ellipsis;" title="' . htmlspecialchars($valStr) . '">' . htmlspecialchars(basename($valStr)) . '</span>'
+                            . '</div>';
+                    }
                 }
             }
             
-            // Foreign Keys
+            // 3. Foreign Key Logic
             if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
                 $targetTable = substr($key, 0, -3) . 's';
                 $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
             }
-            ?><td data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>><?=$displayVal?></td><?php 
-        endforeach; ?>
+            ?>
+            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>>
+                <?=$displayVal?>
+            </td>
+        <?php endforeach; ?>
     </tr>
     <?php
     return ob_get_clean();
@@ -4615,11 +5296,11 @@ if ($is_logged_in && $currentTable) {
             $tableStructure = $jsonDb->getTableStructure($currentTable);
             $tableColumns = array_column($tableStructure, 'Field');
             
-            if ($view === 'data') {
+            if ($view === 'data' || $view === 'json_tree') {
                 // Build conditions for JSON database
                 $conditions = [];
                 
-                if ($searchVal !== '') {
+                if ($view === 'data' && $searchVal !== '') {
                     $op = '=';
                     $val = $searchVal;
                     
@@ -4632,7 +5313,6 @@ if ($is_logged_in && $currentTable) {
                     if ($searchColumn && in_array($searchColumn, $tableColumns)) {
                         $conditions[$searchColumn] = ['operator' => $op, 'value' => $val];
                     }
-                    // Note: Global search across all columns is not supported in JSON mode yet
                 }
                 
                 // Fetch Total Count
@@ -4640,7 +5320,10 @@ if ($is_logged_in && $currentTable) {
                 
                 // Fetch data from JSON database
                 $orderDir = strtoupper($orderDir) === 'DESC' ? 'DESC' : 'ASC';
-                $tableData = $jsonDb->select($currentTable, $conditions, $orderBy, $orderDir, $limit, $offset);
+                // If in tree view, we might want ALL data or at least a large set
+                $limit_val = ($view === 'json_tree') ? 9999 : $limit;
+                $offset_val = ($view === 'json_tree') ? 0 : $offset;
+                $tableData = $jsonDb->select($currentTable, $conditions, $orderBy, $orderDir, $limit_val, $offset_val);
             }
         } catch (Exception $e) {
             error_log("JsonDatabase error: " . $e->getMessage());
@@ -4813,11 +5496,13 @@ if (!empty($tables)) {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DB Manager <?= $is_logged_in ? '- ' . htmlspecialchars($_SESSION['db_name']) : '' ?></title>
+    <title>DB Manager <?= $is_logged_in ? '- ' . htmlspecialchars($_SESSION['db_name'] ?? '') : '' ?></title>
     <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/fontawesome6/fontawesome-free-6.5.1-web/css/all.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css') ?>">
     <link rel="stylesheet" href="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2-dark.min.css', 'https://cdn.jsdelivr.net/npm/@sweetalert2/theme-dark@5/dark.css') ?>"> <!-- SweetAlert2 Dark Theme -->
     <link href="<?= get_asset_url('assets/vendor/tom-select/tom-select.bootstrap5.min.css', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.bootstrap5.min.css') ?>" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/10.0.1/jsoneditor.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/10.0.1/jsoneditor.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
     <script src="<?= get_asset_url('assets/vendor/sweetalert2/sweetalert2.all.min.js', 'https://cdn.jsdelivr.net/npm/sweetalert2@11') ?>"></script>
     <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -4826,6 +5511,15 @@ if (!empty($tables)) {
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
+        :root {
+            --bg-dark: #0f0f0fff;
+            --bg-card: #1a1a1aff;
+            --bg-hover: #262626ff;
+            --text-main: #ffffffff;
+            --text-secondary: #a3a3a3ff;
+            --accent: #007bff;
+            --border-color: #333333ff;
+        }
         .sql-view-container {
             display: flex;
             gap: 0; /* Flush sidebar */
@@ -5129,6 +5823,17 @@ if (!empty($tables)) {
         
         /* Column Toggle Visibility */
         #colToggleDropdown.show { display: block !important; }
+        .jsoneditor-menu {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+        }
+        div.jsoneditor-tree {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+        }
+        .jsoneditor-popover, .jsoneditor-schema-error, div.jsoneditor td, div.jsoneditor textarea, div.jsoneditor th, div.jsoneditor-field, div.jsoneditor-value, pre.jsoneditor-preview {
+            color: var(--text-main);
+        }
     </style>
     <script>
         function switchSqlTab(tabId) {
@@ -5153,6 +5858,394 @@ if (!empty($tables)) {
             // Log success
             console.log('Tab activated:', tabId);
         }
+
+        // --- GLOBAL UTILITY FUNCTIONS (Moved to Head) ---
+        function switchDbMode(mode) {
+            window.location.href = '?db_mode=' + mode;
+        }
+
+        function saConfirmForm(e, text) {
+            e.preventDefault();
+            const form = e.target;
+            Swal.fire({
+                title: 'Are you sure?',
+                text: text || "You won't be able to revert this!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#3085d6',
+                cancelButtonColor: '#d33',
+                confirmButtonText: 'Yes, proceed!'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    form.submit();
+                }
+            });
+        }
+
+        function createNewJsonFile() {
+            Swal.fire({
+                title: 'Create New JSON File',
+                html: `
+                    <input type="text" id="jsonFileName" class="swal2-input" placeholder="Enter filename (e.g., mydata.json)" style="width: 80%;">
+                    <small style="display: block; margin-top: 10px; color: var(--text-secondary);">
+                        File akan dibuat di folder json_db/
+                    </small>
+                `,
+                showCancelButton: true,
+                confirmButtonText: 'Create',
+                cancelButtonText: 'Cancel',
+                preConfirm: () => {
+                    const fileName = document.getElementById('jsonFileName').value;
+                    if (!fileName) {
+                        Swal.showValidationMessage('Please enter a filename');
+                        return false;
+                    }
+                    if (!fileName.endsWith('.json')) {
+                        Swal.showValidationMessage('Filename must end with .json');
+                        return false;
+                    }
+                    return fileName;
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const formData = new FormData();
+                    formData.append('action', 'create_json_file');
+                    formData.append('filename', result.value);
+                    
+                    fetch('?', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Success',
+                                text: 'JSON file created!',
+                                timer: 1500
+                            }).then(() => {
+                                window.location.href = '?select_json_file=' + encodeURIComponent(result.value);
+                            });
+                        } else {
+                            Swal.fire('Error', data.message || 'Failed to create file', 'error');
+                        }
+                    })
+                    .catch(err => {
+                        Swal.fire('Error', 'Network error', 'error');
+                    });
+                }
+            });
+        }
+
+        function createNewSqliteFile() {
+            Swal.fire({
+                title: 'Create New SQLite Database',
+                html: `
+                    <input type="text" id="sqliteFileName" class="swal2-input" placeholder="Enter filename (e.g., mydata.db)" style="width: 80%;">
+                    <small style="display: block; margin-top: 10px; color: var(--text-secondary);">
+                        File akan dibuat di folder sqlite_db/
+                    </small>
+                `,
+                showCancelButton: true,
+                confirmButtonText: 'Create',
+                cancelButtonText: 'Cancel',
+                preConfirm: () => {
+                    const fileName = document.getElementById('sqliteFileName').value;
+                    if (!fileName) {
+                        Swal.showValidationMessage('Please enter a filename');
+                        return false;
+                    }
+                    if (!fileName.endsWith('.db') && !fileName.endsWith('.sqlite')) {
+                        Swal.showValidationMessage('Filename must end with .db or .sqlite');
+                        return false;
+                    }
+                    return fileName;
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const formData = new FormData();
+                    formData.append('action', 'create_sqlite_file');
+                    formData.append('filename', result.value);
+                    
+                    fetch('?', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Success',
+                                text: 'SQLite database created!',
+                                timer: 1500
+                            }).then(() => {
+                                window.location.href = '?select_sqlite_file=' + encodeURIComponent(result.value);
+                            });
+                        } else {
+                            Swal.fire('Error', data.message || 'Failed to create database', 'error');
+                        }
+                    })
+                    .catch(err => {
+                        Swal.fire('Error', 'Network error', 'error');
+                    });
+                }
+            });
+        }
+
+        function browseSqliteFile() {
+            Swal.fire({
+                title: 'Browse SQLite Database',
+                html: `
+                    <div style="text-align: left;">
+                        <div style="margin-bottom: 10px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Current Path:</label>
+                            <div style="display: flex; gap: 5px;">
+                                <input type="text" id="browsePath" class="swal2-input" value="" placeholder="/" style="flex: 1; margin: 0;">
+                                <button onclick="loadBrowsePathSqlite()" class="swal2-confirm swal2-styled" style="margin: 0; padding: 8px 15px;">Go</button>
+                            </div>
+                        </div>
+                        <div id="browseContent" style="max-height: 400px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 10px; background: rgba(0,0,0,0.2);">
+                            <div style="text-align: center; padding: 20px; color: #888;">
+                                <i class="fas fa-spinner fa-spin"></i> Loading...
+                            </div>
+                        </div>
+                    </div>
+                `,
+                width: '600px',
+                showCancelButton: true,
+                showConfirmButton: false,
+                cancelButtonText: 'Close',
+                didOpen: () => {
+                    loadBrowsePathSqlite('');
+                }
+            });
+        }
+
+        function loadBrowsePathSqlite(path) {
+            if (path === undefined) {
+                path = document.getElementById('browsePath').value;
+            } else {
+                document.getElementById('browsePath').value = path;
+            }
+            
+            const formData = new FormData();
+            formData.append('action', 'browse_sqlite_files');
+            formData.append('path', path);
+            
+            fetch('?', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    renderBrowseContentSqlite(data.items, data.current_path);
+                } else {
+                    document.getElementById('browseContent').innerHTML = `
+                        <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                            <i class="fas fa-exclamation-triangle"></i> ${data.message || 'Error loading path'}
+                        </div>
+                    `;
+                }
+            })
+            .catch(err => {
+                document.getElementById('browseContent').innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                        <i class="fas fa-exclamation-triangle"></i> Network error
+                    </div>
+                `;
+            });
+        }
+
+        function renderBrowseContentSqlite(items, currentPath) {
+            let html = '';
+            
+            if (currentPath !== '') {
+                const parentPath = currentPath.split('/').slice(0, -1).join('/');
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePathSqlite('${parentPath}')">
+                        <i class="fas fa-level-up-alt" style="color: #888;"></i> <span style="color: #888;">..</span>
+                    </div>
+                `;
+            }
+            
+            items.folders.forEach(folder => {
+                const fullPath = currentPath ? currentPath + '/' + folder : folder;
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePathSqlite('${fullPath}')">
+                        <i class="fas fa-folder" style="color: #ffd700;"></i> ${folder}
+                    </div>
+                `;
+            });
+            
+            items.files.forEach(file => {
+                const fullPath = currentPath ? currentPath + '/' + file : file;
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">
+                        <div>
+                            <i class="fas fa-database" style="color: #2196F3;"></i> ${file}
+                        </div>
+                        <button onclick="selectSqliteFile('${fullPath}'); event.stopPropagation();" class="swal2-confirm swal2-styled" style="margin: 0; padding: 4px 12px; font-size: 0.85rem;">
+                            Select
+                        </button>
+                    </div>
+                `;
+            });
+            
+            if (items.folders.length === 0 && items.files.length === 0) {
+                html = `
+                    <div style="text-align: center; padding: 20px; color: #888;">
+                        <i class="fas fa-folder-open"></i> Empty folder
+                    </div>
+                `;
+            }
+            
+            document.getElementById('browseContent').innerHTML = html;
+        }
+
+        function selectSqliteFile(filePath) {
+            Swal.fire({
+                title: 'Use this database?',
+                text: filePath,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, use it!',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    window.location.href = '?select_sqlite_file=' + encodeURIComponent(filePath) + '&external=1';
+                }
+            });
+        }
+
+        function browseJsonFile() {
+            Swal.fire({
+                title: 'Browse JSON File',
+                html: `
+                    <div style="text-align: left;">
+                        <div style="margin-bottom: 10px;">
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Current Path:</label>
+                            <div style="display: flex; gap: 5px;">
+                                <input type="text" id="browsePath" class="swal2-input" value="" placeholder="/" style="flex: 1; margin: 0;">
+                                <button onclick="loadBrowsePath()" class="swal2-confirm swal2-styled" style="margin: 0; padding: 8px 15px;">Go</button>
+                            </div>
+                        </div>
+                        <div id="browseContent" style="max-height: 400px; overflow-y: auto; border: 1px solid #444; border-radius: 4px; padding: 10px; background: rgba(0,0,0,0.2);">
+                            <div style="text-align: center; padding: 20px; color: #888;">
+                                <i class="fas fa-spinner fa-spin"></i> Loading...
+                            </div>
+                        </div>
+                    </div>
+                `,
+                width: '600px',
+                showCancelButton: true,
+                showConfirmButton: false,
+                cancelButtonText: 'Close',
+                didOpen: () => {
+                    loadBrowsePath('');
+                }
+            });
+        }
+
+        function loadBrowsePath(path) {
+            if (path === undefined) {
+                path = document.getElementById('browsePath').value;
+            } else {
+                document.getElementById('browsePath').value = path;
+            }
+            
+            const formData = new FormData();
+            formData.append('action', 'browse_files');
+            formData.append('path', path);
+            
+            fetch('?', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    renderBrowseContent(data.items, data.current_path);
+                } else {
+                    document.getElementById('browseContent').innerHTML = `
+                        <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                            <i class="fas fa-exclamation-triangle"></i> ${data.message || 'Error loading path'}
+                        </div>
+                    `;
+                }
+            })
+            .catch(err => {
+                document.getElementById('browseContent').innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #ff6b6b;">
+                        <i class="fas fa-exclamation-triangle"></i> Network error
+                    </div>
+                `;
+            });
+        }
+
+        function renderBrowseContent(items, currentPath) {
+            let html = '';
+            
+            if (currentPath !== '') {
+                const parentPath = currentPath.split('/').slice(0, -1).join('/');
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePath('${parentPath}')">
+                        <i class="fas fa-level-up-alt" style="color: #888;"></i> <span style="color: #888;">..</span>
+                    </div>
+                `;
+            }
+            
+            items.folders.forEach(folder => {
+                const fullPath = currentPath ? currentPath + '/' + folder : folder;
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;" onclick="loadBrowsePath('${fullPath}')">
+                        <i class="fas fa-folder" style="color: #ffd700;"></i> ${folder}
+                    </div>
+                `;
+            });
+            
+            items.files.forEach(file => {
+                const fullPath = currentPath ? currentPath + '/' + file : file;
+                html += `
+                    <div style="padding: 8px; margin-bottom: 5px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='rgba(255,255,255,0.05)'">
+                        <div>
+                            <i class="fas fa-file-code" style="color: #4CAF50;"></i> ${file}
+                        </div>
+                        <button onclick="selectJsonFile('${fullPath}'); event.stopPropagation();" class="swal2-confirm swal2-styled" style="margin: 0; padding: 4px 12px; font-size: 0.85rem;">
+                            Select
+                        </button>
+                    </div>
+                `;
+            });
+            
+            if (items.folders.length === 0 && items.files.length === 0) {
+                html = `
+                    <div style="text-align: center; padding: 20px; color: #888;">
+                        <i class="fas fa-folder-open"></i> Empty folder
+                    </div>
+                `;
+            }
+            
+            document.getElementById('browseContent').innerHTML = html;
+        }
+
+        function selectJsonFile(filePath) {
+            Swal.fire({
+                title: 'Use this JSON file?',
+                text: filePath,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Yes, use it!',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    window.location.href = '?select_json_file=' + encodeURIComponent(filePath) + '&external=1';
+                }
+            });
+        }
+
     </script>
     <script>
         /**
@@ -6254,6 +7347,54 @@ var advancedFilters = null;
         })
         .finally(() => {
             td.classList.remove('editing');
+        });
+    }
+
+    function openJsonEditorInModal(td) {
+        const pk = td.getAttribute('data-pk');
+        const col = td.getAttribute('data-col');
+        const table = td.getAttribute('data-table') || td.closest('table').getAttribute('data-table');
+        
+        let rawContent = td.getAttribute('data-json-raw');
+        if (!rawContent) {
+            rawContent = td.innerText;
+            const textSpan = td.querySelector('span:nth-child(2)');
+            if (textSpan) rawContent = textSpan.innerText;
+        }
+
+        let data;
+        try {
+            data = JSON.parse(rawContent);
+        } catch (e) {
+            Swal.fire('Error', 'Invalid JSON content: ' + e.message, 'error');
+            return;
+        }
+
+        Swal.fire({
+            title: 'JSON Tree Editor (' + col + ')',
+            html: '<div id="swalJsonEditor" style="height: 450px; text-align: left;"></div>',
+            width: '800px',
+            showCancelButton: true,
+            confirmButtonText: 'Save to Cell',
+            didOpen: () => {
+                const container = document.getElementById('swalJsonEditor');
+                const options = {
+                    mode: 'tree',
+                    modes: ['tree', 'view', 'form', 'code', 'text'],
+                    theme: 'dark'
+                };
+                window.swalEditor = new JSONEditor(container, options);
+                window.swalEditor.set(data);
+            },
+            preConfirm: () => {
+                return window.swalEditor.get();
+            }
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const updatedVal = JSON.stringify(result.value);
+                const input = { value: updatedVal, parentElement: td };
+                saveCellData(input, table, col, pk, rawContent);
+            }
         });
     }
 
@@ -7449,13 +8590,13 @@ var advancedFilters = null;
                     <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
                         <option value="">-- Pilih Database --</option>
                         <?php foreach ($databases as $db): ?>
-                            <option value="<?=htmlspecialchars($db)?>" <?=$db === $_SESSION['db_name'] ? 'selected' : ''?>>
+                            <option value="<?=htmlspecialchars($db)?>" <?=$db === ($_SESSION['db_name'] ?? '') ? 'selected' : ''?>>
                                 <?=htmlspecialchars($db)?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </form>
-                <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'])?></span></small>
+                <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'] ?? 'N/A')?></span></small>
             <?php elseif (($_SESSION['db_mode'] ?? 'sql') === 'sqlite'): ?>
                 <form method="GET" style="margin-bottom: 5px;">
                     <select name="select_sqlite_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
@@ -7463,13 +8604,21 @@ var advancedFilters = null;
                         <?php 
                         $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.db');
                         $sqliteFiles = array_merge($sqliteFiles, glob(__DIR__ . '/sqlite_db/*.sqlite'));
+                        $foundCurrent = false;
                         foreach ($sqliteFiles as $file): 
                             $basename = basename($file);
+                            $isSelected = ($basename === ($_SESSION['sqlite_file'] ?? ''));
+                            if ($isSelected) $foundCurrent = true;
                         ?>
-                            <option value="<?=htmlspecialchars($basename)?>" <?=$basename === ($_SESSION['sqlite_file'] ?? '') ? 'selected' : ''?>>
+                            <option value="<?=htmlspecialchars($basename)?>" <?=$isSelected ? 'selected' : ''?>>
                                 <?=htmlspecialchars($basename)?>
                             </option>
                         <?php endforeach; ?>
+                        <?php if (!empty($_SESSION['sqlite_file']) && !$foundCurrent): ?>
+                            <option value="<?=htmlspecialchars($_SESSION['sqlite_file'])?>" selected>
+                                (External) <?=htmlspecialchars(basename($_SESSION['sqlite_file']))?>
+                            </option>
+                        <?php endif; ?>
                     </select>
                 </form>
                 <div style="display: flex; gap: 5px; margin-bottom: 5px;">
@@ -7526,6 +8675,8 @@ var advancedFilters = null;
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
             
+
+            
             <div id="pinned-tables-section" style="display:none;">
                 <div class="nav-header"><span><i class="fas fa-thumbtack"></i> Pinned Tables</span></div>
                 <div id="pinned-tables-list"></div>
@@ -7576,7 +8727,11 @@ var advancedFilters = null;
                     <a href="index.php" title="Dashboard"><i class="fas fa-th"></i></a>
                     <a href="filemanager.php" title="File Manager"><i class="fas fa-folder"></i></a>
                 </div>
-                <span style="color:var(--text-secondary); font-size:0.85rem;"><i class="fas fa-user"></i> <?=htmlspecialchars($_SESSION['db_user'])?></span>
+                <span style="color:var(--text-secondary); font-size:0.85rem;" title="DB User: <?=htmlspecialchars($_SESSION['db_user'] ?? 'root')?>">
+                    <i class="fas fa-user-circle"></i> 
+                    <?= htmlspecialchars($_SESSION['username'] ?? 'Guest') ?> 
+                    (<?= ucfirst($_SESSION['role'] ?? 'guest') ?>)
+                </span>
                 <a href="?logout=1" class="logout-link"><i class="fas fa-sign-out-alt"></i> Logout</a>
             </div>
         </div>
@@ -7591,8 +8746,148 @@ var advancedFilters = null;
 
             <?php 
             $dbMode = $_SESSION['db_mode'] ?? 'sql';
-            if (!$currentTable): 
+            if (!$currentTable && ($view === 'structure' || $view === 'compare')): 
             ?>
+                <!-- STRUCTURAL COMPARISON (COLLAPSIBLE) -->
+                <style>
+                    .compare-grid { display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px; }
+                    .compare-panel { background:var(--bg-card); border:1px solid var(--border-color); border-radius:10px; overflow:hidden; }
+                    .compare-header { padding:10px 15px; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--border-color); font-weight:bold; font-size:0.85rem; display:flex; justify-content:space-between; align-items:center; }
+                    .compare-summary { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:10px; margin-bottom:15px; }
+                    .scard { background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px; text-align:center; }
+                    .scard-val { font-size:1.4rem; font-weight:bold; }
+                    .scard-label { font-size:0.65rem; color:var(--text-secondary); text-transform:uppercase; margin-top:3px; }
+                    .sql-result { background:#080808; border-radius:10px; border:1px solid #333; padding:20px; font-family:'Fira Code', monospace; font-size:13px; line-height:1.6; max-height:500px; overflow:auto; position:relative; }
+                    .sql-cmt { color:#666; font-style:italic; }
+                    .sql-kw { color:#a5d6ff; font-weight:bold; }
+                    .sql-str { color:#7ee787; }
+                    .v-green { color:#2ecc71 !important; }
+                    .compare-toggle { cursor:pointer; display:flex; align-items:center; gap:10px; transition:color 0.2s; }
+                    .compare-toggle:hover { color:var(--accent); }
+                </style>
+
+                <div class="card" id="compare-section" style="margin-bottom: 25px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h3 class="compare-toggle" onclick="toggleCompareCard()" style="margin:0;">
+                            <i class="fas fa-code-compare"></i> 
+                            Structural Comparison Tool
+                            <i id="compare-chevron" class="fas fa-chevron-right" style="font-size:0.8rem; margin-left:5px;"></i>
+                        </h3>
+                        <div id="compare-header-actions" style="display:none;">
+                            <button onclick="fillCurrentStructure(event)" class="btn btn-sm"><i class="fas fa-sync"></i> Refresh Local Structure</button>
+                        </div>
+                    </div>
+                    
+                    <div id="compare-content" style="display:none; margin-top:20px;">
+                        <p style="color:var(--text-secondary); margin-bottom:20px; font-size:0.9rem;">
+                            Compare your local database structure with another source (production/staging) to generate migration SQL.
+                        </p>
+                        
+                        <div class="compare-grid">
+                            <div class="compare-panel">
+                                <div class="compare-header"><span>SOURCE (LOCAL)</span></div>
+                                <textarea id="compare_source" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Source structure..."></textarea>
+                            </div>
+                            <div class="compare-panel">
+                                <div class="compare-header"><span>TARGET (REMOTE)</span></div>
+                                <textarea id="compare_target" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Paste output of SHOW CREATE TABLE here..."></textarea>
+                            </div>
+                        </div>
+
+                        <div style="text-align:center; margin-bottom:25px;">
+                            <button onclick="runComparison()" id="compareBtn" class="btn btn-primary" style="padding:8px 25px;"><i class="fas fa-play"></i> Compare & Generate SQL</button>
+                        </div>
+
+                        <div id="compare-results" style="display:none;">
+                            <div class="compare-summary" id="comp-summary" style="margin-bottom:15px;"></div>
+                            <div class="sql-result">
+                                <div style="position:absolute; top:10px; right:10px; display:flex; gap:10px;">
+                                    <button class="btn btn-sm" onclick="copyCompareSql()" style="background:#333;"><i class="fas fa-copy"></i> Copy</button>
+                                    <button class="btn btn-sm" onclick="downloadCompareSql()" style="background:#333;"><i class="fas fa-download"></i> Download</button>
+                                </div>
+                                <pre id="comp-sql"></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    function toggleCompareCard() {
+                        const content = document.getElementById('compare-content');
+                        const actions = document.getElementById('compare-header-actions');
+                        const chevron = document.getElementById('compare-chevron');
+                        const isHidden = content.style.display === 'none';
+                        
+                        content.style.display = isHidden ? 'block' : 'none';
+                        actions.style.display = isHidden ? 'flex' : 'none';
+                        chevron.className = isHidden ? 'fas fa-chevron-down' : 'fas fa-chevron-right';
+                        
+                        if (isHidden && !document.getElementById('compare_source').value) {
+                            fillCurrentStructure();
+                        }
+                    }
+
+                    async function fillCurrentStructure(ev) {
+                        const btn = ev ? ev.currentTarget : null;
+                        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...'; }
+                        try {
+                            const fd = new FormData(); fd.append('action', 'get_all_tables_structure');
+                            const res = await fetch('?', { method:'POST', body:fd });
+                            const data = await res.json();
+                            if (data.success) {
+                                document.getElementById('compare_source').value = data.sql;
+                                if (ev) Swal.fire({ toast:true, position:'top-end', timer:1500, showConfirmButton:false, icon:'success', title:'Local structure updated' });
+                            }
+                        } catch (e) {
+                            console.error(e);
+                        } finally {
+                            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync"></i> Refresh Local Structure'; }
+                        }
+                    }
+
+                    async function runComparison() {
+                        const src = document.getElementById('compare_source').value;
+                        const tgt = document.getElementById('compare_target').value;
+                        if (!src || !tgt) return Swal.fire('Error', 'Please provide both structures.', 'warning');
+                        const btn = document.getElementById('compareBtn');
+                        btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Comparing...';
+                        try {
+                            const fd = new FormData();
+                            fd.append('action', 'compare_structures');
+                            fd.append('localhost_sql', src);
+                            fd.append('production_sql', tgt);
+                            const res = await fetch('?', { method:'POST', body:fd });
+                            const data = await res.json();
+                            if (data.success) {
+                                document.getElementById('comp-sql').innerHTML = data.highlighted;
+                                document.getElementById('comp-summary').innerHTML = Object.entries(data.summary).map(([k,v]) => `<div class="scard"><div class="scard-val ${v>0?'v-green':''}">${v}</div><div class="scard-label">${k.replace(/([A-Z])/g,' $1')}</div></div>`).join('');
+                                document.getElementById('compare-results').style.display = 'block';
+                            }
+                        } catch (e) {
+                            Swal.fire('Error', e.message, 'error');
+                        } finally {
+                            btn.disabled = false; btn.innerHTML = '<i class="fas fa-play"></i> Compare & Generate SQL';
+                        }
+                    }
+
+                    function copyCompareSql() {
+                        const sql = document.getElementById('comp-sql').innerText;
+                        navigator.clipboard.writeText(sql).then(() => Swal.fire({ toast:true, position:'top-end', timer:1500, showConfirmButton:false, icon:'success', title:'SQL Copied' }));
+                    }
+
+                    function downloadCompareSql() {
+                        const sql = document.getElementById('comp-sql').innerText;
+                        const b = new Blob([sql], {type:'text/sql'});
+                        const u = URL.createObjectURL(b);
+                        const a = document.createElement('a'); a.href=u; a.download='migration.sql'; a.click();
+                    }
+                    
+                    // Auto-open if explicitly requested via URL
+                    if (window.location.search.includes('view=compare')) {
+                        toggleCompareCard();
+                    }
+                </script>
+
                 <!-- CUSTOM WIDGETS SECTION -->
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; margin-top:10px;">
                     <h3 style="margin:0;"><i class="fas fa-th-large"></i> Custom Widgets</h3>
@@ -7828,7 +9123,7 @@ var advancedFilters = null;
 
                 // --- GITHUB BACKUP FUNCTIONS ---
                 function openGithubSettings() {
-                    const gh = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['github'] ?? (object)[]); ?>;
+                    const gh = <?= json_encode(load_config($configFile)['github'] ?? (object)[]); ?>;
                     Swal.fire({
                         title: '<i class="fab fa-github"></i> GitHub API Settings',
                         background: 'var(--bg-card)',
@@ -7936,7 +9231,7 @@ var advancedFilters = null;
 
                 // --- TELEGRAM BACKUP FUNCTIONS ---
                 function openTelegramSettings() {
-                    const tg = <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['telegram'] ?? (object)[]); ?>;
+                    const tg = <?= json_encode(load_config($configFile)['telegram'] ?? (object)[]); ?>;
                     Swal.fire({
                         title: '<i class="fab fa-telegram"></i> Telegram Bot Settings',
                         background: 'var(--bg-card)',
@@ -8012,7 +9307,7 @@ var advancedFilters = null;
                             input: 'password',
                             inputPlaceholder: 'Enter ZIP password...',
                             showCancelButton: true,
-                            inputValue: <?= json_encode(load_config(__DIR__ . '/adminer.config.json')['telegram']['zip_password'] ?? '') ?>
+                            inputValue: <?= json_encode(load_config($configFile)['telegram']['zip_password'] ?? '') ?>
                         });
                         if (pass === undefined) return; // Cancelled
                         password = pass;
@@ -8035,13 +9330,51 @@ var advancedFilters = null;
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
                 }
 
-                function deleteTelegramBackup(dateId, name, msgId) {
+                function universalReplace(mode) {
+                    const search = new URLSearchParams(window.location.search).get('uni_search');
+                    const replace = document.getElementById('replace_query').value;
+                    if (!search) return;
+                    
+                    let selected = [];
+                    if (mode === 'selected') {
+                        document.querySelectorAll('.uni-row-checkbox:checked').forEach(cb => {
+                            selected.push(`${cb.dataset.table}|pk|${cb.dataset.pk}`); // Note: column needs careful mapping if we want specific cell replace, but here we replace in row
+                        });
+                        if (selected.length === 0) return Swal.fire('Error', 'No rows selected.', 'error');
+                    }
+
                     Swal.fire({
-                        title: 'Remove Backup?',
-                        text: `Delete index for "${name}"? ${msgId ? 'This will also attempt to delete the file from the Telegram chat.' : ''}`,
+                        title: mode === 'all' ? 'Replace All Occurrences?' : 'Replace in Selected Rows?',
+                        text: `This will replace "${search}" with "${replace}" across ${mode === 'all' ? 'ALL tables' : 'selected rows'}. This action cannot be undone.`,
                         icon: 'warning',
                         showCancelButton: true,
-                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Yes, Replace',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'universal_replace');
+                            fd.append('search_query', search);
+                            fd.append('replace_query', replace);
+                            fd.append('replace_mode', mode);
+                            selected.forEach(s => fd.append('selected[]', s));
+                            return fetch('?', { method: 'POST', body: fd }).then(res => res.json()).then(data => {
+                                if (!data.success) throw new Error(data.message);
+                                return data;
+                            });
+                        }
+                    }).then(res => {
+                        if (res.isConfirmed) {
+                            Swal.fire('Success', res.value.message, 'success').then(() => location.reload());
+                        }
+                    });
+                }
+
+                function deleteTelegramBackup(dateId, msgId) {
+                    Swal.fire({
+                        title: 'Delete Backup?',
+                        text: 'This will remove the backup from Telegram channel/bot.',
+                        icon: 'warning',
+                        showCancelButton: true,
                         confirmButtonText: 'Delete',
                         showLoaderOnConfirm: true,
                         preConfirm: () => {
@@ -8194,11 +9527,20 @@ var advancedFilters = null;
                 <div class="card" style="margin-top: 20px;">
                     <h3><i class="fas fa-search-plus"></i> Universal Search</h3>
                     <p style="color:var(--text-secondary); margin-bottom:15px;">Search for any content across all tables in the current database/file.</p>
-                    <form method="GET" style="display:flex; gap:10px; margin-bottom:10px;">
-                        <input type="text" name="uni_search" class="form-control" placeholder="Search keywords..." value="<?= htmlspecialchars($uniSearch) ?>" style="flex:1;">
-                        <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Search All Tables</button>
+                    <form method="GET" style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px; background:rgba(255,255,255,0.03); padding:15px; border-radius:10px; border:1px solid var(--border-color);">
+                        <div style="display:flex; gap:10px;">
+                            <input type="text" name="uni_search" class="form-control" placeholder="Search keywords..." value="<?= htmlspecialchars($uniSearch) ?>" style="flex:1;">
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Search All Tables</button>
+                            <?php if($uniSearch): ?>
+                                <a href="?" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a>
+                            <?php endif; ?>
+                        </div>
                         <?php if($uniSearch): ?>
-                            <a href="?" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a>
+                        <div style="display:flex; gap:10px; align-items:center; border-top:1px solid rgba(255,255,255,0.05); padding-top:10px;">
+                            <input type="text" id="replace_query" class="form-control" placeholder="Replace with..." style="flex:1;">
+                            <button type="button" class="btn btn-accent" onclick="universalReplace('all')"><i class="fas fa-sync"></i> Replace All</button>
+                            <button type="button" class="btn btn-accent btn-sm" onclick="universalReplace('selected')"><i class="fas fa-check-double"></i> Replace Selected</button>
+                        </div>
                         <?php endif; ?>
                     </form>
                     <?php 
@@ -8266,8 +9608,9 @@ var advancedFilters = null;
                                     echo "</tr></thead><tbody>";
                                     foreach (array_slice($matchedRows, 0, 5) as $row) {
                                         echo "<tr>";
+                                        $pkVal = $row['id'] ?? null;
+                                        echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."' onchange='updateUniSelection()'></td>";
                                         foreach ($row as $k => $v) {
-                                            $pkVal = $row['id'] ?? null;
                                             $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
                                             echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
                                         }
@@ -8320,7 +9663,8 @@ var advancedFilters = null;
                                                 </div>
                                                 <div style='overflow-x:auto;'>
                                                     <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
-                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>";
+                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>
+                                                            <th style='width:40px;'></th>";
                                         foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
                                         echo "</tr></thead><tbody>";
                                         foreach (array_slice($matches, 0, 5) as $row) {
@@ -8341,8 +9685,10 @@ var advancedFilters = null;
                                             }
                                             
                                             echo "<tr>";
+                                            $pkVal = ($pk && isset($row[$pk])) ? $row[$pk] : null;
+                                            echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."'></td>";
                                             foreach ($row as $k => $v) {
-                                                $pkAttr = ($pk && isset($row[$pk])) ? "data-pk='".htmlspecialchars($row[$pk])."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                                $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
                                                 $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
                                                 echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
                                             }
@@ -8390,8 +9736,8 @@ var advancedFilters = null;
                 if (should_show_managed_database_list($hostProfile) && !$currentTable && $view === 'structure'): ?>
                 <!-- MANAGEMENT UI -->
                 <div class="card">
-                    <h3><i class="fas fa-list"></i> Managed Database List (JSON)</h3>
-                    <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.config.json</code>. These appear in the sidebar dropdown.</p>
+                    <h3><i class="fas fa-list"></i> Managed Database List (SQLite)</h3>
+                    <p style="color:var(--text-secondary); margin-bottom:15px;">List of databases stored in <code>adminer.sqlite</code>. These appear in the sidebar dropdown.</p>
 
                     <div class="table-wrapper">
                         <table>
@@ -8448,6 +9794,9 @@ var advancedFilters = null;
                 <div class="tabs">
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure" class="tab <?=$view==='structure'?'active':''?>">Structure</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="tab <?=$view==='data'?'active':''?>">Data</a>
+                    <?php if (($_SESSION['db_mode'] ?? 'sql') === 'json'): ?>
+                        <a href="?table=<?=htmlspecialchars($currentTable)?>&view=json_tree" class="tab <?=$view==='json_tree'?'active':''?>"><i class="fas fa-project-diagram"></i> JSON Tree</a>
+                    <?php endif; ?>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=sql" class="tab <?=$view==='sql'?'active':''?>">SQL</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=import" class="tab <?=$view==='import'?'active':''?>">Import</a>
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=seeder" class="tab <?=$view==='seeder'?'active':''?>">Seeder</a>
@@ -9091,6 +10440,72 @@ async function generatePhpHash() {
                         }
                     </script>
 
+                <?php elseif ($view === 'json_tree' && ($_SESSION['db_mode'] ?? 'sql') === 'json'): ?>
+                <div class="card" style="margin-bottom:20px; border:1px solid var(--border-color); background:var(--bg-card); border-radius:12px; overflow:hidden;">
+                    <div style="padding:15px; background:var(--bg-hover); border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+                        <h3 style="margin:0; font-size:1.1rem;"><i class="fas fa-project-diagram"></i> JSON Tree Editor (Full Table)</h3>
+                        <div style="display:flex; gap:10px;">
+                            <button type="button" class="btn btn-primary" onclick="saveFullJsonTree()"><i class="fas fa-save"></i> Save Changes</button>
+                            <a href="?table=<?=urlencode($currentTable)?>&view=data" class="btn"><i class="fas fa-arrow-left"></i> Back to Table</a>
+                        </div>
+                    </div>
+                    <div id="fullJsonTreeEditor" style="height: 650px; border:none;"></div>
+                </div>
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const container = document.getElementById('fullJsonTreeEditor');
+                        if (!container) return;
+                        
+                        const options = {
+                            mode: 'tree',
+                            modes: ['tree', 'view', 'form', 'code', 'text'],
+                            onError: function (err) {
+                                Swal.fire('Error', err.toString(), 'error');
+                            }
+                        };
+                        const initialData = <?= json_encode($tableData) ?>;
+                        window.fullJsonEditor = new JSONEditor(container, options);
+                        window.fullJsonEditor.set(initialData);
+                    });
+
+                    function saveFullJsonTree() {
+                        if (!window.fullJsonEditor) return;
+                        const updatedData = window.fullJsonEditor.get();
+                        const formData = new FormData();
+                        formData.append('action', 'save_json_table');
+                        formData.append('table', '<?= addslashes($currentTable) ?>');
+                        formData.append('json_data', JSON.stringify(updatedData));
+
+                        Swal.fire({
+                            title: 'Save Changes?',
+                            text: "This will overwrite the current table data in the JSON file. Proccess with caution!",
+                            icon: 'warning',
+                            showCancelButton: true,
+                            confirmButtonText: 'Yes, save all!',
+                            confirmButtonColor: '#3085d6',
+                            cancelButtonColor: '#d33'
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                // Show loading
+                                Swal.showLoading();
+                                fetch('?', {
+                                    method: 'POST',
+                                    body: formData
+                                })
+                                .then(res => res.json())
+                                .then(data => {
+                                    if (data.success) {
+                                        Swal.fire('Saved!', 'Table data has been updated.', 'success');
+                                    } else {
+                                        Swal.fire('Error', data.message || 'Operation failed', 'error');
+                                    }
+                                })
+                                .catch(err => Swal.fire('Error', 'Network request failed', 'error'));
+                            }
+                        });
+                    }
+                </script>
+
                 <?php elseif ($view === 'seeder'): ?>
                 <div class="card">
                     <h3><i class="fas fa-magic"></i> Smart Data Seeder</h3>
@@ -9620,6 +11035,8 @@ async function generatePhpHash() {
                             </div>
                         </form>
                     </div>
+
+
 
                 <?php elseif ($view === 'sql'): 
                     ?>
@@ -11299,23 +12716,7 @@ var queryBuilder = null;
             });
         }
 
-        function showVideoModal(src) {
-            Swal.fire({
-                html: '<video controls autoplay style="max-width:100%; max-height:70vh; border-radius:8px;"><source src="' + src + '"></video>',
-                showCloseButton: true,
-                showConfirmButton: false,
-                width: 'auto',
-                background: 'var(--bg-card)',
-                customClass: {
-                    popup: 'dark-modal'
-                }
-            });
-        }
-        
-    // --- DATABASE MODE TOGGLE (SQL/JSON/SQLITE) ---
-    function switchDbMode(mode) {
-        window.location.href = '?db_mode=' + mode;
-    }
+
 
     // --- JSON FILE MANAGEMENT ---
     function createNewJsonFile() {
