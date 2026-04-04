@@ -4730,64 +4730,166 @@ function fm_foldersize($path) {
               echo '<div id="path-breadcrumbs" class="breadcrumb-container flex-grow-1" style="padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); transition: all 0.2s; background: rgba(0,0,0,0.2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">' . $root_url . '</div>';
               echo $editFile;
               echo '</div>';
-              ?>
-               <script>
+              ?>               <script>
                (function() {
                    if (window.breadcrumbInitialized) return;
                    window.breadcrumbInitialized = true;
-                   console.log('Breadcrumb Script Loading...');
+                   
+                   const HISTORY_KEY = 'fm_path_history';
+                   const MAX_HISTORY = 10;
+
+                   function getHistory() {
+                       try {
+                           return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+                       } catch(e) { return []; }
+                   }
+
+                   function saveToHistory(path) {
+                       if (!path || path === '.' || path === '/') return;
+                       let history = getHistory();
+                       history = history.filter(h => h !== path);
+                       history.unshift(path);
+                       history = history.slice(0, MAX_HISTORY);
+                       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+                   }
+
+                   // Initial save of current path
+                   saveToHistory('<?php echo addslashes(FM_PATH); ?>');
 
                    window.showPathEditor = function() {
-                       console.log('showPathEditor function called');
                        const breadcrumbDiv = $('#path-breadcrumbs');
-                       if (!breadcrumbDiv.length) {
-                           console.log('Error: #path-breadcrumbs element not found');
-                           return;
-                       }
+                       if (!breadcrumbDiv.length) return;
                        
                        const currentPath = '<?php echo addslashes(FM_PATH); ?>';
                        const offset = breadcrumbDiv.offset();
                        const width = breadcrumbDiv.outerWidth();
                        const height = breadcrumbDiv.outerHeight();
                        
-                       console.log('Breadcrumb Offset:', offset);
-                       console.log('Breadcrumb Geometry:', {width, height});
+                       // Remove existing if any
+                       $('#path-editor-wrapper').remove();
 
-                       if (width < 20 || height < 10) {
-                           console.log('Warning: Breadcrumb area too small, using fallback placement.');
-                       }
-
-                       // Create floating input
-                       const input = $('<input type="text" id="path-editor-input" class="form-control" style="position: absolute !important; margin: 0; padding: 0 12px; background: #222 !important; color: #fff !important; border: 2px solid #007bff !important; border-radius: 6px; font-family: monospace; font-size: 0.9rem; z-index: 999999; box-sizing: border-box; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">');
-                       input.val(currentPath);
-                       
-                       input.css({
+                       // Create wrapper for input + dropdown
+                       const wrapper = $('<div id="path-editor-wrapper" style="position: absolute !important; z-index: 1000000; box-sizing: border-box;"></div>');
+                       wrapper.css({
                            top: offset.top + 'px',
                            left: offset.left + 'px',
-                           width: width + 'px',
-                           height: height + 'px',
-                           display: 'block'
+                           width: width + 'px'
                        });
-                       
-                       $('body').append(input);
-                       input.focus().select();
-                       console.log("Floating input appended to body at top:", offset.top, "left:", offset.left);
 
-                       input.on('keydown', function(e) {
-                           if (e.key === 'Enter') {
-                               const newPath = $(this).val().trim();
-                               window.location.href = '?p=' + encodeURIComponent(newPath);
-                           } else if (e.key === 'Escape') {
-                               input.remove();
+                       // Flex container for input and history toggle
+                       const inputGroup = $('<div style="display: flex; height: '+height+'px; border: 2px solid #007bff; border-radius: 6px; overflow: hidden; background: #222; box-shadow: 0 4px 15px rgba(0,0,0,0.5);"></div>');
+                       
+                       const input = $('<input type="text" id="path-editor-input" class="form-control" style="flex: 1; border: none !important; background: transparent !important; color: #fff !important; padding: 0 12px; font-family: monospace; font-size: 0.9rem; height: 100%;">');
+                       input.val(currentPath);
+
+                       const historyBtn = $('<button type="button" style="width: 32px; background: #333; border: none; border-left: 1px solid #444; color: #888; cursor: pointer;"><i class="fa fa-chevron-down" style="font-size: 10px;"></i></button>');
+                       
+                       inputGroup.append(input).append(historyBtn);
+                       wrapper.append(inputGroup);
+
+                       // Suggestions/History Dropdown
+                       const dropdown = $('<div id="path-dropdown" style="display: none; background: #1a1a1a; border: 1px solid #333; border-radius: 0 0 6px 6px; border-top: none; max-height: 300px; overflow-y: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5);"></div>');
+                       wrapper.append(dropdown);
+
+                       $('body').append(wrapper);
+                       input.focus().select();
+
+                       let selectedIndex = -1;
+
+                       function updateDropdown(items, isHistory = false) {
+                           dropdown.empty();
+                           if (!items.length) {
+                               dropdown.hide();
+                               return;
+                           }
+                           
+                           items.forEach((item, idx) => {
+                               const text = typeof item === 'string' ? item : item.path;
+                               const el = $('<div class="dropdown-item" style="padding: 8px 12px; cursor: pointer; color: #ccc; font-size: 0.85rem; border-bottom: 1px solid #222; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>');
+                               el.html((isHistory ? '<i class="fa fa-history text-muted me-2" style="font-size: 10px;"></i>' : '<i class="fa fa-folder text-primary me-2" style="font-size: 10px;"></i>') + text);
+                               el.on('mousedown', function() {
+                                   input.val(text);
+                                   navigate(text);
+                               });
+                               dropdown.append(el);
+                           });
+                           selectedIndex = -1;
+                           dropdown.show();
+                       }
+
+                       function navigate(path) {
+                           saveToHistory(path);
+                           window.location.href = '?p=' + encodeURIComponent(path);
+                       }
+
+                       function fetchSuggestions(val) {
+                           const parts = val.split('/');
+                           const lastPart = parts.pop();
+                           const parentPath = parts.join('/');
+                           
+                           $.ajax({
+                               type: "POST",
+                               url: window.location.href,
+                               data: {
+                                   ajax: true,
+                                   type: 'get_folders',
+                                   path: parentPath,
+                                   token: window.csrf
+                               },
+                               success: function(data) {
+                                   try {
+                                       const folders = JSON.parse(data);
+                                       const matches = folders.filter(f => f.name.toLowerCase().startsWith(lastPart.toLowerCase()));
+                                       updateDropdown(matches.map(m => parentPath ? parentPath + '/' + m.name : m.name));
+                                   } catch(e) {}
+                               }
+                           });
+                       }
+
+                       input.on('input', function() {
+                           const val = $(this).val();
+                           if (val.length > 0) {
+                               fetchSuggestions(val);
+                           } else {
+                               updateDropdown([]);
                            }
                        });
-                       
-                       input.on('blur', function() {
-                           setTimeout(() => {
-                               if ($('#path-editor-input').length) {
-                                   input.remove();
+
+                       input.on('keydown', function(e) {
+                           const items = dropdown.find('.dropdown-item');
+                           if (e.key === 'ArrowDown') {
+                               e.preventDefault();
+                               selectedIndex = (selectedIndex + 1) % items.length;
+                               items.css('background', 'transparent');
+                               $(items[selectedIndex]).css('background', '#333').focus();
+                           } else if (e.key === 'ArrowUp') {
+                               e.preventDefault();
+                               selectedIndex = (selectedIndex - 1 + items.length) % items.length;
+                               items.css('background', 'transparent');
+                               $(items[selectedIndex]).css('background', '#333').focus();
+                           } else if (e.key === 'Enter') {
+                               if (selectedIndex >= 0) {
+                                   const selectedText = $(items[selectedIndex]).text().trim();
+                                   navigate(selectedText);
+                               } else {
+                                   navigate($(this).val().trim());
                                }
-                           }, 200);
+                           } else if (e.key === 'Escape') {
+                               wrapper.remove();
+                           }
+                       });
+
+                       historyBtn.on('click', function() {
+                           const history = getHistory();
+                           updateDropdown(history, true);
+                           input.focus();
+                       });
+
+                       // Close on outside click
+                       $(document).one('mousedown', function(e) {
+                           if (!$(e.target).closest('#path-editor-wrapper').length) {
+                               wrapper.remove();
+                           }
                        });
                    };
 
@@ -4797,40 +4899,30 @@ function fm_foldersize($path) {
                            return;
                        }
                        $(document).ready(function() {
-                           // Double click for desktop
                            $(document).off('dblclick', '#path-breadcrumb-container').on('dblclick', '#path-breadcrumb-container', function(e) {
-                               console.log('Double-click detected');
                                window.showPathEditor();
                            });
-
-                           // Single-click on empty area detection
                            $(document).off('click', '#path-breadcrumb-container').on('click', '#path-breadcrumb-container', function(e) {
                                if (e.target.id === 'path-breadcrumb-container' || e.target.id === 'path-breadcrumbs') {
-                                   console.log('Single-click on empty area detected');
                                    window.showPathEditor();
                                }
                            });
-
-                           // Double tap logic for mobile
                            let tapCount = 0;
                            $(document).off('touchend', '#path-breadcrumb-container').on('touchend', '#path-breadcrumb-container', function(e) {
                                tapCount++;
                                if (tapCount === 1) {
                                    setTimeout(function() {
-                                       if (tapCount === 2) {
-                                           console.log('Double-tap detected');
-                                           window.showPathEditor();
-                                       }
+                                       if (tapCount === 2) window.showPathEditor();
                                        tapCount = 0;
                                    }, 300);
                                }
                            });
-                           console.log('Path editor events attached.');
                        });
                    }
                    initPathEditorEvents();
                })();
                </script>
+
 
               <div class="col-12 col-md-6">
                   <ul class="navbar-nav justify-content-end flex-row flex-wrap" data-bs-theme="<?php echo FM_THEME; ?>">
