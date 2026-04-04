@@ -2163,25 +2163,59 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $affectedTotal = 0;
             if ($mode === 'selected' && !empty($selected)) {
-                // Replace only selected cells
+                // Replace only in selected rows
                 foreach ($selected as $item) {
-                    list($t, $c, $pk) = explode('|', $item);
+                    $parts = explode('|', $item);
+                    if (count($parts) < 2) continue;
+                    $t = $parts[0];
+                    $pkVal = $parts[1];
+                    
                     if ($dbMode === 'json' && isset($jsonDb)) {
-                        $row = $jsonDb->select($t, ['id' => ['operator' => '=', 'value' => $pk]]);
+                        $row = $jsonDb->select($t, ['id' => ['operator' => '=', 'value' => $pkVal]]);
                         if (!empty($row)) {
-                            $newVal = str_ireplace($search, $replace, $row[0][$c]);
-                            $jsonDb->update($t, [$c => $newVal], ['id' => ['operator' => '=', 'value' => $pk]]);
-                            $affectedTotal++;
+                            $updates = [];
+                            foreach ($row[0] as $col => $val) {
+                                if (is_string($val) && stripos($val, $search) !== false) {
+                                    $updates[$col] = str_ireplace($search, $replace, $val);
+                                }
+                            }
+                            if (!empty($updates)) {
+                                $jsonDb->update($t, $updates, ['id' => ['operator' => '=', 'value' => $pkVal]]);
+                                $affectedTotal++;
+                            }
                         }
                     } else {
-                        $stmt = $pdo->prepare("SELECT `$c` FROM `$t` WHERE `id` = ?");
-                        $stmt->execute([$pk]);
-                        $oldVal = $stmt->fetchColumn();
-                        if ($oldVal !== false) {
-                            $newVal = str_ireplace($search, $replace, $oldVal);
-                            $uStmt = $pdo->prepare("UPDATE `$t` SET `$c` = ? WHERE `id` = ?");
-                            $uStmt->execute([$newVal, $pk]);
-                            $affectedTotal++;
+                        // Detect PK
+                        $pk = 'id'; // default fallback
+                        if ($dbMode === 'sql') {
+                            $res = $pdo->query("SHOW KEYS FROM `$t` WHERE Key_name = 'PRIMARY'")->fetch();
+                            if ($res) $pk = $res['Column_name'];
+                        } else {
+                            foreach($pdo->query("PRAGMA table_info(`$t`)")->fetchAll() as $ci) if ($ci['pk']) $pk = $ci['name'];
+                        }
+                        
+                        // Fetch row to find which columns contain the search term
+                        $stmt = $pdo->prepare("SELECT * FROM `$t` WHERE `$pk` = ?");
+                        $stmt->execute([$pkVal]);
+                        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($row) {
+                            $updateCols = [];
+                            $params = [];
+                            foreach ($row as $col => $val) {
+                                if (is_string($val) && stripos($val, $search) !== false) {
+                                    $updateCols[] = "`$col` = REPLACE(`$col`, ?, ?)";
+                                    $params[] = $search;
+                                    $params[] = $replace;
+                                }
+                            }
+                            if (!empty($updateCols)) {
+                                $uSql = "UPDATE `$t` SET " . implode(', ', $updateCols) . " WHERE `$pk` = ?";
+                                $params[] = $pkVal;
+                                $uStmt = $pdo->prepare($uSql);
+                                $uStmt->execute($params);
+                                $affectedTotal++;
+                            }
                         }
                     }
                 }
@@ -7627,6 +7661,116 @@ var advancedFilters = null;
         });
     }
 
+    function openQuickSqlModal() {
+        Swal.fire({
+            title: '<i class="fas fa-terminal"></i> Quick SQL Command',
+            background: 'var(--bg-card)',
+            color: 'var(--text-primary)',
+            html: `
+                <div style="text-align:left; margin-top:10px;">
+                    <p style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:12px;">Run a direct query on <b><?= htmlspecialchars($_SESSION['db_name'] ?? 'Default') ?></b>. Results will be shown in the full SQL view.</p>
+                    <form id="quickSqlForm" method="POST" action="?view=sql">
+                        <input type="hidden" name="action" value="sql_query">
+                        <textarea name="query" id="quickSqlInput" class="form-control" style="width:100%; height:220px; font-family:'Fira Code', monospace; background:#080808; color:#a5d6ff; padding:15px; border:1px solid #333; border-radius:10px; font-size:13px; line-height:1.5;" placeholder="SELECT * FROM table_name LIMIT 10..."></textarea>
+                    </form>
+                    <div style="margin-top:20px; display:flex; justify-content:space-between; align-items:center;">
+                        <small style="color:var(--text-secondary);"><i class="fas fa-info-circle"></i> Hotkey: Ctrl+Enter</small>
+                        <button class="btn btn-primary" onclick="document.getElementById('quickSqlForm').submit()" style="padding:10px 25px;"><i class="fas fa-play"></i> Execute Query</button>
+                    </div>
+                </div>
+            `,
+            didOpen: () => {
+                const textarea = document.getElementById('quickSqlInput');
+                textarea.focus();
+                textarea.addEventListener('keydown', (e) => {
+                    if (e.ctrlKey && e.key === 'Enter') {
+                        document.getElementById('quickSqlForm').submit();
+                    }
+                });
+            },
+            showConfirmButton: false,
+            showCloseButton: true,
+            width: '650px',
+        });
+    }
+
+    // --- Searchable Select Logic ---
+    function initSearchableSelects() {
+        document.querySelectorAll('.searchable-select').forEach(select => {
+            if (select.dataset.initialized) return;
+            select.dataset.initialized = "true";
+            
+            // Hide original select
+            select.style.display = 'none';
+            
+            // Create custom UI
+            const wrapper = document.createElement('div');
+            wrapper.className = 'ss-wrapper';
+            wrapper.style.position = 'relative';
+            
+            const trigger = document.createElement('div');
+            trigger.className = 'ss-trigger';
+            const selectedOption = select.options[select.selectedIndex];
+            trigger.innerHTML = (selectedOption ? selectedOption.text : '-- Select --') + ' <i class="fas fa-chevron-down" style="font-size:0.7rem; opacity:0.5;"></i>';
+            
+            const dropdown = document.createElement('div');
+            dropdown.className = 'ss-dropdown';
+            dropdown.style.display = 'none';
+            
+            const searchInput = document.createElement('input');
+            searchInput.type = 'text';
+            searchInput.placeholder = 'Search...';
+            searchInput.className = 'ss-search';
+            
+            const list = document.createElement('div');
+            list.className = 'ss-list';
+            
+            const updateList = (filter = '') => {
+                list.innerHTML = '';
+                Array.from(select.options).forEach((opt, idx) => {
+                    if (filter && !opt.text.toLowerCase().includes(filter.toLowerCase())) return;
+                    const item = document.createElement('div');
+                    item.className = 'ss-item' + (idx === select.selectedIndex ? ' selected' : '');
+                    item.innerText = opt.text;
+                    item.onclick = () => {
+                        select.selectedIndex = idx;
+                        select.dispatchEvent(new Event('change'));
+                        trigger.innerHTML = opt.text + ' <i class="fas fa-chevron-down" style="font-size:0.7rem; opacity:0.5;"></i>';
+                        dropdown.style.display = 'none';
+                        if (select.onchange) select.onchange(); // Trigger submit
+                    };
+                    list.appendChild(item);
+                });
+            };
+            
+            searchInput.oninput = (e) => updateList(e.target.value);
+            
+            trigger.onclick = (e) => {
+                e.stopPropagation();
+                // Close other dropdowns
+                document.querySelectorAll('.ss-dropdown').forEach(d => { if(d !== dropdown) d.style.display = 'none'; });
+                const isVisible = dropdown.style.display === 'block';
+                dropdown.style.display = isVisible ? 'none' : 'block';
+                if (!isVisible) {
+                    searchInput.value = '';
+                    updateList();
+                    setTimeout(() => searchInput.focus(), 10);
+                }
+            };
+            
+            dropdown.appendChild(searchInput);
+            dropdown.appendChild(list);
+            wrapper.appendChild(trigger);
+            wrapper.appendChild(dropdown);
+            select.parentNode.insertBefore(wrapper, select);
+            
+            document.addEventListener('click', () => dropdown.style.display = 'none');
+            dropdown.onclick = (e) => e.stopPropagation();
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', initSearchableSelects);
+
     // --- XLSX Export Logic ---
     function handleExport(event) {
         const formatSelect = document.getElementById('exportFormat');
@@ -8557,6 +8701,28 @@ var advancedFilters = null;
     to { transform: rotate(360deg); }
 }
 
+    /* Searchable Select */
+    .ss-wrapper { width: 100%; margin-bottom: 5px; }
+    .ss-trigger { 
+        background: var(--dark-gray); border: 1px solid #444; border-radius: 4px; padding: 6px 10px; 
+        font-size: 0.8rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+        transition: border-color 0.2s;
+    }
+    .ss-trigger:hover { border-color: var(--accent); }
+    .ss-dropdown {
+        position: absolute; top: 100%; left: 0; right: 0; background: #1a1a1a; 
+        border: 1px solid var(--accent); border-radius: 4px; z-index: 1000; margin-top: 5px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5); overflow: hidden;
+    }
+    .ss-search {
+        width: 100%; border: none; border-bottom: 1px solid #333; background: #222; 
+        color: white; padding: 8px 10px; font-size: 0.8rem; outline: none;
+    }
+    .ss-list { max-height: 200px; overflow-y: auto; }
+    .ss-item { padding: 8px 10px; font-size: 0.8rem; cursor: pointer; transition: background 0.2s; }
+    .ss-item:hover { background: var(--bg-hover); color: var(--accent); }
+    .ss-item.selected { background: var(--accent); color: white; }
+
     </style>
 </head>
 <body>
@@ -8587,7 +8753,7 @@ var advancedFilters = null;
             
             <?php if (($_SESSION['db_mode'] ?? 'sql') === 'sql'): ?>
                 <form method="GET" style="margin-bottom: 5px;">
-                    <select name="select_db" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
+                    <select name="select_db" onchange="this.form.submit()" class="form-select searchable-select" style="width: 100%;">
                         <option value="">-- Pilih Database --</option>
                         <?php foreach ($databases as $db): ?>
                             <option value="<?=htmlspecialchars($db)?>" <?=$db === ($_SESSION['db_name'] ?? '') ? 'selected' : ''?>>
@@ -8599,7 +8765,7 @@ var advancedFilters = null;
                 <small><i class="fas fa-server"></i> <span><?=htmlspecialchars($_SESSION['db_host'] ?? 'N/A')?></span></small>
             <?php elseif (($_SESSION['db_mode'] ?? 'sql') === 'sqlite'): ?>
                 <form method="GET" style="margin-bottom: 5px;">
-                    <select name="select_sqlite_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
+                    <select name="select_sqlite_file" onchange="this.form.submit()" class="form-select searchable-select" style="width: 100%;">
                         <option value="">-- Pilih SQLite File --</option>
                         <?php 
                         $sqliteFiles = glob(__DIR__ . '/sqlite_db/*.db');
@@ -8637,7 +8803,7 @@ var advancedFilters = null;
                 <small><i class="fas fa-database"></i> <span>SQLite Database</span></small>
             <?php else: ?>
                 <form method="GET" style="margin-bottom: 5px;">
-                    <select name="select_json_file" onchange="this.form.submit()" class="form-select" style="padding: 2px 5px; font-size: 0.8rem; background: var(--dark-gray); color: var(--text-primary); border: 1px solid #444; width: 100%;">
+                    <select name="select_json_file" onchange="this.form.submit()" class="form-select searchable-select" style="width: 100%;">
                         <option value="">-- Pilih JSON File --</option>
                         <?php 
                         if (isset($jsonDb)) {
@@ -8790,11 +8956,19 @@ var advancedFilters = null;
                         <a href="?" class="btn btn-sm btn-danger"><i class="fas fa-times"></i> Close Results</a>
                     </div>
                     
-                    <div style="display:flex; gap:10px; align-items:center; background:rgba(255,255,255,0.03); padding:12px; border-radius:10px; border:1px solid var(--border-color); margin-bottom:20px;">
-                        <i class="fas fa-magic" style="color:var(--accent);"></i>
-                        <span style="font-size:0.85rem; color:var(--text-secondary); flex:1;">Mass Replace:</span>
-                        <input type="text" id="replace_query" class="form-control" placeholder="New value..." style="flex:2; font-size:0.85rem;">
-                        <button type="button" class="btn btn-accent btn-sm" onclick="universalReplace('all')"><i class="fas fa-sync"></i> Replace All</button>
+                    <div style="display:flex; flex-direction:column; gap:12px; background:rgba(255,255,255,0.03); padding:15px; border-radius:10px; border:1px solid var(--border-color); margin-bottom:20px;">
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <i class="fas fa-magic" style="color:var(--accent);"></i>
+                            <span style="font-size:0.85rem; color:var(--text-secondary); width:90px;">Mass Replace:</span>
+                            <input type="text" id="replace_query" class="form-control" placeholder="Replacement value..." style="flex:1; font-size:0.85rem;">
+                            <button type="button" id="uni-replace-btn" class="btn btn-accent btn-sm" onclick="universalReplace()"><i class="fas fa-sync"></i> Replace All</button>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.8rem; color:var(--text-secondary);">
+                                <input type="checkbox" onchange="toggleAllTables(this)"> <i class="fas fa-folder-tree"></i> Select All Across Results
+                            </label>
+                            <span style="font-size:0.75rem; color:var(--text-secondary);" id="selection-status">No rows selected</span>
+                        </div>
                     </div>
                     <?php 
                     if ($uniSearch):
@@ -8838,6 +9012,8 @@ var advancedFilters = null;
                         if ($dbMode === 'json' && isset($jsonDb)) {
                             $tablesToSearch = $jsonDb->listTables();
                             foreach ($tablesToSearch as $tName) {
+                                // PK for JSON is usually 'id'
+                                $pk = 'id';
                                 $data = $jsonDb->select($tName);
                                 $matchedRows = [];
                                 foreach ($data as $row) {
@@ -8851,17 +9027,21 @@ var advancedFilters = null;
                                     $resultsFound += count($matchedRows);
                                     echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
                                             <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
-                                                <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".count($matchedRows)." matches</span></span>
+                                                <div style='display:flex; align-items:center; gap:10px;'>
+                                                    <input type='checkbox' class='uni-table-checkbox' data-table='".htmlspecialchars($tName)."' onchange='toggleTable(this)'>
+                                                    <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".count($matchedRows)." matches</span></span>
+                                                </div>
                                                 <a href='?table=" . urlencode($tName) . "&view=data' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Browse Table</a>
                                             </div>
                                             <div style='overflow-x:auto;'>
                                                 <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
-                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>";
+                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>
+                                                        <th style='width:40px; text-align:center;'><input type='checkbox' onchange='toggleTable(this)' data-table='".htmlspecialchars($tName)."' class='uni-table-master'></th>";
                                     foreach (array_keys($matchedRows[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
                                     echo "</tr></thead><tbody>";
                                     foreach (array_slice($matchedRows, 0, 5) as $row) {
                                         echo "<tr>";
-                                        $pkVal = $row['id'] ?? null;
+                                        $pkVal = $row[$pk] ?? null;
                                         echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."' onchange='updateUniSelection()'></td>";
                                         foreach ($row as $k => $v) {
                                             $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
@@ -8906,47 +9086,59 @@ var advancedFilters = null;
                                     $sStmt = $pdo->query($sqlSelect);
                                     $matches = $sStmt->fetchAll(PDO::FETCH_ASSOC);
                                     
-                                    if (!empty($matches)) {
-                                        $matchCount = count($matches);
-                                        $resultsFound += $matchCount;
-                                        echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
-                                                <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                if (!empty($matches)) {
+                                    $matchCount = count($matches);
+                                    $resultsFound += $matchCount;
+                                    
+                                    // Detect PK for SQL mode
+                                    $pk = 'id';
+                                    if ($dbMode === 'sql') {
+                                        try {
+                                            $res = $pdo->query("SHOW KEYS FROM `$tName` WHERE Key_name = 'PRIMARY'")->fetch();
+                                            if ($res) $pk = $res['Column_name'];
+                                        } catch (Exception $e) {}
+                                    } else {
+                                        try {
+                                            foreach($pdo->query("PRAGMA table_info(`$tName`)")->fetchAll() as $ci) if ($ci['pk']) $pk = $ci['name'];
+                                        } catch (Exception $e) {}
+                                    }
+
+                                    echo "<div class='uni-result-item' style='margin-bottom:20px; border-radius:8px; overflow:hidden; background:var(--bg-card);'>
+                                            <div style='background:rgba(255,255,255,0.03); padding:12px 15px; font-weight:bold; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;'>
+                                                <div style='display:flex; align-items:center; gap:10px;'>
+                                                    <input type='checkbox' class='uni-table-checkbox' data-table='".htmlspecialchars($tName)."' onchange='toggleTable(this)'>
                                                     <span><i class='fas fa-table' style='color:var(--accent); margin-right:8px;'></i> " . htmlspecialchars($tName) . " <span class='uni-match-badge'>".($matchCount > 10 ? '10+' : $matchCount)." matches</span></span>
-                                                    <a href='?table=" . urlencode($tName) . "&view=data&search_val=".urlencode($searchQuery)."' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Full Search Results</a>
                                                 </div>
-                                                <div style='overflow-x:auto;'>
-                                                    <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
-                                                        <thead><tr style='background:rgba(0,0,0,0.2);'>
-                                                            <th style='width:40px;'></th>";
-                                        foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
-                                        echo "</tr></thead><tbody>";
-                                        foreach (array_slice($matches, 0, 5) as $row) {
-                                            $pk = null;
-                                            $colTypes = [];
+                                                <a href='?table=" . urlencode($tName) . "&view=data&search_val=".urlencode($searchQuery)."' class='btn btn-sm' style='padding:4px 10px; font-size:0.75rem;'>Full Search Results</a>
+                                            </div>
+                                            <div style='overflow-x:auto;'>
+                                                <table class='uni-table-compact' style='width:100%; border-collapse:collapse;'>
+                                                    <thead><tr style='background:rgba(0,0,0,0.2);'>
+                                                        <th style='width:40px; text-align:center;'><input type='checkbox' onchange='toggleTable(this)' data-table='".htmlspecialchars($tName)."' class='uni-table-master'></th>";
+                                    foreach (array_keys($matches[0]) as $h) echo "<th style='padding:10px; text-align:left; font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase;'>".htmlspecialchars($h)."</th>";
+                                    echo "</tr></thead><tbody>";
+                                    foreach (array_slice($matches, 0, 5) as $row) {
+                                        $colTypes = [];
+                                        try {
                                             if ($dbMode === 'sql') {
-                                                $cStmt = $pdo->query("DESCRIBE `$tName`");
-                                                foreach($cStmt->fetchAll() as $c) {
-                                                    if ($c['Key'] === 'PRI') $pk = $c['Field'];
-                                                    $colTypes[$c['Field']] = $c['Type'];
-                                                }
+                                                $cStmt = $pdo->query("DESCRIBE `$tName` ");
+                                                foreach($cStmt->fetchAll() as $c) $colTypes[$c['Field']] = $c['Type'];
                                             } else {
                                                 $cStmt = $pdo->query("PRAGMA table_info(`$tName`)");
-                                                foreach($cStmt->fetchAll() as $c) {
-                                                    if ($c['pk']) $pk = $c['name'];
-                                                    $colTypes[$c['name']] = $c['type'] ?? 'text';
-                                                }
+                                                foreach($cStmt->fetchAll() as $c) $colTypes[$c['name']] = $c['type'] ?? 'text';
                                             }
-                                            
-                                            echo "<tr>";
-                                            $pkVal = ($pk && isset($row[$pk])) ? $row[$pk] : null;
-                                            echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."'></td>";
-                                            foreach ($row as $k => $v) {
-                                                $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
-                                                $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
-                                                echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
-                                            }
-                                            echo "</tr>";
+                                        } catch (Exception $e) {}
+                                        
+                                        echo "<tr>";
+                                        $pkVal = $row[$pk] ?? null;
+                                        echo "<td style='padding:10px; text-align:center;'><input type='checkbox' class='uni-row-checkbox' data-table='".htmlspecialchars($tName)."' data-pk='".htmlspecialchars($pkVal)."' onchange='updateUniSelection()'></td>";
+                                        foreach ($row as $k => $v) {
+                                            $pkAttr = $pkVal ? "data-pk='".htmlspecialchars($pkVal)."' ondblclick='makeCellEditable(this)' title='Double click to edit'" : "";
+                                            $typeAttr = isset($colTypes[$k]) ? "data-type='".htmlspecialchars($colTypes[$k])."'" : "";
+                                            echo "<td data-table='".htmlspecialchars($tName)."' data-col='".htmlspecialchars($k)."' $typeAttr $pkAttr>".$renderCell($v, $k, $searchQuery)."</td>";
                                         }
+                                        echo "</tr>";
+                                    }
                                         echo "</tbody></table>";
                                         if ($matchCount > 5) echo "<div style='padding:10px; text-align:center; font-size:0.75rem; color:var(--accent); background:rgba(0,0,0,0.05); border-top:1px solid var(--border-color);'><i class='fas fa-info-circle'></i> More matches found. <a href='?table=".urlencode($tName)."&view=data&search_val=".urlencode($searchQuery)."' style='text-decoration:underline; font-weight:bold; color:var(--accent);'>Explore Table</a></div>";
                                         echo "</div></div>";
@@ -9538,22 +9730,57 @@ var advancedFilters = null;
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
                 }
 
-                function universalReplace(mode) {
+                function toggleAllTables(master) {
+                    const isChecked = master.checked;
+                    document.querySelectorAll('.uni-row-checkbox, .uni-table-checkbox, .uni-table-master').forEach(cb => {
+                        cb.checked = isChecked;
+                    });
+                    updateUniSelection();
+                }
+
+                function toggleTable(master) {
+                    const isChecked = master.checked;
+                    const tableName = master.dataset.table;
+                    document.querySelectorAll(`.uni-row-checkbox[data-table="${tableName}"], .uni-table-checkbox[data-table="${tableName}"], .uni-table-master[data-table="${tableName}"]`).forEach(cb => {
+                        cb.checked = isChecked;
+                    });
+                    updateUniSelection();
+                }
+
+                function updateUniSelection() {
+                    const selectedRows = document.querySelectorAll('.uni-row-checkbox:checked').length;
+                    const btn = document.getElementById('uni-replace-btn');
+                    const status = document.getElementById('selection-status');
+                    
+                    if (selectedRows > 0) {
+                        btn.innerHTML = `<i class="fas fa-check-double"></i> Replace Selected (${selectedRows})`;
+                        status.innerText = `${selectedRows} row(s) selected`;
+                        status.style.color = 'var(--accent)';
+                    } else {
+                        btn.innerHTML = `<i class="fas fa-sync"></i> Replace All`;
+                        status.innerText = `No rows selected`;
+                        status.style.color = 'var(--text-secondary)';
+                    }
+                }
+
+                function universalReplace() {
                     const search = new URLSearchParams(window.location.search).get('uni_search');
                     const replace = document.getElementById('replace_query').value;
+                    const checkedRows = document.querySelectorAll('.uni-row-checkbox:checked');
+                    const mode = checkedRows.length > 0 ? 'selected' : 'all';
+                    
                     if (!search) return;
                     
                     let selected = [];
                     if (mode === 'selected') {
-                        document.querySelectorAll('.uni-row-checkbox:checked').forEach(cb => {
-                            selected.push(`${cb.dataset.table}|pk|${cb.dataset.pk}`); // Note: column needs careful mapping if we want specific cell replace, but here we replace in row
+                        checkedRows.forEach(cb => {
+                            selected.push(`${cb.dataset.table}|${cb.dataset.pk}`);
                         });
-                        if (selected.length === 0) return Swal.fire('Error', 'No rows selected.', 'error');
                     }
 
                     Swal.fire({
                         title: mode === 'all' ? 'Replace All Occurrences?' : 'Replace in Selected Rows?',
-                        text: `This will replace "${search}" with "${replace}" across ${mode === 'all' ? 'ALL tables' : 'selected rows'}. This action cannot be undone.`,
+                        text: `This will replace "${search}" with "${replace}" across ${mode === 'all' ? 'ALL tables' : checkedRows.length + ' selected rows'}.`,
                         icon: 'warning',
                         showCancelButton: true,
                         confirmButtonText: 'Yes, Replace',
@@ -9651,7 +9878,7 @@ var advancedFilters = null;
 
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap:20px; margin-top:20px;">
                     <!-- System Health & Data Dictionary -->
-                    <div class="card" style="margin-bottom:0;">
+                    <div class="card" style="margin-bottom:20px;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0; margin-bottom:15px; border-bottom:1px solid var(--border-color); padding-bottom:10px;">
                             <h4 style="margin:0;"><i class="fas fa-server"></i> System Health</h4>
                             <form method="POST" style="margin:0;">
@@ -9692,7 +9919,7 @@ var advancedFilters = null;
                     </div>
 
                     <!-- DB Performance Monitor -->
-                    <div class="card" style="margin-bottom:0;">
+                    <div class="card" style="margin-bottom:20px;">
                         <h4 style="margin-top:0;"><i class="fas fa-bolt"></i> Database Monitor</h4>
                         <?php 
                         $health = get_db_health($pdo, $_SESSION['db_name'] ?? '', $dbMode);
@@ -13213,7 +13440,6 @@ var queryBuilder = null;
             }
         });
     }
-                    // Toggle Server Databases panel collapse/expand with state persisted in localStorage
                     function toggleServerDbs() {
                         const panel = document.getElementById('serverDbsPanel');
                         const btn = document.getElementById('btnToggleServerDbs');
