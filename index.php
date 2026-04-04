@@ -419,6 +419,34 @@ if ($current_page === 'index.php') {
             padding: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.3s; margin-top: 0.5rem;
         }
         .btn-submit:hover { background: #4f46e5; transform: translateY(-1px); }
+
+        /* Toast Styles */
+        .toast-container {
+            position: fixed; bottom: 2rem; right: 2rem; 
+            display: flex; flex-direction: column; gap: 0.75rem; 
+            z-index: 2000; pointer-events: none;
+        }
+        .toast {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 12px;
+            padding: 1rem 1.5rem; color: white; display: flex; align-items: center; gap: 0.75rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.4); pointer-events: auto;
+            animation: toastSlide 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+            min-width: 300px; max-width: 450px;
+        }
+        .toast.success { border-left: 4px solid #10b981; }
+        .toast.error { border-left: 4px solid #ef4444; }
+        .toast i { font-size: 1.2rem; }
+        .toast.success i { color: #10b981; }
+        .toast.error i { color: #ef4444; }
+        .toast-content { flex: 1; font-size: 0.9rem; }
+        @keyframes toastSlide {
+            from { opacity: 0; transform: translateX(100%) scale(0.9); }
+            to { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        .toast.fade-out {
+            opacity: 0; transform: scale(0.9) translateY(10px);
+            transition: 0.4s;
+        }
     </style>
 </head>
 <body>
@@ -486,6 +514,31 @@ if ($current_page === 'index.php') {
     </div>
     <?php endif; ?>
 
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script>
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            const icon = type === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation';
+            
+            toast.innerHTML = `
+                <i class="fas ${icon}"></i>
+                <div class="toast-content">${message}</div>
+            `;
+            
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.classList.add('fade-out');
+                setTimeout(() => toast.remove(), 400);
+            }, 4000);
+        }
+    </script>
+
     <?php if (isset($_SESSION['must_change_password']) && $_SESSION['must_change_password'] == 1): ?>
     <script>
         document.getElementById('pwdModal').style.display = 'flex';
@@ -494,14 +547,14 @@ if ($current_page === 'index.php') {
 
     <?php if (isset($_GET['password_changed'])): ?>
     <script>
-        alert('Password updated successfully!');
+        showToast('Password updated successfully!');
         window.history.replaceState({}, document.title, window.location.pathname);
     </script>
     <?php endif; ?>
 
     <?php if (isset($_GET['updated']) && isset($_SESSION['update_msg'])): ?>
     <script>
-        alert('<?= addslashes($_SESSION['update_msg']) ?>');
+        showToast('<?= addslashes($_SESSION['update_msg']) ?>', 'success');
         window.history.replaceState({}, document.title, window.location.pathname);
     </script>
     <?php unset($_SESSION['update_msg']); endif; ?>
