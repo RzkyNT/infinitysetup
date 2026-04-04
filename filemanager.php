@@ -4925,6 +4925,7 @@ function fm_foldersize($path) {
                       </li>
                       <li class="nav-item me-2 d-none d-md-block">
                           <div class="input-group input-group-sm" style="margin-top:4px; width: 200px;">
+                              <label for="search-addon" class="visually-hidden"><?php echo lng('Search') ?></label>
                               <input type="text" class="form-control" placeholder="<?php echo lng('Search') ?>" aria-label="<?php echo lng('Search') ?>" aria-describedby="search-addon2" id="search-addon">
                               <div class="input-group-append">
                                   <span class="input-group-text brl-0 brr-0" id="search-addon2"><i class="fa fa-search"></i></span>
@@ -4936,6 +4937,34 @@ function fm_foldersize($path) {
                                   </div>
                               </div>
                           </div>
+                          <script>
+                              (function() {
+                                  const input = document.getElementById('search-addon');
+                                  if (!input) return;
+                                  input.addEventListener('input', function() {
+                                      const value = this.value.toLowerCase();
+                                      console.log("[NAV-SEARCH] Filtering for:", value);
+                                      const tableRows = document.querySelectorAll("#main-table tbody tr");
+                                      tableRows.forEach(row => {
+                                          if (row.querySelector('i.go-back')) return;
+                                          const fileName = (row.querySelector('.filename')?.textContent || row.textContent).toLowerCase();
+                                          row.style.display = fileName.indexOf(value) > -1 ? "" : "none";
+                                      });
+                                      const gridItems = document.querySelectorAll("#main-grid .grid-item");
+                                      gridItems.forEach(item => {
+                                          const fileName = (item.querySelector('.grid-name')?.textContent || item.textContent).toLowerCase();
+                                          item.style.display = fileName.indexOf(value) > -1 ? "" : "none";
+                                      });
+                                  });
+                                  input.addEventListener('keypress', function(e) {
+                                      if (e.key === 'Enter') {
+                                          const advSearch = document.getElementById('advanced-search');
+                                          if (advSearch) advSearch.value = this.value;
+                                          if (typeof fm_search === 'function') fm_search();
+                                      }
+                                  });
+                              })();
+                          </script>
                       </li>
                       <!-- Mobile Search Button -->
                       <li class="nav-item me-1 d-md-none">
@@ -8210,11 +8239,26 @@ function fm_foldersize($path) {
                   $.each(data, function(key, val) {
                       var fullPath = val.path ? val.path : '';
                       var link = '';
+                      var icon = 'fa-file-o';
+                      var color = '#aaa';
+                      
                       if (val.type === 'folder') {
                           var dirPath = fullPath ? fullPath + '/' + val.name : val.name;
                           link = `?p=${encodeURIComponent(dirPath)}`;
+                          icon = 'fa-folder';
+                          color = '#ffc107';
                       } else {
                           link = `?p=${encodeURIComponent(fullPath)}&view=${encodeURIComponent(val.name)}`;
+                          // Check for images
+                          const ext = val.name.split('.').pop().toLowerCase();
+                          const images = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+                          if (images.includes(ext)) {
+                              icon = 'fa-file-image-o';
+                              color = '#17a2b8';
+                          } else {
+                              icon = 'fa-file-text-o';
+                              color = '#ced4da';
+                          }
                       }
                       
                       response += `
@@ -8335,11 +8379,10 @@ function fm_foldersize($path) {
                           s("#" + a.overlayId).css("top", e.pageY + a.yOffset + "px").css("left", e.pageX + a.xOffset + "px")
                       }), this
                   }, s.previewImage()
-              }(jQuery);
-
-                                          // Dom Ready Events
-                                          $(document).ready(function() {
-                                              // Mobile Detection and Auto Grid View
+              }(jQuery);                                           // Dom Ready Events
+                                           $(document).ready(function() {
+                                               
+                                               // Mobile Detection and Auto Grid View
                                               function isMobile() {
                                                   return window.innerWidth <= 768;
                                               }
@@ -8349,7 +8392,7 @@ function fm_foldersize($path) {
                                                   localStorage.setItem('fm_view', 'grid');
                                               }
                                               
-                                              // Trigger AJAX recursive search on Enter key for main search bar
+                                              // Trigger AJAX recursive search on Enter key for main search bar (deep search)
                                               $('#search-addon').on('keyup', function(e) {
                                                   if (e.key === 'Enter' || e.keyCode === 13) { // Enter key
                                                       const searchTerm = $(this).val().trim();
