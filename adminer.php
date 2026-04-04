@@ -733,13 +733,13 @@ function get_asset_url($localPath, $cdnUrl) {
 function get_db_handle($path) {
     static $dbs = [];
     if (!isset($dbs[$path])) {
-        $exists = file_exists($path);
         $dbs[$path] = new PDO("sqlite:$path");
         $dbs[$path]->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        if (!$exists) {
-            $dbs[$path]->exec("CREATE TABLE settings (key_name TEXT PRIMARY KEY, value_data TEXT)");
-            $dbs[$path]->exec("CREATE TABLE backup_history (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date INTEGER, file_id TEXT, message_id INTEGER, tag TEXT, size INTEGER)");
-        }
+        
+        // Ensure tables exist regardless of whether the file was just created
+        // This is safer if the file is 0 bytes or was created by index.php
+        $dbs[$path]->exec("CREATE TABLE IF NOT EXISTS settings (key_name TEXT PRIMARY KEY, value_data TEXT)");
+        $dbs[$path]->exec("CREATE TABLE IF NOT EXISTS backup_history (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date INTEGER, file_id TEXT, message_id INTEGER, tag TEXT, size INTEGER)");
     }
     return $dbs[$path];
 }
@@ -819,8 +819,8 @@ function save_config($path, $data)
             $db->commit();
             return true;
         } catch (Exception $e) {
-            if ($db->inTransaction()) $db->rollBack();
-            return false;
+            if (isset($db) && $db->inTransaction()) $db->rollBack();
+            throw $e; // Rethrow to show actual error
         }
     }
 
@@ -1097,45 +1097,6 @@ function render_db_setup($defaults = [], $error = '', $success = '')
     exit;
 }
 
-// Migration from legacy JSON config files to SQLite
-if (!file_exists($configFile)) {
-    $migrated = ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
-    $hasOldData = false;
-
-    // 1. Migrate from adminer.config.json (main settings)
-    $legacyMain = __DIR__ . '/adminer.config.json';
-    if (file_exists($legacyMain)) {
-        $data = json_decode(file_get_contents($legacyMain), true) ?? [];
-        $migrated = array_merge($migrated, $data);
-        $hasOldData = true;
-    }
-
-    // 2. Migrate from adminer.db.json (DB credentials)
-    $legacyDb = __DIR__ . '/adminer.db.json';
-    if (file_exists($legacyDb)) {
-        $oldData = json_decode(file_get_contents($legacyDb), true) ?? [];
-        $migrated['host'] = $oldData['host'] ?? $migrated['host'];
-        $migrated['user'] = $oldData['user'] ?? $migrated['user'];
-        $migrated['pass'] = $oldData['pass'] ?? $migrated['pass'];
-        $hasOldData = true;
-    }
-
-    // 3. Migrate from adminer.databases.json (DB list)
-    $legacyList = __DIR__ . '/adminer.databases.json';
-    if (file_exists($legacyList)) {
-        $oldList = json_decode(file_get_contents($legacyList), true) ?? [];
-        if (is_array($oldList)) {
-            $migrated['databases'] = array_merge((array)$migrated['databases'], $oldList);
-        }
-        $hasOldData = true;
-    }
-
-    if ($hasOldData) {
-        // Use save_config to correctly create and populate adminer.sqlite
-        // 5. Shared Storage (from migrated structure)
-        save_config($configFile, $migrated);
-    }
-}
 
 // Load DB Comparison Library
 
@@ -1538,6 +1499,47 @@ function highlightSql($text) {
 }
 
 
+
+// Migration from legacy JSON config files to SQLite
+if (!file_exists($configFile)) {
+    $migrated = ['host' => '', 'user' => '', 'pass' => '', 'databases' => []];
+    $hasOldData = false;
+
+    // 1. Migrate from adminer.config.json (main settings)
+    $legacyMain = __DIR__ . '/adminer.config.json';
+    if (file_exists($legacyMain)) {
+        $data = json_decode(file_get_contents($legacyMain), true) ?? [];
+        $migrated = array_merge($migrated, $data);
+        $hasOldData = true;
+    }
+
+    // 2. Migrate from adminer.db.json (DB credentials)
+    $legacyDb = __DIR__ . '/adminer.db.json';
+    if (file_exists($legacyDb)) {
+        $oldData = json_decode(file_get_contents($legacyDb), true) ?? [];
+        $migrated['host'] = $oldData['host'] ?? $migrated['host'];
+        $migrated['user'] = $oldData['user'] ?? $migrated['user'];
+        $migrated['pass'] = $oldData['pass'] ?? $migrated['pass'];
+        $hasOldData = true;
+    }
+
+    // 3. Migrate from adminer.databases.json (DB list)
+    $legacyList = __DIR__ . '/adminer.databases.json';
+    if (file_exists($legacyList)) {
+        $oldList = json_decode(file_get_contents($legacyList), true) ?? [];
+        if (is_array($oldList)) {
+            $migrated['databases'] = array_merge((array)$migrated['databases'], $oldList);
+        }
+        $hasOldData = true;
+    }
+
+    if ($hasOldData) {
+        // Use save_config to correctly create and populate adminer.sqlite
+        // 5. Shared Storage (from migrated structure)
+        save_config($configFile, $migrated);
+    }
+}
+
 $dbConfig = load_config($configFile);
 $user_defined_databases = $dbConfig['databases'] ?? [];
 if (!is_array($user_defined_databases)) {
@@ -1566,11 +1568,15 @@ if (isset($_POST['db_setup_action'])) {
         $pass = $existing['pass'];
     }
     $payload = ['host' => $host, 'user' => $user, 'pass' => $pass]; // databases maintained by merge in save_config
-    if (!save_config($configFile, $payload)) {
-        render_db_setup($payload, 'Failed to save configuration. Check file permissions.');
+    try {
+        if (!save_config($configFile, $payload)) {
+             throw new Exception('Unknown error occurring during save_config.');
+        }
+        $dbConfig = load_config($configFile); // Reload to get full config
+        render_db_setup($dbConfig, '', 'Configuration saved. You can refresh to continue.');
+    } catch (Exception $e) {
+        render_db_setup($payload, 'Failed to save configuration: ' . $e->getMessage());
     }
-    $dbConfig = load_config($configFile); // Reload to get full config
-    render_db_setup($dbConfig, '', 'Configuration saved. You can refresh to continue.');
 }
 
 if (empty($dbConfig['host']) || isset($_GET['setup'])) {
