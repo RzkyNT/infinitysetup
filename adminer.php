@@ -3370,24 +3370,37 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'get_all_tables_structure') {
         header('Content-Type: application/json');
         try {
-            $stmt = $pdo->query("SHOW TABLES");
-            $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            if ($dbMode === 'sql') {
+                $stmt = $pdo->query("SHOW TABLES");
+                $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            } else {
+                $stmt = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+                $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            }
 
             // Collect CREATE statements and referenced tables
             $creates = [];
             $refs = [];
             foreach ($tables as $t) {
-                $stmt = $pdo->query("SHOW CREATE TABLE `$t`");
-                $row = $stmt->fetch(PDO::FETCH_NUM);
-                if ($row) {
-                    $create = $row[1];
+                if ($dbMode === 'sql') {
+                    $stmt = $pdo->query("SHOW CREATE TABLE `$t` ");
+                    $row = $stmt->fetch(PDO::FETCH_NUM);
+                    $create = $row[1] ?? '';
+                } else {
+                    $stmt = $pdo->query("SELECT sql FROM sqlite_master WHERE type='table' AND name='$t'");
+                    $row = $stmt->fetch(PDO::FETCH_NUM);
+                    $create = $row[0] ?? '';
+                }
+                
+                if ($create) {
                     $creates[$t] = $create;
                     // Find referenced table names from FOREIGN KEY clauses
                     $matches = [];
-                    preg_match_all("/REFERENCES\s+`([^`]+)`/i", $create, $matches);
+                    preg_match_all("/REFERENCES\s+[`\"]?([^`\"\(]+)[`\"]?/i", $create, $matches);
                     $refs[$t] = array_values(array_unique($matches[1] ?? []));
                 }
             }
+
 
             // Topological sort based on dependencies (referenced -> dependent)
             $inDegree = [];
@@ -12104,7 +12117,8 @@ function readFileContent(file) {
                                     $recentStmt = $pdo->query("SELECT TABLE_NAME, UPDATE_TIME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DB_NAME' AND UPDATE_TIME IS NOT NULL ORDER BY UPDATE_TIME DESC LIMIT 8");
                                     $recentTables = $recentStmt->fetchAll();
                                 } else {
-                                    $recentTables = []; // SQLite/JSON don't support UPDATE_TIME easily
+                                    // For SQLite, we just show the first few tables since we don't have UPDATE_TIME
+                                    $recentTables = array_map(function($t) { return ['TABLE_NAME' => $t['Name'], 'UPDATE_TIME' => date('Y-m-d H:i:s')]; }, array_slice($tables, 0, 8));
                                 }
                             } catch (Exception $e) { $recentTables = []; }
                         ?>
@@ -12154,17 +12168,21 @@ function readFileContent(file) {
                                     $sortType = 'id';
                                     try {
                                         if ($dbMode === 'sql') {
-                                            $colsStmt = $pdo->query("DESCRIBE `$curT` ");
-                                            $colsInfo = $colsStmt->fetchAll();
-                                            $colNames = array_column($colsInfo, 'Field');
-                                            
-                                            if (in_array('updated_at', $colNames)) { $sortCol = 'updated_at'; $sortType = 'time'; }
-                                            elseif (in_array('created_at', $colNames)) { $sortCol = 'created_at'; $sortType = 'time'; }
-                                            elseif (in_array('timestamp', $colNames)) { $sortCol = 'timestamp'; $sortType = 'time'; }
-                                            elseif (in_array('date', $colNames)) { $sortCol = 'date'; $sortType = 'time'; }
-                                            else {
-                                                // Look for PK
-                                                foreach($colsInfo as $c) if($c['Key'] === 'PRI') $sortCol = $c['Field'];
+                                            try {
+                                                $colsStmt = $pdo->query("DESCRIBE `$curT` ");
+                                                $colsInfo = $colsStmt->fetchAll();
+                                                $colNames = array_column($colsInfo, 'Field');
+                                                
+                                                if (in_array('updated_at', $colNames)) { $sortCol = 'updated_at'; $sortType = 'time'; }
+                                                elseif (in_array('created_at', $colNames)) { $sortCol = 'created_at'; $sortType = 'time'; }
+                                                elseif (in_array('timestamp', $colNames)) { $sortCol = 'timestamp'; $sortType = 'time'; }
+                                                elseif (in_array('date', $colNames)) { $sortCol = 'date'; $sortType = 'time'; }
+                                                else {
+                                                    // Look for PK
+                                                    foreach($colsInfo as $c) if($c['Key'] === 'PRI') $sortCol = $c['Field'];
+                                                }
+                                            } catch (Exception $e) {
+                                                $sortCol = 'id'; // Fallback
                                             }
                                         } else {
                                             $colsStmt = $pdo->query("PRAGMA table_info(`$curT`)");

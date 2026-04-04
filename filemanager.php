@@ -2832,9 +2832,37 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
 
   // --- TINYFILEMANAGER MAIN ---
   fm_show_header(); // HEADER
-  fm_show_nav_path(FM_PATH); // current path
 
-  // show alert messages
+  // Explorer Container Start
+  echo '<div id="explorer-layout">';
+  
+  // 1. SIDEBAR
+  echo '<aside id="sidebar-pane">';
+  echo '<div style="padding: 15px 20px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">';
+  echo '<h6 style="margin:0; font-weight:bold; opacity:0.8;">NAVIGATOR</h6>';
+  echo '<button class="btn btn-sm" onclick="location.reload()" title="Refresh Tree"><i class="fa fa-refresh"></i></button>';
+  echo '</div>';
+  echo '<div id="tree-view" style="flex:1; overflow-y:auto; padding: 10px 0;">';
+  // Root item
+  echo '<div class="tree-item">';
+  echo '<div class="tree-header active" onclick="location.href=\'?p=\'"><i class="fa fa-home"></i> Root Directory</div>';
+  echo '<div class="tree-children" id="tree-root-children">';
+  // I'll render the first level here via PHP, deeper via JS
+  foreach ($folders as $f) {
+      $f_path = trim(FM_PATH . '/' . $f, '/');
+      echo '<div class="tree-item" data-path="'.fm_enc($f_path).'">';
+      echo '<div class="tree-header" onclick="location.href=\'?p='.urlencode($f_path).'\'"><i class="fa fa-folder"></i> '.fm_enc($f).'</div>';
+      echo '</div>';
+  }
+  echo '</div>';
+  echo '</div>';
+  echo '</div>';
+  echo '</aside>';
+
+  // 2. MAIN CONTENT
+  echo '<main id="main-content-pane">';
+  
+  fm_show_nav_path(FM_PATH); // current path
   fm_show_message();
 
   $num_files = count($files);
@@ -3181,6 +3209,140 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
           <?php endif; ?>
       </div>
   </form>
+  </main>
+
+  <!-- 3. DETAILS PANE -->
+  <aside id="details-pane" class="hidden">
+      <div class="details-header">
+          <div class="details-icon"><i class="fa fa-file-o"></i></div>
+          <div class="details-name" id="det-name">file.txt</div>
+          <div class="details-meta" id="det-type">Text Document</div>
+      </div>
+      
+      <div class="details-section">
+          <div class="details-section-title">Properties</div>
+          <div class="details-row">
+              <span class="details-label">Size</span>
+              <span class="details-value" id="det-size">0 KB</span>
+          </div>
+          <div class="details-row">
+              <span class="details-label">Modified</span>
+              <span class="details-value" id="det-date">Jan 01, 2024</span>
+          </div>
+          <div class="details-row">
+              <span class="details-label">Permissions</span>
+              <span class="details-value" id="det-perms">0644</span>
+          </div>
+      </div>
+
+      <div class="details-section" id="det-preview-container" style="display:none;">
+          <div class="details-section-title">Preview</div>
+          <div id="det-preview" style="border-radius:8px; overflow:hidden; border:1px solid var(--border-color); max-height:200px;"></div>
+      </div>
+
+      <div class="details-section" style="margin-top:auto;">
+          <button class="btn btn-primary w-100 mb-2" id="det-open-btn"><i class="fa fa-external-link"></i> Open</button>
+          <div class="d-flex gap-2">
+              <button class="btn btn-outline-secondary flex-1" id="det-download-btn"><i class="fa fa-download"></i></button>
+              <button class="btn btn-outline-danger flex-1" id="det-delete-btn"><i class="fa fa-trash"></i></button>
+          </div>
+      </div>
+  </aside>
+</div> <!-- End #explorer-layout -->
+
+<script>
+// Explorer JS Logic
+document.addEventListener('DOMContentLoaded', function() {
+    // 1. Sidebar Tree Enhancement (Recursive)
+    function expandFolder(path, element) {
+        // Simple mock for now, ideally this fetches via AJAX
+        console.log('Expanding', path);
+    }
+
+    // 2. Details Pane Logic
+    const items = document.querySelectorAll('tr[data-name], .grid-item[data-name]');
+    const detailsPane = document.getElementById('details-pane');
+    
+    items.forEach(item => {
+        item.addEventListener('click', function(e) {
+            if (e.target.closest('input, a, button, .context-menu-trigger')) return;
+            
+            const name = this.dataset.name;
+            const type = this.dataset.type;
+            const path = this.dataset.path;
+            const ext = this.dataset.ext || '';
+            
+            // Get data from row/grid
+            let size = 'N/A', date = 'N/A', perms = 'N/A';
+            if (this.tagName === 'TR') {
+                size = this.cells[2]?.innerText || 'N/A';
+                date = this.cells[3]?.innerText || 'N/A';
+                perms = this.cells[4]?.innerText || 'N/A';
+            } else {
+                // Grid items don't show size/date, we'd need another way or just show N/A
+            }
+            
+            // Update Details
+            document.getElementById('det-name').innerText = name;
+            document.getElementById('det-type').innerText = type.charAt(0).toUpperCase() + type.slice(1) + (ext ? ' (' + ext.toUpperCase() + ')' : '');
+            document.getElementById('det-size').innerText = size;
+            document.getElementById('det-date').innerText = date;
+            document.getElementById('det-perms').innerText = perms;
+            
+            const iconEl = detailsPane.querySelector('.details-icon i');
+            if (type === 'folder') {
+                iconEl.className = 'fa fa-folder';
+            } else {
+                const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz','iso','jar','war'];
+                if (archiveExts.includes(ext.toLowerCase())) iconEl.className = 'fa fa-file-archive-o';
+                else if (['jpg','jpeg','png','gif','webp','svg'].includes(ext.toLowerCase())) iconEl.className = 'fa fa-file-image-o';
+                else if (['mp4','mkv','avi','mov'].includes(ext.toLowerCase())) iconEl.className = 'fa fa-file-video-o';
+                else iconEl.className = 'fa fa-file-text-o';
+            }
+            
+            // Show/Hide Preview for images
+            const previewCont = document.getElementById('det-preview-container');
+            const previewBox = document.getElementById('det-preview');
+            const isImg = ['jpg','jpeg','png','gif','webp','svg'].includes(ext.toLowerCase());
+            
+            if (isImg) {
+                const url = this.getAttribute('data-url') || '';
+                previewCont.style.display = 'block';
+                previewBox.innerHTML = `<img src="${url}" style="width:100%; height:auto; display:block;">`;
+            } else {
+                previewCont.style.display = 'none';
+            }
+            
+            // Buttons
+            document.getElementById('det-open-btn').onclick = () => { window.location.href = this.dataset.url || '#'; };
+            document.getElementById('det-download-btn').onclick = () => { window.location.href = '?p='+encodeURIComponent(path)+'&dl='+encodeURIComponent(name); };
+            document.getElementById('det-delete-btn').onclick = () => { 
+                const delLink = '?p=' + encodeURIComponent(path) + '&del=' + encodeURIComponent(name);
+                if (typeof confirmDailog === 'function') confirmDailog(e, 888, 'Delete', name, delLink);
+            };
+            
+            detailsPane.classList.remove('hidden');
+            
+            // Highlight selected
+            items.forEach(i => i.classList.remove('explorer-selected'));
+            this.classList.add('explorer-selected');
+        });
+    });
+
+    // Deselect
+    document.getElementById('main-content-pane').addEventListener('click', function(e) {
+        if (!e.target.closest('tr, .grid-item')) {
+            detailsPane.classList.add('hidden');
+            items.forEach(i => i.classList.remove('explorer-selected'));
+        }
+    });
+});
+</script>
+
+<style>
+.explorer-selected { background: rgba(13, 110, 253, 0.1) !important; outline: 1px solid var(--accent); }
+</style>
+
 
   <!-- Drag & Drop enhancements: enable dragging items and dropping onto folders (table/grid) -->
   <style>
@@ -5792,6 +5954,105 @@ function fm_foldersize($path) {
                   border-radius: 3px;
               }
 
+              /* EXPLORER LAYOUT */
+              #explorer-layout {
+                  display: flex;
+                  height: calc(100vh - 60px);
+                  overflow: hidden;
+                  margin: 0 -15px; /* Compensate for container-fluid padding */
+              }
+
+              #sidebar-pane {
+                  width: 260px;
+                  min-width: 260px;
+                  background: var(--bg-card);
+                  border-right: 1px solid var(--border-color);
+                  display: flex;
+                  flex-direction: column;
+                  transition: all 0.3s ease;
+              }
+
+              #main-content-pane {
+                  flex: 1;
+                  display: flex;
+                  flex-direction: column;
+                  background: var(--bg-body);
+                  overflow-y: auto;
+                  padding: 20px;
+                  position: relative;
+              }
+
+              #details-pane {
+                  width: 280px;
+                  min-width: 280px;
+                  background: var(--bg-card);
+                  border-left: 1px solid var(--border-color);
+                  display: flex;
+                  flex-direction: column;
+                  padding: 20px;
+                  transform: translateX(0);
+                  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              }
+
+              #details-pane.hidden {
+                  width: 0;
+                  min-width: 0;
+                  padding: 0;
+                  border-left: none;
+                  overflow: hidden;
+              }
+
+              /* Sidebar Tree View */
+              .tree-item { position: relative; }
+              .tree-header {
+                  display: flex; align-items:center; padding: 6px 12px;
+                  cursor: pointer; border-radius: 6px; margin: 2px 8px;
+                  transition: background 0.2s; color: var(--text-primary);
+                  font-size: 0.9rem;
+              }
+              .tree-header:hover { background: var(--bg-hover); }
+              .tree-header.active { background: rgba(13, 110, 253, 0.15); color: var(--accent); }
+              .tree-header i { width: 20px; margin-right: 8px; font-size: 1rem; opacity: 0.7; }
+              .tree-header .toggle-icon { width: 14px; margin-right: 4px; font-size: 0.8rem; cursor: pointer; transition: 0.2s; }
+              .tree-header .toggle-icon.collapsed { transform: rotate(-90deg); }
+              .tree-children { padding-left: 18px; display: block; }
+              .tree-children.collapsed { display: none; }
+
+              /* Details Pane UI */
+              .details-header { text-align: center; margin-bottom: 25px; }
+              .details-icon { font-size: 4rem; color: var(--accent); margin-bottom: 15px; opacity: 0.9; }
+              .details-name { font-weight: bold; font-size: 1.1rem; margin-bottom: 5px; word-break: break-all; }
+              .details-meta { color: var(--text-secondary); font-size: 0.85rem; }
+              .details-section { margin-top: 25px; border-top: 1px solid var(--border-color); padding-top: 15px; }
+              .details-section-title { font-weight: bold; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 12px; }
+              .details-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.85rem; }
+              .details-label { color: var(--text-secondary); }
+              .details-value { color: var(--text-primary); font-weight: 500; }
+
+              /* Mobile adjustments */
+              @media (max-width: 992px) {
+                  #sidebar-pane { width: 0; min-width: 0; overflow: hidden; border-right: none; }
+                  #details-pane { width: 0; min-width: 0; overflow: hidden; border-left: none; }
+              }
+
+              /* Grid View Enhancements */
+              .grid-item {
+                  background: var(--bg-card);
+                  border: 1px solid var(--border-color);
+                  border-radius: 12px;
+                  transition: all 0.2s;
+              }
+              .grid-item:hover {
+                  border-color: var(--accent);
+                  background: var(--bg-hover);
+                  transform: translateY(-2px);
+                  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+              }
+              .grid-item.selected {
+                  background: rgba(13, 110, 253, 0.1);
+                  border-color: var(--accent);
+              }
+
               .preview-video {
                   position: relative;
                   max-width: 100%;
@@ -7082,7 +7343,7 @@ function fm_foldersize($path) {
                            menu.style.top = y + 'px';
                            const type = target.getAttribute('data-type');
                            const ext = (target.getAttribute('data-ext') || '').toLowerCase();
-                           const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz'];
+                           const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz','iso','jar','war'];
                            const isArchive = archiveExts.includes(ext);
                            
                            menu.querySelectorAll('.fm-cm-item').forEach(item => { 
