@@ -548,96 +548,122 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           $dir = $_POST['path'] == "." ? '' : $_POST['path'];
           $search_query = $_POST['content'];
           $is_content_search = isset($_POST['is_content']) && $_POST['is_content'] === 'true';
-          $is_recursive_search = isset($_POST['is_recursive']) && $_POST['is_recursive'] === 'true'; // New parameter
+          $is_recursive_search = isset($_POST['is_recursive']) && $_POST['is_recursive'] === 'true';
           
-          if ($is_content_search) {
-              // Content Search (Grep)
-              $files = array();
-              $path = FM_ROOT_PATH . '/' . fm_clean_path($dir);
-              if (is_dir($path)) {
-                  try {
-                      $dirIterator = new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS);
-                      $ite = new RecursiveIteratorIterator($dirIterator, RecursiveIteratorIterator::SELF_FIRST);
+          $files = array();
+          $startPath = FM_ROOT_PATH;
+          if ($dir) $startPath .= '/' . fm_clean_path($dir);
+          $startPath = rtrim($startPath, '/');
+          
+          if (is_dir($startPath)) {
+              // Folders to exclude from recursive search to save performance
+              $exclude_dirs = array('node_modules', '.git', 'vendor', '.svn', '.hg', '.venv', '__pycache__');
+              
+              try {
+                  if ($is_recursive_search) {
+                      $dirIterator = new RecursiveDirectoryIterator($startPath, FilesystemIterator::SKIP_DOTS | FilesystemIterator::FOLLOW_SYMLINKS);
+                      
+                      // Filter iterator to skip excluded directories
+                      $filterIterator = new RecursiveCallbackFilterIterator($dirIterator, function ($current, $key, $iterator) use ($exclude_dirs) {
+                          if ($iterator->hasChildren() && in_array($current->getFilename(), $exclude_dirs)) {
+                              return false;
+                          }
+                          if (!FM_SHOW_HIDDEN && substr($current->getFilename(), 0, 1) === '.') {
+                              return false;
+                          }
+                          return true;
+                      });
+                      
+                      $ite = new RecursiveIteratorIterator($filterIterator, RecursiveIteratorIterator::SELF_FIRST);
+                      $ite->setMaxDepth(10); // Safety limit
+                      
+                      $count = 0;
                       foreach ($ite as $file) {
-                          if ($file->isFile()) {
-                              $fname = $file->getFilename();
-                              // Check extension (only text based)
-                              $ext = strtolower($file->getExtension());
-                              if (in_array($ext, fm_get_text_exts())) {
-                                  // Read content (limit to 1MB files for performance)
-                                  if ($file->getSize() < 1000000) {
-                                      $content = @file_get_contents($file->getPathname());
+                          if ($count > 1000) break; // Limit results for performance
+                          
+                          $fname = $file->getFilename();
+                          $pathname = $file->getPathname();
+                          $is_match = false;
+                          
+                          if ($is_content_search) {
+                              if ($file->isFile()) {
+                                  $ext = strtolower($file->getExtension());
+                                  if (in_array($ext, fm_get_text_exts()) && $file->getSize() < 500000) { // Limit to 500KB for content search
+                                      $content = @file_get_contents($pathname);
                                       if ($content !== false && stripos($content, $search_query) !== false) {
-                                          $fullPath = str_replace('\\', '/', $file->getPath());
-                                          $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
-                                          $relativePath = str_replace($rootPathNormalized, '', $fullPath);
-                                          $files[] = array(
-                                              "name" => $fname,
-                                              "type" => "file",
-                                              "path" => $relativePath ? ltrim($relativePath, '/') : ''
-                                          );
+                                          $is_match = true;
                                       }
                                   }
                               }
-                          }
-                      }
-                  } catch (Exception $e) {
-                      // Ignore permission errors
-                  }
-              }
-              $response = $files;
-          } else {
-              // Filename Search
-              $files = array();
-              $startPath = FM_ROOT_PATH;
-              if ($dir) $startPath .= '/' . fm_clean_path($dir);
-              
-              if (is_dir($startPath)) {
-                  if ($is_recursive_search) {
-                      // Recursive Search
-                      try {
-                          $dirIterator = new RecursiveDirectoryIterator($startPath, FilesystemIterator::SKIP_DOTS);
-                          $ite = new RecursiveIteratorIterator($dirIterator, RecursiveIteratorIterator::SELF_FIRST);
-                          foreach ($ite as $file) {
-                              $fname = $file->getFilename();
-                              if (($file->isFile() || $file->isDir()) && stripos($fname, $search_query) !== false) { // Include folders in recursive search
-                                  $fullPath = str_replace('\\', '/', $file->getPath());
-                                  $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
-                                  $relativePath = str_replace($rootPathNormalized, '', $fullPath);
-                                  $files[] = array(
-                                      "name" => $fname,
-                                      "type" => $file->isFile() ? "file" : "folder",
-                                      "path" => $relativePath ? ltrim($relativePath, '/') : ''
-                                  );
+                          } else {
+                              if (stripos($fname, $search_query) !== false) {
+                                  $is_match = true;
                               }
                           }
-                      } catch (Exception $e) {
-                          // Ignore permission errors
+                          
+                          if ($is_match) {
+                              $count++;
+                              $fullPath = str_replace('\\', '/', $file->getPath());
+                              $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
+                              $relativePath = str_replace($rootPathNormalized, '', $fullPath);
+                              $relativePath = ltrim($relativePath, '/');
+                              
+                              $files[] = array(
+                                  "name" => $fname,
+                                  "type" => $file->isDir() ? "folder" : "file",
+                                  "path" => $relativePath,
+                                  "size" => $file->isFile() ? fm_get_size($file->getSize()) : '',
+                                  "date" => date(FM_DATETIME_FORMAT, $file->getMTime())
+                              );
+                          }
                       }
                   } else {
-                      // Non-Recursive (Current Folder Only) Search
+                      // Current folder only search
                       $currentDirFiles = is_readable($startPath) ? scandir($startPath) : array();
                       foreach ($currentDirFiles as $item) {
                           if ($item == '.' || $item == '..') continue;
                           if (!FM_SHOW_HIDDEN && substr($item, 0, 1) === '.') continue;
                           
                           $itemPath = $startPath . '/' . $item;
-                          if ((is_file($itemPath) || is_dir($itemPath)) && stripos($item, $search_query) !== false) { // Search both files and folders
+                          $is_match = false;
+                          
+                          if ($is_content_search) {
+                              if (is_file($itemPath)) {
+                                  $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+                                  if (in_array($ext, fm_get_text_exts()) && filesize($itemPath) < 500000) {
+                                      $content = @file_get_contents($itemPath);
+                                      if ($content !== false && stripos($content, $search_query) !== false) {
+                                          $is_match = true;
+                                      }
+                                  }
+                              }
+                          } else {
+                              if (stripos($item, $search_query) !== false) {
+                                  $is_match = true;
+                              }
+                          }
+                          
+                          if ($is_match) {
                               $fullPath = str_replace('\\', '/', dirname($itemPath)); 
                               $rootPathNormalized = str_replace('\\', '/', FM_ROOT_PATH);
                               $relativePath = str_replace($rootPathNormalized, '', $fullPath);
+                              $relativePath = ltrim($relativePath, '/');
+                              
                               $files[] = array(
                                   "name" => $item,
-                                  "type" => is_file($itemPath) ? "file" : "folder",
-                                  "path" => $relativePath ? ltrim($relativePath, '/') : ''
+                                  "type" => is_dir($itemPath) ? "folder" : "file",
+                                  "path" => $relativePath,
+                                  "size" => is_file($itemPath) ? fm_get_size(filesize($itemPath)) : '',
+                                  "date" => date(FM_DATETIME_FORMAT, filemtime($itemPath))
                               );
                           }
                       }
                   }
+              } catch (Exception $e) {
+                  // Error silencer
               }
-              $response = $files;
           }
-          echo json_encode($response);
+          echo json_encode($files);
           exit();
       }
 
@@ -4700,262 +4726,111 @@ function fm_foldersize($path) {
                   }
                   $root_url .= $sep . implode($sep, $array);
               }
-              echo '<div class="col-12 col-md-6 d-flex align-items-center mb-2 mb-md-0 position-relative">';
-              echo '<div id="path-breadcrumbs" class="breadcrumb-container flex-grow-1" onclick="showPathEditor()" style="cursor: pointer; padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; transition: all 0.2s;">' . $root_url . '</div>';
+              echo '<div id="path-breadcrumb-container" class="col-12 col-md-6 d-flex align-items-center mb-2 mb-md-0 position-relative" title="Double click to edit path" style="cursor: pointer;">';
+              echo '<div id="path-breadcrumbs" class="breadcrumb-container flex-grow-1" style="padding: 4px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); transition: all 0.2s; background: rgba(0,0,0,0.2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">' . $root_url . '</div>';
               echo $editFile;
               echo '</div>';
               ?>
+               <script>
+               (function() {
+                   if (window.breadcrumbInitialized) return;
+                   window.breadcrumbInitialized = true;
+                   console.log('Breadcrumb Script Loading...');
 
-              <script defer>
-              if (typeof breadcrumbFolders === 'undefined') {
-                  var breadcrumbFolders = []; // Cache for autocomplete
-              }
-              var isSidebarOpen = false;
+                   window.showPathEditor = function() {
+                       console.log('showPathEditor function called');
+                       const breadcrumbDiv = $('#path-breadcrumbs');
+                       if (!breadcrumbDiv.length) {
+                           console.log('Error: #path-breadcrumbs element not found');
+                           return;
+                       }
+                       
+                       const currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                       const offset = breadcrumbDiv.offset();
+                       const width = breadcrumbDiv.outerWidth();
+                       const height = breadcrumbDiv.outerHeight();
+                       
+                       console.log('Breadcrumb Offset:', offset);
+                       console.log('Breadcrumb Geometry:', {width, height});
 
-              function isMobileDevice() {
-                  return window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-              }
+                       if (width < 20 || height < 10) {
+                           console.log('Warning: Breadcrumb area too small, using fallback placement.');
+                       }
 
-              // Show path editor - sidebar for desktop, modal for mobile
-              function showPathEditor() {
-                  var isDesktop = !isMobileDevice();
-                  console.log('showPathEditor called, isMobileDevice:', isMobileDevice(), 'isDesktop:', isDesktop);
-                  
-                  if (isMobileDevice()) {
-                      // Use modal on mobile
-                      console.log('Opening modal for mobile');
-                      const currentPath = '<?php echo addslashes(FM_PATH); ?>';
-                      $('#modal-path-input').val(currentPath);
-                      $('#pathEditorModal').modal('show');
-                      setTimeout(() => {
-                          $('#modal-path-input').focus().select();
-                          initModalPathAutocomplete();
-                      }, 300);
-                  } else {
-                      // Use sidebar on desktop
-                      console.log('Opening sidebar for desktop');
-                      openPathSidebar();
-                  }
-              }
+                       // Create floating input
+                       const input = $('<input type="text" id="path-editor-input" class="form-control" style="position: absolute !important; margin: 0; padding: 0 12px; background: #222 !important; color: #fff !important; border: 2px solid #007bff !important; border-radius: 6px; font-family: monospace; font-size: 0.9rem; z-index: 999999; box-sizing: border-box; box-shadow: 0 4px 15px rgba(0,0,0,0.5);">');
+                       input.val(currentPath);
+                       
+                       input.css({
+                           top: offset.top + 'px',
+                           left: offset.left + 'px',
+                           width: width + 'px',
+                           height: height + 'px',
+                           display: 'block'
+                       });
+                       
+                       $('body').append(input);
+                       input.focus().select();
+                       console.log("Floating input appended to body at top:", offset.top, "left:", offset.left);
 
-              // Sidebar functions for desktop
-              function openPathSidebar() {
-                  console.log('openPathSidebar called');
-                  const currentPath = '<?php echo addslashes(FM_PATH); ?>';
-                  $('#sidebar-path-input').val(currentPath);
-                  
-                  // Show sidebar and overlay
-                  document.getElementById('path-sidebar').style.right = '0';
-                  document.getElementById('sidebar-overlay').style.display = 'block';
-                  isSidebarOpen = true;
-                  
-                  // Load folders and initialize autocomplete
-                  loadBreadcrumbFolders('');
-                  setTimeout(() => {
-                      $('#sidebar-path-input').focus().select();
-                      initSidebarPathAutocomplete();
-                  }, 200);
-              }
+                       input.on('keydown', function(e) {
+                           if (e.key === 'Enter') {
+                               const newPath = $(this).val().trim();
+                               window.location.href = '?p=' + encodeURIComponent(newPath);
+                           } else if (e.key === 'Escape') {
+                               input.remove();
+                           }
+                       });
+                       
+                       input.on('blur', function() {
+                           setTimeout(() => {
+                               if ($('#path-editor-input').length) {
+                                   input.remove();
+                               }
+                           }, 200);
+                       });
+                   };
 
-              function closePathSidebar() {
-                  console.log('closePathSidebar called');
-                  document.getElementById('path-sidebar').style.right = '-350px';
-                  document.getElementById('sidebar-overlay').style.display = 'none';
-                  $('#sidebar-suggestions').remove();
-                  isSidebarOpen = false;
-              }
+                   function initPathEditorEvents() {
+                       if (typeof $ === 'undefined') {
+                           setTimeout(initPathEditorEvents, 300);
+                           return;
+                       }
+                       $(document).ready(function() {
+                           // Double click for desktop
+                           $(document).off('dblclick', '#path-breadcrumb-container').on('dblclick', '#path-breadcrumb-container', function(e) {
+                               console.log('Double-click detected');
+                               window.showPathEditor();
+                           });
 
-              function navigateSidebarPath() {
-                  const newPath = $('#sidebar-path-input').val().trim();
-                  console.log('navigateSidebarPath:', newPath);
-                  if (newPath !== '') {
-                      window.location.href = '?p=' + encodeURIComponent(newPath);
-                  }
-              }
+                           // Single-click on empty area detection
+                           $(document).off('click', '#path-breadcrumb-container').on('click', '#path-breadcrumb-container', function(e) {
+                               if (e.target.id === 'path-breadcrumb-container' || e.target.id === 'path-breadcrumbs') {
+                                   console.log('Single-click on empty area detected');
+                                   window.showPathEditor();
+                               }
+                           });
 
-              // Autocomplete for sidebar
-              function initSidebarPathAutocomplete() {
-                  const pathInput = $('#sidebar-path-input');
-                  
-                  pathInput.off('input').on('input', function() {
-                      const searchTerm = $(this).val().toLowerCase();
-                      
-                      if (searchTerm.length === 0) {
-                          $('#sidebar-suggestions').remove();
-                          return;
-                      }
-
-                      // Filter folders
-                      const filtered = breadcrumbFolders.filter(folder => 
-                          folder.path.toLowerCase().includes(searchTerm) || 
-                          folder.name.toLowerCase().includes(searchTerm)
-                      );
-
-                      // Display suggestions
-                      let suggestionsHtml = '<div id="sidebar-suggestions" class="mt-2" style="max-height: 250px; overflow-y: auto;">';
-                      
-                      if (filtered.length > 0) {
-                          filtered.slice(0, 15).forEach(folder => {
-                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer" style="cursor: pointer; border-radius: 4px; transition: background-color 0.15s;" onclick="selectSidebarPath('${folder.path}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor='white'">
-                                  <i class="fa fa-folder text-primary"></i> <strong>${folder.path}</strong>
-                                  ${folder.name !== folder.path ? '<br><small class="text-muted">' + folder.name + '</small>' : ''}
-                              </div>`;
-                          });
-                      } else {
-                          suggestionsHtml += '<div class="p-2 text-muted"><small>No matching folders</small></div>';
-                      }
-                      suggestionsHtml += '</div>';
-
-                      $('#sidebar-suggestions').remove();
-                      pathInput.after(suggestionsHtml);
-                  });
-
-                  pathInput.off('keydown').on('keydown', function(e) {
-                      if (e.key === 'Enter') {
-                          e.preventDefault();
-                          navigateSidebarPath();
-                      } else if (e.key === 'Escape') {
-                          closePathSidebar();
-                      }
-                  });
-              }
-
-              function selectSidebarPath(path) {
-                  $('#sidebar-path-input').val(path);
-                  navigateSidebarPath();
-              }
-
-              // Autocomplete for modal
-              function initModalPathAutocomplete() {
-                  const pathInput = $('#modal-path-input');
-                  
-                  // Load folders first
-                  loadBreadcrumbFolders('');
-                  
-                  pathInput.off('input').on('input', function() {
-                      const searchTerm = $(this).val().toLowerCase();
-                      
-                      if (searchTerm.length === 0 || breadcrumbFolders.length === 0) {
-                          $('#modal-suggestions').remove();
-                          return;
-                      }
-
-                      // Filter folders
-                      const filtered = breadcrumbFolders.filter(folder => 
-                          folder.path.toLowerCase().includes(searchTerm) || 
-                          folder.name.toLowerCase().includes(searchTerm)
-                      );
-
-                      // Display suggestions
-                      let suggestionsHtml = '<div id="modal-suggestions" class="mt-2" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: white;">';
-                      
-                      if (filtered.length > 0) {
-                          filtered.slice(0, 10).forEach(folder => {
-                              suggestionsHtml += `<div class="p-2 border-bottom cursor-pointer" style="cursor: pointer; transition: background-color 0.15s;" onclick="selectModalPath('${folder.path}')" onmouseover="this.style.backgroundColor='#f0f0f0'" onmouseout="this.style.backgroundColor='white'">
-                                  <i class="fa fa-folder text-primary"></i> <strong>${folder.path}</strong>
-                                  ${folder.name !== folder.path ? '<br><small class="text-muted">' + folder.name + '</small>' : ''}
-                              </div>`;
-                          });
-                      } else {
-                          suggestionsHtml += '<div class="p-2 text-muted"><small>No matching folders</small></div>';
-                      }
-                      suggestionsHtml += '</div>';
-
-                      $('#modal-suggestions').remove();
-                      $(this).after(suggestionsHtml);
-                  });
-              }
-
-              function selectModalPath(path) {
-                  $('#modal-path-input').val(path);
-              }
-
-              function loadBreadcrumbFolders(path) {
-                  $.ajax({
-                      type: "POST",
-                      url: window.location.href,
-                      data: {
-                          ajax: true,
-                          type: 'get_folders',
-                          path: path,
-                          token: window.csrf
-                      },
-                      success: function(data) {
-                          try {
-                              data = JSON.parse(data);
-                              if (Array.isArray(data)) {
-                                  breadcrumbFolders = data;
-                              }
-                          } catch(e) { 
-                              console.error('Error parsing breadcrumb folders:', e); 
-                          }
-                      },
-                      error: function(e) {
-                          console.error('Error loading breadcrumb folders:', e);
-                      }
-                  });
-              }
-              
-              // Modal path editor function
-              window.navigateToModalPath = function() {
-                  const newPath = $('#modal-path-input').val().trim();
-                  if (newPath !== '') {
-                      window.location.href = '?p=' + encodeURIComponent(newPath);
-                  }
-                  $('#pathEditorModal').modal('hide');
-              };
-              
-              // Enhanced breadcrumb editing for mobile - wrapped in function to handle jQuery loading
-              function initPathEditorEvents() {
-                  if (typeof $ === 'undefined') {
-                      setTimeout(initPathEditorEvents, 100);
-                      return;
-                  }
-                  $(document).ready(function() {
-                      // Close sidebar on outside click
-                      $(document).on('click', function(e) {
-                          if (isSidebarOpen && !$(e.target).closest('#path-sidebar').length && !$(e.target).closest('#path-breadcrumbs').length) {
-                              closePathSidebar();
-                          }
-                      });
-                      
-                      // Double tap to edit on mobile
-                      let tapCount = 0;
-                      $('#path-breadcrumbs').on('touchend', function(e) {
-                          e.preventDefault();
-                          tapCount++;
-                          if (tapCount === 1) {
-                              setTimeout(function() {
-                                  if (tapCount === 1) {
-                                      // Single tap - do nothing special
-                                  } else if (tapCount === 2) {
-                                      // Double tap - show path editor
-                                      showPathEditor();
-                                  }
-                                  tapCount = 0;
-                              }, 300);
-                          }
-                      });
-                      
-                      // Click to edit on desktop
-                      $('#path-breadcrumbs').on('click', function(e) {
-                          if (!('ontouchstart' in window)) {
-                              showPathEditor();
-                          }
-                      });
-                      
-                      // Handle Enter key in modal
-                      $('#modal-path-input').on('keyup', function(e) {
-                          if (e.key === 'Enter') {
-                              navigateToModalPath();
-                          } else if (e.key === 'Escape') {
-                              $('#pathEditorModal').modal('hide');
-                          }
-                      });
-                  });
-              }
-              initPathEditorEvents();
-              </script>
+                           // Double tap logic for mobile
+                           let tapCount = 0;
+                           $(document).off('touchend', '#path-breadcrumb-container').on('touchend', '#path-breadcrumb-container', function(e) {
+                               tapCount++;
+                               if (tapCount === 1) {
+                                   setTimeout(function() {
+                                       if (tapCount === 2) {
+                                           console.log('Double-tap detected');
+                                           window.showPathEditor();
+                                       }
+                                       tapCount = 0;
+                                   }, 300);
+                               }
+                           });
+                           console.log('Path editor events attached.');
+                       });
+                   }
+                   initPathEditorEvents();
+               })();
+               </script>
 
               <div class="col-12 col-md-6">
                   <ul class="navbar-nav justify-content-end flex-row flex-wrap" data-bs-theme="<?php echo FM_THEME; ?>">
@@ -6656,53 +6531,33 @@ function fm_foldersize($path) {
       </head>
 
       <body class="<?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?> <?php echo $isStickyNavBar; ?>">
-          <!-- Sidebar Overlay -->
-          <div id="sidebar-overlay" style="position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; background: rgba(0,0,0,0.5) !important; z-index: 1060 !important; display: none !important;" onclick="closePathSidebar()"></div>
-          
-          <!-- Path Editor Sidebar for Desktop -->
-          <div id="path-sidebar" style="position: fixed !important; top: 0 !important; right: -350px !important; width: 350px !important; height: 100vh !important; background: white !important; border-left: 1px solid #e0e0e0 !important; box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15) !important; z-index: 1070 !important; transition: right 0.3s ease !important; display: flex !important; flex-direction: column !important; overflow: hidden !important;">
-              <div style="padding: 15px !important; border-bottom: 1px solid #e0e0e0 !important; display: flex !important; justify-content: space-between !important; align-items: center !important; background: var(--bg-sidebar);">
-                  <h5 style="margin: 0 !important; font-size: 16px !important; color: var(--text-primary) !important;"><i class="fa fa-folder-open"></i> Navigate to Path</h5>
-                  <button type="button" class="btn-close" onclick="closePathSidebar()" style="margin: 0 !important;"></button>
-              </div>
-              <div style="flex: 1 !important; padding: 15px !important; overflow-y: auto !important; background: var(--bg-sidebar);">
-                  <label style="color: var(--text-primary) !important; font-weight: 600 !important; margin-bottom: 8px !important; display: block !important;">Path:</label>
-                  <input type="text" id="sidebar-path-input" class="form-control form-control-sm mb-3" placeholder="e.g. folder/subfolder" autocomplete="off" style="background: var(--bg-sidebar) !important; border: 1px solid #ddd !important; color: var(--primary-text) !important;">
-                  <div id="sidebar-suggestions"></div>
-              </div>
-              <div style="padding: 15px !important; border-top: 1px solid #e0e0e0 !important; display: flex !important; gap: 10px !important; background: var(--bg-sidebar);">
-                  <button type="button" class="btn btn-sm btn-secondary" onclick="closePathSidebar()" style="flex: 1 !important;">Cancel</button>
-                  <button type="button" class="btn btn-sm btn-primary" onclick="navigateSidebarPath()" style="flex: 1 !important;">Navigate</button>
-              </div>
-          </div>
-
           <div id="wrapper" class="container-fluid">
               <!-- New Item creation -->
               <div class="modal fade" id="createNewItem" tabindex="-1" role="dialog" data-bs-backdrop="static" data-bs-keyboard="false" aria-labelledby="newItemModalLabel" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
                   <div class="modal-dialog" role="document">
                       <form class="modal-content" method="post">
                           <div class="modal-header">
-                              <h5 class="modal-title" id="newItemModalLabel"><i class="fa fa-plus-square fa-fw"></i><?php echo lng('CreateNewItem') ?></h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                               <h5 class="modal-title" id="newItemModalLabel"><i class="fa fa-plus-square fa-fw"></i><?php echo lng('CreateNewItem') ?></h5>
+                               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                           </div>
                           <div class="modal-body">
-                              <p><label for="newfile"><?php echo lng('ItemType') ?> </label></p>
-                              <div class="form-check form-check-inline">
-                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline1" name="newfile" value="file" checked>
-                                  <label class="form-check-label" for="customRadioInline1"><?php echo lng('File') ?></label>
-                              </div>
-                              <div class="form-check form-check-inline">
-                                  <input class="form-check-input" type="radio" name="newfile" id="customRadioInline2" value="folder">
-                                  <label class="form-check-label" for="customRadioInline2"><?php echo lng('Folder') ?></label>
-                              </div>
+                               <p><label for="newfile"><?php echo lng('ItemType') ?> </label></p>
+                               <div class="form-check form-check-inline">
+                                   <input class="form-check-input" type="radio" name="newfile" id="customRadioInline1" name="newfile" value="file" checked>
+                                   <label class="form-check-label" for="customRadioInline1"><?php echo lng('File') ?></label>
+                               </div>
+                               <div class="form-check form-check-inline">
+                                   <input class="form-check-input" type="radio" name="newfile" id="customRadioInline2" value="folder">
+                                   <label class="form-check-label" for="customRadioInline2"><?php echo lng('Folder') ?></label>
+                               </div>
 
-                              <p class="mt-3"><label for="newfilename"><?php echo lng('ItemName') ?> </label></p>
-                              <input type="text" name="newfilename" id="newfilename" value="" class="form-control" placeholder="<?php echo lng('Enter here...') ?>" required>
+                               <p class="mt-3"><label for="newfilename"><?php echo lng('ItemName') ?> </label></p>
+                               <input type="text" name="newfilename" id="newfilename" value="" class="form-control" placeholder="<?php echo lng('Enter here...') ?>" required>
                           </div>
                           <div class="modal-footer">
-                              <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                              <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> <?php echo lng('Cancel') ?></button>
-                              <button type="submit" class="btn btn-success"><i class="fa fa-check-circle"></i> <?php echo lng('CreateNow') ?></button>
+                               <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
+                               <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> <?php echo lng('Cancel') ?></button>
+                               <button type="submit" class="btn btn-success"><i class="fa fa-check-circle"></i> <?php echo lng('CreateNow') ?></button>
                           </div>
                       </form>
                   </div>
@@ -6713,17 +6568,17 @@ function fm_foldersize($path) {
                   <div class="modal-dialog" role="document">
                       <div class="modal-content">
                           <div class="modal-header">
-                              <h5 class="modal-title" id="uploadFilesLabel"><i class="fa fa-upload fa-fw"></i>Upload Files</h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                               <h5 class="modal-title" id="uploadFilesLabel"><i class="fa fa-upload fa-fw"></i>Upload Files</h5>
+                               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                           </div>
                           <div class="modal-body">
-                              <p><label for="fileInput">Select Files to Upload:</label></p>
-                              <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files...">
-                              <small class="form-text text-muted mt-2">You can select multiple files to upload</small>
+                               <p><label for="fileInput">Select Files to Upload:</label></p>
+                               <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files...">
+                               <small class="form-text text-muted mt-2">You can select multiple files to upload</small>
                           </div>
                           <div class="modal-footer">
-                              <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
-                              <button type="button" class="btn btn-success" onclick="handleUploadFiles()"><i class="fa fa-check-circle"></i> Upload</button>
+                               <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
+                               <button type="button" class="btn btn-success" onclick="handleUploadFiles()"><i class="fa fa-check-circle"></i> Upload</button>
                           </div>
                       </div>
                   </div>
@@ -6734,40 +6589,19 @@ function fm_foldersize($path) {
                   <div class="modal-dialog" role="document">
                       <div class="modal-content">
                           <div class="modal-header">
-                              <h5 class="modal-title" id="uploadFromURLLabel"><i class="fa fa-link fa-fw"></i>Upload from URL</h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                               <h5 class="modal-title" id="uploadFromURLLabel"><i class="fa fa-link fa-fw"></i>Upload from URL</h5>
+                               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                           </div>
                           <div class="modal-body">
-                              <p><label for="urlInput">Enter URL:</label></p>
-                              <input type="url" id="urlInput" class="form-control" placeholder="https://example.com/file.zip" required>
-                              <p class="mt-3"><label for="fileName">File Name (optional):</label></p>
-                              <input type="text" id="fileName" class="form-control" placeholder="Leave empty to use original name">
-                              <small class="form-text text-muted mt-2">Enter the URL of the file you want to download and upload</small>
+                               <p><label for="urlInput">Enter URL:</label></p>
+                               <input type="url" id="urlInput" class="form-control" placeholder="https://example.com/file.zip" required>
+                               <p class="mt-3"><label for="fileName">File Name (optional):</label></p>
+                               <input type="text" id="fileName" class="form-control" placeholder="Leave empty to use original name">
+                               <small class="form-text text-muted mt-2">Enter the URL of the file you want to download and upload</small>
                           </div>
                           <div class="modal-footer">
-                              <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
-                              <button type="button" class="btn btn-success" onclick="handleUploadFromURL()"><i class="fa fa-check-circle"></i> Upload</button>
-                          </div>
-                      </div>
-                  </div>
-              </div>
-
-              <!-- Path Editor Modal (Alternative solution) -->
-              <div class="modal fade" id="pathEditorModal" tabindex="-1" role="dialog" aria-labelledby="pathEditorLabel" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
-                  <div class="modal-dialog" role="document">
-                      <div class="modal-content">
-                          <div class="modal-header">
-                              <h5 class="modal-title" id="pathEditorLabel"><i class="fa fa-folder-open fa-fw"></i> Edit Path</h5>
-                              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                          </div>
-                          <div class="modal-body">
-                              <p><label for="modal-path-input">Current Path:</label></p>
-                              <input type="text" id="modal-path-input" class="form-control" placeholder="Enter path..." />
-                              <small class="form-text text-muted">Enter the path you want to navigate to</small>
-                          </div>
-                          <div class="modal-footer">
-                              <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
-                              <button type="button" class="btn btn-success" onclick="navigateToModalPath()"><i class="fa fa-check-circle"></i> Go</button>
+                               <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
+                               <button type="button" class="btn btn-success" onclick="handleUploadFromURL()"><i class="fa fa-check-circle"></i> Upload</button>
                           </div>
                       </div>
                   </div>
@@ -8311,7 +8145,33 @@ function fm_foldersize($path) {
               function search_template(data) {
                   var response = "";
                   $.each(data, function(key, val) {
-                      response += `<li><a href="?p=${val.path}&view=${val.name}">${val.path}/${val.name}</a></li>`;
+                      var fullPath = val.path ? val.path : '';
+                      var link = '';
+                      if (val.type === 'folder') {
+                          var dirPath = fullPath ? fullPath + '/' + val.name : val.name;
+                          link = `?p=${encodeURIComponent(dirPath)}`;
+                      } else {
+                          link = `?p=${encodeURIComponent(fullPath)}&view=${encodeURIComponent(val.name)}`;
+                      }
+                      
+                      response += `
+                      <li style="border-bottom: 1px solid #333; margin-bottom: 5px; border-radius: 4px; transition: background 0.2s;">
+                          <a href="${link}" style="display: flex; align-items: center; padding: 10px; text-decoration: none; color: #ccc;">
+                              <div style="margin-right: 15px; font-size: 1.2rem; color: ${color};">
+                                  <i class="fa ${icon}"></i>
+                              </div>
+                              <div style="flex-grow: 1; overflow: hidden;">
+                                  <div style="font-weight: 600; color: #fff; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">${val.name}</div>
+                                  <div style="font-size: 0.75rem; color: #777; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
+                                      <i class="fa fa-folder-open-o"></i> ${fullPath}
+                                  </div>
+                              </div>
+                              <div style="text-align: right; min-width: 80px; font-size: 0.7rem; color: #555;">
+                                  <div>${val.size}</div>
+                                  <div>${val.date.split(' ')[0]}</div>
+                              </div>
+                          </a>
+                      </li>`;
                   });
                   return response;
               }
