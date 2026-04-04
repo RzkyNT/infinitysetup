@@ -6396,17 +6396,26 @@ function fm_foldersize($path) {
               
               .editor-line-numbers {
                   flex: 0 0 60px;
+                  background: var(--bg-sidebar);
+                  border-right: 1px solid var(--border-color);
+                  user-select: none;
+                  overflow: hidden;
+                  position: relative;
+              }
+              
+              #editor-line-numbers #text {
+                  position: absolute;
+                  top: 0;
+                  left: 0;
+                  width: 100%;
                   padding: 10px 8px 10px 5px;
                   font-family: 'Courier New', monospace;
                   font-size: 13px;
                   line-height: 1.4;
                   color: var(--text-secondary);
-                  background: var(--bg-sidebar);
-                  border-right: 1px solid var(--border-color);
                   white-space: pre;
                   text-align: right;
-                  user-select: none;
-                  overflow: hidden;
+                  will-change: transform;
               }
               
               .editor-textarea {
@@ -6422,8 +6431,9 @@ function fm_foldersize($path) {
                   resize: none;
                   white-space: pre;
                   overflow-wrap: normal;
-                  overflow: hidden;
-                  min-height: 100%;
+                  overflow: auto;
+                  height: 100%;
+                  width: 100%;
               }
               
               .preview-code-block {
@@ -6897,7 +6907,7 @@ function fm_foldersize($path) {
                                 </div>
                                 <div class="editor-content">
                                     <div class="editor-scroll">
-                                        <div class="editor-line-numbers" id="editor-line-numbers"></div>
+                                        <div class="editor-line-numbers" id="editor-line-numbers"><div id="text"></div></div>
                                         <textarea class="editor-textarea" id="editor-textarea" readonly></textarea>
                                     </div>
                                 </div>
@@ -7102,9 +7112,11 @@ function fm_foldersize($path) {
                            } else if (act === 'download') {
                                window.location.href = '?p='+encodeURIComponent(path)+'&dl='+encodeURIComponent(name);
                            } else if (act === 'link') {
-                               const directUrl = window.location.origin + window.location.pathname.replace('filemanager.php', '') + (path ? path + '/' : '') + name;
-                               if (navigator.clipboard) navigator.clipboard.writeText(directUrl).then(() => { if (window.showToast) window.showToast('Copied!'); else window.showToast('Copied to clipboard'); });
-                               else window.open(directUrl, '_blank');
+                                const baseUrl = (window.fm_root_url || '').replace(/\/$/, '');
+                                const relativePath = (path ? '/' + path : '').replace(/\/+$/, '');
+                                const directUrl = baseUrl + relativePath + '/' + name;
+                                if (navigator.clipboard) navigator.clipboard.writeText(directUrl).then(() => { if (window.showToast) window.showToast('Copied!'); else window.showToast('Copied to clipboard'); });
+                                else window.open(directUrl, '_blank');
                            } else if (act === 'create-file') { openCreateModal('file'); }
                            else if (act === 'create-folder') { openCreateModal('folder'); }
                            else if (act === 'rename') {
@@ -7625,7 +7637,7 @@ function fm_foldersize($path) {
               
               function updateLineNumbers() {
                   const textarea = $('#editor-textarea');
-                  const lineNumbers = $('#editor-line-numbers');
+                  const lineNumbers = $('#editor-line-numbers #text');
                   const lines = textarea.val().split('\n');
                   let lineNumbersHtml = '';
                   
@@ -7654,11 +7666,11 @@ function fm_foldersize($path) {
               
               function syncLineNumbersScroll(scrollTop = null) {
                   const textarea = $('#editor-textarea');
-                  const lineNumbers = $('#editor-line-numbers');
+                  const lineNumbers = $('#editor-line-numbers #text');
                   
                   if (textarea.length && lineNumbers.length) {
                       const currentScroll = scrollTop !== null ? scrollTop : textarea.scrollTop();
-                      lineNumbers.css('top', `-${currentScroll}px`);
+                      lineNumbers.css('transform', `translateY(-${currentScroll}px)`);
                   }
               }
               
