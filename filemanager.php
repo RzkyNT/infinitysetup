@@ -2838,6 +2838,14 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   
   // 1. SIDEBAR
   echo '<aside id="sidebar-pane">';
+  
+  // Quick Access Section
+  echo '<div id="quick-access-section">';
+  echo '<div class="qa-header">Favorites</div>';
+  echo '<div id="qa-list"></div>';
+  echo '</div>';
+  echo '<hr style="margin: 5px 15px; opacity:0.1; border-color:var(--border-color);">';
+
   echo '<div style="padding: 15px 20px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">';
   echo '<h6 style="margin:0; font-weight:bold; opacity:0.8;">NAVIGATOR</h6>';
   echo '<button class="btn btn-sm" onclick="location.reload()" title="Refresh Tree"><i class="fa fa-refresh"></i></button>';
@@ -2857,6 +2865,20 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   echo '</div>';
   echo '</div>';
   echo '</div>';
+
+  // Bottom Sidebar - Disk Usage
+  if ($show_disk_usage && isset($total) && $total > 0) {
+      $used_pct = round((($total - $free) / $total) * 100, 1);
+      echo '<div class="disk-usage-sidebar">';
+      echo '<div class="d-flex justify-content-between fs-xs mb-1" style="font-size:0.75rem; opacity:0.7;">';
+      echo '<span>Storage</span>';
+      echo '<span>'.$used_pct.'% Full</span>';
+      echo '</div>';
+      echo '<div class="sidebar-progress"><div class="sidebar-progress-inner" style="width:'.$used_pct.'%;"></div></div>';
+      echo '<div style="font-size:0.65rem; opacity:0.5;">'.$total_used_size.' of '.$total_size.'</div>';
+      echo '</div>';
+  }
+
   echo '</aside>';
   echo '<div class="pane-resizer" id="sidebar-resizer"></div>';
 
@@ -3332,6 +3354,30 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // 0. Drag to Breadcrumbs
+    const breadcrumbLinks = document.querySelectorAll('#path-breadcrumbs a');
+    breadcrumbLinks.forEach(link => {
+        link.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            this.classList.add('drop-hover');
+        });
+        link.addEventListener('dragleave', function() {
+            this.classList.remove('drop-hover');
+        });
+        link.addEventListener('drop', function(e) {
+            e.preventDefault();
+            this.classList.remove('drop-hover');
+            let payload = e.dataTransfer.getData('application/json');
+            if (payload) {
+                payload = JSON.parse(payload);
+                const destPath = this.getAttribute('href').replace('?p=', '');
+                if (typeof moveItemAjax === 'function') {
+                    moveItemAjax(payload.name, destPath, window.csrf, (s) => { if(s) location.reload(); });
+                }
+            }
+        });
+    });
+
     // 3. Resizers Logic
     function initResizer(resizerId, paneId, edge) {
         const resizer = document.getElementById(resizerId);
@@ -3454,6 +3500,62 @@ document.addEventListener('DOMContentLoaded', function() {
             items.forEach(i => i.classList.remove('explorer-selected'));
         }
     });
+
+    // 10. Quick Access Logic
+    const QA_KEY = 'fm_quick_access';
+    function renderQA() {
+        const list = document.getElementById('qa-list');
+        if (!list) return;
+        let qas = [];
+        try { 
+            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
+            qas = Array.isArray(stored) ? stored : [];
+        } catch(e) { qas = []; }
+        
+        list.innerHTML = qas.length === 0 ? '<div style="padding:10px 20px; font-size:0.75rem; opacity:0.4;">No pins yet</div>' : '';
+        qas.forEach(qa => {
+            const item = document.createElement('div');
+            item.className = 'qa-item';
+            item.innerHTML = `<i class="fa fa-folder"></i> <span>${qa.name}</span> <i class="fa fa-times qa-remove" data-path="${qa.path}" data-name="${qa.name}"></i>`;
+            item.onclick = (e) => { 
+               if (e.target.classList.contains('qa-remove')) return;
+               window.location.href = `?p=${encodeURIComponent(qa.path)}`; 
+            };
+            item.querySelector('.qa-remove').onclick = (e) => {
+                e.stopPropagation();
+                removePin(qa.path, qa.name);
+            };
+            list.appendChild(item);
+        });
+    }
+
+    window.pinToQuickAccess = function(path, name) {
+        let qas = [];
+        try { 
+            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
+            qas = Array.isArray(stored) ? stored : [];
+        } catch(e) { qas = []; }
+        const fullPath = (path ? path + '/' : '') + name;
+        if (!qas.find(q => q.path === fullPath)) {
+           qas.push({ path: fullPath, name: name });
+           localStorage.setItem(QA_KEY, JSON.stringify(qas));
+           renderQA();
+           if (window.showToast) showToast('Pinned to Favorites');
+        }
+    }
+
+    function removePin(path, name) {
+        let qas = [];
+        try { 
+            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
+            qas = Array.isArray(stored) ? stored : [];
+        } catch(e) { qas = []; }
+        qas = qas.filter(q => q.path !== path);
+        localStorage.setItem(QA_KEY, JSON.stringify(qas));
+        renderQA();
+    }
+
+    renderQA();
 });
 </script>
 
@@ -5049,7 +5151,8 @@ function fm_foldersize($path) {
 
                    function getHistory() {
                        try {
-                           return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+                           const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+                           return Array.isArray(history) ? history : [];
                        } catch(e) { return []; }
                    }
 
@@ -6186,8 +6289,45 @@ function fm_foldersize($path) {
               .tree-header i { width: 20px; margin-right: 8px; font-size: 1rem; opacity: 0.7; }
               .tree-header .toggle-icon { width: 14px; margin-right: 4px; font-size: 0.8rem; cursor: pointer; transition: 0.2s; }
               .tree-header .toggle-icon.collapsed { transform: rotate(-90deg); }
-              .tree-children { padding-left: 18px; display: block; }
-              .tree-children.collapsed { display: none; }
+              .tree-children { padding-left: 18px; display: block; }               .tree-children.collapsed { display: none; }
+
+               /* Disk Usage Bar */
+               .disk-usage-sidebar {
+                   margin-top: auto;
+                   padding: 20px;
+                   border-top: 1px solid var(--border-color);
+                   background: rgba(0,0,0,0.05);
+               }
+
+               /* Quick Access Section */
+               .qa-header { padding: 10px 15px; font-weight: bold; font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; }
+               .qa-item { display: flex; align-items: center; padding: 6px 15px; cursor: pointer; border-radius: 6px; margin: 2px 8px; font-size: 0.9rem; transition: 0.2s; position: relative; }
+               .qa-item:hover { background: var(--bg-hover); }
+               .qa-item i { width: 20px; margin-right: 8px; color: var(--accent); opacity: 0.8; }
+               .qa-remove { position: absolute; right: 10px; opacity: 0; transition: 0.2s; cursor: pointer; font-size: 0.7rem; }
+               .qa-item:hover .qa-remove { opacity: 0.5; }
+               .qa-item:hover .qa-remove:hover { opacity: 1; color: #ff6666; }
+               .sidebar-progress {
+                   height: 6px;
+                   background: #333;
+                   border-radius: 3px;
+                   margin: 10px 0;
+                   overflow: hidden;
+               }
+               .sidebar-progress-inner {
+                   height: 100%;
+                   background: var(--accent);
+                   transition: width 0.5s ease;
+               }
+
+               /* Breadcrumb Highlight for Drop */
+               #path-breadcrumbs a.drop-hover {
+                   background: var(--accent);
+                   color: #fff !important;
+                   border-radius: 4px;
+                   padding: 2px 4px;
+               }
+
 
               /* Details Pane UI */
               .details-header { text-align: center; margin-bottom: 25px; }
@@ -7488,6 +7628,7 @@ function fm_foldersize($path) {
                            <div class="fm-cm-item" data-act="create-folder"><i class="fa fa-folder" style="width:18px;margin-right:8px;"></i>Create Folder</div>
                            <div class="fm-cm-sep" style="height:1px;margin:6px 0;background:#333"></div>
                            <div class="fm-cm-item" data-act="rename"><i class="fa fa-pencil-square-o" style="width:18px;margin-right:8px;"></i>Rename</div>
+                           <div class="fm-cm-item" data-act="pin"><i class="fa fa-thumb-tack" style="width:18px;margin-right:8px;"></i>Pin to Sidebar</div>
                            <div class="fm-cm-item" data-act="copy"><i class="fa fa-files-o" style="width:18px;margin-right:8px;"></i>Copy / Duplicate</div>
                            <div class="fm-cm-item" data-act="move"><i class="fa fa-arrows" style="width:18px;margin-right:8px;"></i>Move To...</div>
                            <div class="fm-cm-item" data-act="extract" style="display:none"><i class="fa fa-archive" style="width:18px;margin-right:8px;"></i>Extract Here</div>
@@ -7507,41 +7648,69 @@ function fm_foldersize($path) {
                        document.head.appendChild(style);
 
                        let currentTarget = null;
+                        function showMenu(x, y, target = null) {
+                            currentTarget = target;
+                            menu.style.left = x + 'px';
+                            menu.style.top = y + 'px';
+                            
+                            const type = target ? target.getAttribute('data-type') : 'general';
+                            const ext = target ? (target.getAttribute('data-ext') || '').toLowerCase() : '';
+                            const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz','iso','jar','war'];
+                            const isArchive = archiveExts.includes(ext);
+                            
+                            menu.querySelectorAll('.fm-cm-item').forEach(item => { 
+                                item.removeAttribute('aria-disabled'); 
+                                item.style.display = 'flex'; 
+                                const act = item.dataset.act;
+                                
+                                // Hide everything except Create when in general mode
+                                if (type === 'general' && !['create-file', 'create-folder', 'upload-file', 'paste'].includes(act)) {
+                                    item.style.display = 'none';
+                                } else if (type === 'folder') {
+                                    if (['preview','download','extract'].includes(act)) item.style.display = 'none';
+                                } else if (type === 'file') {
+                                    if (act === 'extract' && !isArchive) item.style.display = 'none';
+                                    if (['create-file', 'create-folder'].includes(act)) item.style.display = 'none';
+                                }
+                            });
+                            
+                            // Hide redundant separators
+                            menu.querySelectorAll('.fm-cm-sep').forEach(sep => {
+                                const prev = sep.previousElementSibling;
+                                const next = sep.nextElementSibling;
+                                if (!prev || prev.style.display === 'none' || !next || next.style.display === 'none') {
+                                   sep.style.display = 'none';
+                                } else {
+                                   sep.style.display = 'block';
+                                }
+                            });
 
-                       function showMenu(x, y, target) {
-                           currentTarget = target;
-                           menu.style.left = x + 'px';
-                           menu.style.top = y + 'px';
-                           const type = target.getAttribute('data-type');
-                           const ext = (target.getAttribute('data-ext') || '').toLowerCase();
-                           const archiveExts = ['zip','tar','gz','rar','7z','bz2','xz','iso','jar','war'];
-                           const isArchive = archiveExts.includes(ext);
-                           
-                           menu.querySelectorAll('.fm-cm-item').forEach(item => { 
-                               item.removeAttribute('aria-disabled'); 
-                               item.style.display = 'flex'; 
-                               const act = item.dataset.act;
-                               if (type === 'folder' && ['preview','download','extract'].includes(act)) item.style.display = 'none';
-                               if (type === 'file' && act === 'extract' && !isArchive) item.style.display = 'none';
-                           });
-                           menu.style.display = 'block';
-                           
-                           // Boundary check
-                           const rect = menu.getBoundingClientRect();
-                           if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
-                           if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
-                       }
+                            menu.style.display = 'block';
+                            
+                            // Boundary check
+                            const rect = menu.getBoundingClientRect();
+                            if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
+                            if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
+                        }
 
                        function hideMenu(){ menu.style.display = 'none'; currentTarget = null; }
 
                        document.addEventListener('click', e => { if (!e.target.closest('#fm-context-menu')) hideMenu(); });
                        document.addEventListener('contextmenu', e => {
-                           const target = $(e.target);
-                           if (target.closest('input, textarea, select, [contenteditable="true"], .modal, .swal2-container').length) return;
-                           e.preventDefault();
-                           const el = e.target.closest('[data-type]');
-                           if (el) showMenu(e.clientX, e.clientY, el); else hideMenu();
-                       });
+                            const target = e.target.closest('[data-type]');
+                            const mainPane = e.target.closest('#main-content-pane');
+                            
+                            if (e.target.closest('input, textarea, select, [contenteditable="true"], .modal, .swal2-container')) return;
+                            
+                            e.preventDefault();
+                            if (target) {
+                                showMenu(e.clientX, e.clientY, target);
+                            } else if (mainPane) {
+                                showMenu(e.clientX, e.clientY, null); // null for General Menu
+                            } else {
+                                hideMenu();
+                            }
+                        });
 
                        document.addEventListener('click', e => {
                            const trigger = e.target.closest('.context-menu-trigger');
@@ -7582,6 +7751,8 @@ function fm_foldersize($path) {
                            else if (act === 'create-folder') { openCreateModal('folder'); }
                            else if (act === 'rename') {
                                if (typeof rename === 'function') rename(null, name);
+                           } else if (act === 'pin') {
+                               if (window.pinToQuickAccess) window.pinToQuickAccess(path, name);
                            } else if (act === 'copy') {
                                const copyLink = '?p=' + encodeURIComponent(path) + '&duplicate=' + encodeURIComponent(name) + '&token=' + window.csrf;
                                if (typeof confirmDailog === 'function') confirmDailog(e, 1029, 'Copy', name, copyLink);
