@@ -2908,13 +2908,13 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                                   <label class="custom-control-label" for="js-select-all-items"></label>
                               </div>
                           </th><?php endif; ?>
-                      <th><?php echo lng('Name') ?></th>
-                      <th><?php echo lng('Size') ?></th>
-                      <th><?php echo lng('Modified') ?></th>
-                      <?php if (!FM_IS_WIN && !$hide_Cols): ?>
-                          <th><?php echo lng('Perms') ?></th>
-                          <th><?php echo lng('Owner') ?></th><?php endif; ?>
-                      <th style="width: 10px;"><?php echo lng('Act') ?></th>
+                       <th style="cursor:pointer;" onclick="sortTable(1, 'str')"><?php echo lng('Name') ?> <i class="fa fa-sort pull-right opacity-30"></i></th>
+                       <th style="cursor:pointer;" onclick="sortTable(2, 'size')"><?php echo lng('Size') ?> <i class="fa fa-sort pull-right opacity-30"></i></th>
+                       <th style="cursor:pointer;" onclick="sortTable(3, 'date')"><?php echo lng('Modified') ?> <i class="fa fa-sort pull-right opacity-30"></i></th>
+                       <?php if (!FM_IS_WIN && !$hide_Cols): ?>
+                           <th style="cursor:pointer;" onclick="sortTable(4, 'str')"><?php echo lng('Perms') ?> <i class="fa fa-sort pull-right opacity-30"></i></th>
+                           <th style="cursor:pointer;" onclick="sortTable(5, 'str')"><?php echo lng('Owner') ?> <i class="fa fa-sort pull-right opacity-30"></i></th><?php endif; ?>
+                       <th style="width: 10px;"><?php echo lng('Act') ?></th>
                   </tr>
               </thead>
               <?php
@@ -3351,6 +3351,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Highlight selected
             items.forEach(i => i.classList.remove('explorer-selected'));
             this.classList.add('explorer-selected');
+            updateMultiSelectInfo();
         });
     });
 
@@ -3466,7 +3467,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const x = Math.min(startM.x, cur.x);
         const y = Math.min(startM.y, cur.y);
         const w = Math.abs(startM.x - cur.x);
-        const h = Math.abs(startM.y - cur.y);
+         const h = Math.abs(startM.y - cur.y);
         
         marquee.style.left = x + 'px';
         marquee.style.top = y + 'px';
@@ -3484,6 +3485,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (intersect) item.classList.add('explorer-selected');
             else item.classList.remove('explorer-selected');
         });
+        updateMultiSelectInfo();
     });
 
     document.addEventListener('mouseup', function() {
@@ -3555,7 +3557,72 @@ document.addEventListener('DOMContentLoaded', function() {
         renderQA();
     }
 
-    renderQA();
+     // 11. Sorting Logic
+     window.sortTable = function(n, type) {
+         const table = document.getElementById("main-table");
+         const tbody = table.querySelector("tbody");
+         if (!tbody) return;
+         let rows = Array.from(tbody.querySelectorAll("tr[data-name]"));
+         const header = table.querySelectorAll("th")[n - (table.querySelectorAll("th").length > 6 ? 0 : 0)]; // Simple calc
+         const dir = header.classList.contains("sorted-asc") ? "desc" : "asc";
+         
+         // Clear headers
+         table.querySelectorAll("th").forEach(th => th.classList.remove("sorted-asc", "sorted-desc"));
+         header.classList.add(dir === "asc" ? "sorted-asc" : "sorted-desc");
+
+         rows.sort((a, b) => {
+             let x = a.cells[n].innerText.toLowerCase();
+             let y = b.cells[n].innerText.toLowerCase();
+             
+             if (type === 'size') {
+                const parseSize = (s) => {
+                    const matches = s.match(/([0-9.]+)\s*([a-zA-Z]+)/);
+                    if (!matches) return 0;
+                    const val = parseFloat(matches[1]);
+                    const unit = matches[2].toUpperCase();
+                    const units = { 'B':1, 'KB':1024, 'MB':1048576, 'GB':1073741824, 'TB':1099511627776 };
+                    return val * (units[unit] || 1);
+                };
+                x = parseSize(x); y = parseSize(y);
+             }
+             
+             if (dir === "asc") return x > y ? 1 : -1;
+             else return x < y ? 1 : -1;
+         });
+         
+         rows.forEach(row => tbody.appendChild(row));
+     }
+
+     function updateMultiSelectInfo() {
+         const selectedCount = document.querySelectorAll('.explorer-selected').length;
+         if (selectedCount > 1) {
+             document.getElementById('det-name').innerText = `${selectedCount} items selected`;
+             document.getElementById('det-type').innerText = 'Multiple Selections';
+             document.getElementById('det-size').innerText = '---';
+             document.getElementById('det-date').innerText = '---';
+             document.getElementById('det-preview-container').style.display = 'none';
+             document.getElementById('details-pane').classList.remove('hidden');
+         }
+     }
+
+     renderQA();
+
+     // 12. Create Modal Logic
+     window.openCreateModal = function(type) {
+         if (type === 'file') {
+             document.getElementById('customRadioInline1').checked = true;
+         } else {
+             document.getElementById('customRadioInline2').checked = true;
+         }
+         const modalEl = document.getElementById('createNewItem');
+         if (modalEl) {
+             const modal = new bootstrap.Modal(modalEl);
+             modal.show();
+             modalEl.addEventListener('shown.bs.modal', () => {
+                 document.getElementById('newfilename').focus();
+             }, { once: true });
+         }
+     }
 });
 </script>
 
@@ -6307,6 +6374,11 @@ function fm_foldersize($path) {
                .qa-remove { position: absolute; right: 10px; opacity: 0; transition: 0.2s; cursor: pointer; font-size: 0.7rem; }
                .qa-item:hover .qa-remove { opacity: 0.5; }
                .qa-item:hover .qa-remove:hover { opacity: 1; color: #ff6666; }
+               .opacity-30 { opacity: 0.3; }
+               .pull-right { float: right; }
+               th.sorted-asc .fa-sort:before { content: "\f0de"; } /* fa-sort-asc */
+               th.sorted-desc .fa-sort:before { content: "\f0dd"; } /* fa-sort-desc */
+               th.sorted-asc, th.sorted-desc { background: rgba(13, 110, 253, 0.05); }
                .sidebar-progress {
                    height: 6px;
                    background: #333;
@@ -7725,13 +7797,16 @@ function fm_foldersize($path) {
 
                         menu.addEventListener('click', function(e) {
                            const act = e.target.closest('.fm-cm-item')?.dataset?.act;
-                           if (!act || !currentTarget) return;
+                           if (!act) return;
+                            
+                           const isGeneralAction = ['create-file', 'create-folder', 'upload-file', 'paste'].includes(act);
+                           if (!isGeneralAction && !currentTarget) return;
                            
-                           const type = currentTarget.getAttribute('data-type');
-                           const name = currentTarget.getAttribute('data-name');
-                           const path = currentTarget.getAttribute('data-path') || '';
-                           const url = currentTarget.getAttribute('data-url') || '';
-                           const ext = (currentTarget.getAttribute('data-ext') || '').toLowerCase();
+                           const type = currentTarget ? currentTarget.getAttribute('data-type') : 'general';
+                           const name = currentTarget ? currentTarget.getAttribute('data-name') : '';
+                           const path = currentTarget ? currentTarget.getAttribute('data-path') : '<?php echo addslashes(FM_PATH); ?>';
+                           const url = currentTarget ? currentTarget.getAttribute('data-url') : '';
+                           const ext = currentTarget ? (currentTarget.getAttribute('data-ext') || '').toLowerCase() : '';
                            
                            hideMenu();
                            
