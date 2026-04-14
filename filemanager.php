@@ -69,17 +69,24 @@ ob_start(); // Start output buffering to prevent "headers already sent" errors
   // Doc - http://php.net/manual/en/timezones.php
   $default_timezone = 'Etc/UTC'; // UTC
 
-  // Root path for file manager
-  // use absolute path of directory i.e: '/var/www/folder' or $_SERVER['DOCUMENT_ROOT'].'/folder'
-  //make sure update $root_url in next section
-  $root_path = $_SERVER['DOCUMENT_ROOT'];
+  // Helper function to detect available drives in Windows
+  function fm_get_logical_drives() {
+      $drives = array();
+      if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+          foreach (range('A', 'Z') as $letter) {
+              if (@is_dir($letter . ':/')) {
+                  $drives[] = $letter;
+              }
+          }
+      }
+      return $drives;
+  }
 
   // Root url for links in file manager.Relative to $http_host. Variants: '', 'path/to/subfolder'
   // Will not working if $root_path will be outside of server document root
   $root_url = '';
 
   // Server hostname. Can set manually if wrong
-  // $_SERVER['HTTP_HOST'].'/folder'
   $http_host = $_SERVER['HTTP_HOST'];
 
   // input encoding for iconv
@@ -267,6 +274,22 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       set_error_handler('session_error_handling_function');
       if (session_status() === PHP_SESSION_NONE) session_start();
       restore_error_handler();
+
+      // NEW: Handle Dynamic Drive Selection via Session
+      $available_drives = fm_get_logical_drives();
+      if (isset($_GET['drive'])) {
+          $_SESSION['fm_selected_drive'] = strtoupper($_GET['drive']);
+          if ($_SESSION['fm_selected_drive'] == 'ROOT') unset($_SESSION['fm_selected_drive']);
+      }
+      $selected_drive = isset($_SESSION['fm_selected_drive']) ? $_SESSION['fm_selected_drive'] : '';
+      
+      // Update Root Path based on selection
+      if (!empty($selected_drive) && in_array($selected_drive, $available_drives)) {
+          $root_path = $selected_drive . ':/';
+      } else {
+          $selected_drive = ''; // ensure it's empty if invalid
+          $root_path = realpath($_SERVER['DOCUMENT_ROOT'] . '/..');
+      }
 
       // SSO Logic from Portal
       if (isset($_SESSION['portal_logged_in']) && $_SESSION['portal_logged_in'] === true) {
@@ -1309,12 +1332,15 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
     fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
 }
 
-  // Download
-  if (isset($_GET['dl'], $_POST['token'])) {
-      // Verify the token to ensure it's valid
-      if (!verifyToken($_POST['token'])) {
-          fm_set_msg("Invalid Token.", 'error');
-          exit;
+  // Download / Stream
+  if (isset($_GET['dl'])) {
+      // For normal downloads, verify token. For streaming, skip token check.
+      if (!isset($_GET['stream'])) {
+          if (!isset($_POST['token']) || !verifyToken($_POST['token'])) {
+              fm_set_msg("Invalid Token.", 'error');
+              fm_redirect(FM_SELF_URL . '?p=' . urlencode(FM_PATH));
+              exit;
+          }
       }
 
       // Clean the download file path
@@ -2489,24 +2515,24 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       $content = ''; // for text
       $online_viewer = strtolower(FM_DOC_VIEWER);
 
-      if ($online_viewer && $online_viewer !== 'false' && in_array($ext, fm_get_onlineViewer_exts())) {
+      if (in_array($ext, fm_get_video_exts())) {
+          $is_video = true;
+          $view_title = 'Video';
+      } elseif (in_array($ext, fm_get_image_exts())) {
+          $is_image = true;
+          $view_title = 'Image';
+      } elseif ($online_viewer && $online_viewer !== 'false' && in_array($ext, fm_get_onlineViewer_exts())) {
           $is_onlineViewer = true;
       } elseif ($ext == 'zip' || $ext == 'tar') {
           $is_zip = true;
           $view_title = 'Archive';
           $filenames = fm_get_zif_info($file_path, $ext);
-      } elseif (in_array($ext, fm_get_image_exts())) {
-          $is_image = true;
-          $view_title = 'Image';
       } elseif (in_array($ext, fm_get_audio_exts())) {
           $is_audio = true;
           $view_title = 'Audio';
-      } elseif (in_array($ext, fm_get_video_exts())) {
-          $is_video = true;
-          $view_title = 'Video';
-     } elseif ($ext == 'csv') {
-        $is_csv = true;
-        $view_title = "CSV File";
+      } elseif ($ext == 'csv') {
+          $is_csv = true;
+          $view_title = "CSV File";
       } elseif (in_array($ext, fm_get_text_exts()) || substr($mime_type, 0, 4) == 'text' || in_array($mime_type, fm_get_text_mimes())) {
           $is_text = true;
           $content = file_get_contents($file_path);
@@ -2629,8 +2655,20 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       // Audio content
                       echo '<p><audio src="' . fm_enc($file_url) . '" controls preload="metadata"></audio></p>';
                   } elseif ($is_video) {
-                      // Video content
-                      echo '<div class="preview-video"><video src="' . fm_enc($file_url) . '" width="640" height="360" controls preload="metadata"></video></div>';
+                       // Video content - Enhanced for External Drives
+                       $video_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($file);
+                       echo '<div class="preview-video" style="background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #333;">
+                               <video src="' . fm_enc($video_url) . '" 
+                                      style="width: 100%; max-height: 70vh; display: block;" 
+                                      controls 
+                                      autoplay
+                                      preload="metadata">
+                                      Your browser does not support the video tag.
+                               </video>
+                             </div>
+                             <div class="mt-2 text-center text-muted small">
+                                <i class="fa fa-info-circle"></i> Memutar via Stream Proxy (Mendukung Disk Eksternal)
+                             </div>';
                   } elseif ($is_csv) {
 				$tableTheme = (FM_THEME == "dark") ? "text-white bg-dark table-dark" : "bg-white";
                 echo '<table class="table table-hover table-sm ' . $tableTheme .'">';
@@ -3028,6 +3066,11 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   $filesize = fm_get_filesize($filesize_raw);
                   $filelink = '?p=' . urlencode(FM_PATH) . '&amp;view=' . urlencode($f);
                   $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
+                  $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
+                  $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
+                  if (strpos($normalized_root_path, $normalized_doc_root) !== 0) {
+                      $http_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($f) . '&stream=1';
+                  }
                   $all_files_size += $filesize_raw;
                   $perms = substr(decoct(fileperms($path . '/' . $f)), -4);
                   $owner = array('name' => '?'); 
@@ -3051,7 +3094,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       }
                   }
               ?>
-                   <tr data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>" data-url="<?php echo $http_url ?>">
+                   <tr data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo strtolower(pathinfo($f, PATHINFO_EXTENSION)) ?>" data-url="<?php echo $http_url ?>" data-size="<?php echo $filesize; ?>" data-date="<?php echo $modif; ?>" data-perms="<?php echo $perms; ?>">
                       <?php if (!FM_READONLY): ?>
                           <td class="custom-checkbox-td">
                               <div class="custom-control custom-checkbox">
@@ -3064,7 +3107,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                               <?php
                               $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
                               if (in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'ico', 'svg', 'webp', 'avif'))): ?>
-                                  <?php $imagePreview = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f); ?>
+                                  <?php $imagePreview = $http_url; ?>
                                   <a href="#" onclick="preview_file('<?php echo $http_url ?>', '<?php echo $ext ?>', '<?php echo fm_enc($f) ?>');return false;" data-preview-image="<?php echo $imagePreview ?>" title="<?php echo fm_enc($f) ?>">
                                   <?php else: ?>
                                       <a href="#" onclick="preview_file('<?php echo $http_url ?>', '<?php echo $ext ?>', '<?php echo fm_enc($f) ?>');return false;" title="<?php echo $f ?>">
@@ -3159,14 +3202,31 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
           // Files
           foreach ($files as $f) {
               $file_path = $path . '/' . $f;
-              $is_img = in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp'));
+              $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+              $is_img = in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp'));
               $icon_class = fm_get_file_icon_class($file_path);
               $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
-              $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
-              $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
-              $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+               $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
+               
+               // Proxy media if outside web root
+               $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
+               $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
+               $is_outside_root = strpos($normalized_root_path, $normalized_doc_root) !== 0;
+
+               $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
+               if ($is_outside_root) {
+                   $http_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($f) . '&stream=1';
+                   if ($is_img) {
+                       $img_src = $http_url;
+                   }
+               }
+              $modif_raw = filemtime($file_path);
+              $modif = date(FM_DATETIME_FORMAT, $modif_raw);
+              $filesize_raw = fm_get_size($file_path);
+              $filesize = fm_get_filesize($filesize_raw);
+              $perms = substr(decoct(fileperms($file_path)), -4);
               ?>
-              <div class="grid-item" onclick="if(!event.target.closest('.context-menu-trigger, .grid-check')) preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>">
+              <div class="grid-item" onclick="if(!event.target.closest('.context-menu-trigger, .grid-check')) preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>" data-size="<?=$filesize?>" data-date="<?=$modif?>" data-perms="<?=$perms?>" data-url="<?=$http_url?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
                       <input type="checkbox" name="file[]" value="<?=fm_enc($f)?>">
                   </div>
@@ -3297,14 +3357,15 @@ document.addEventListener('DOMContentLoaded', function() {
             const path = this.dataset.path;
             const ext = this.dataset.ext || '';
             
-            // Get data from row/grid
-            let size = 'N/A', date = 'N/A', perms = 'N/A';
-            if (this.tagName === 'TR') {
+            // Get data from row/grid (prefer dataset if available)
+            let size = this.dataset.size || 'N/A';
+            let date = this.dataset.date || 'N/A';
+            let perms = this.dataset.perms || 'N/A';
+            
+            if (this.tagName === 'TR' && size === 'N/A') {
                 size = this.cells[2]?.innerText || 'N/A';
                 date = this.cells[3]?.innerText || 'N/A';
                 perms = this.cells[4]?.innerText || 'N/A';
-            } else {
-                // Grid items don't show size/date, we'd need another way or just show N/A
             }
             
             // Update Details
@@ -3325,15 +3386,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 else iconEl.className = 'fa fa-file-text-o';
             }
             
-            // Show/Hide Preview for images
+            // Show/Hide Preview
             const previewCont = document.getElementById('det-preview-container');
             const previewBox = document.getElementById('det-preview');
-            const isImg = ['jpg','jpeg','png','gif','webp','svg'].includes(ext.toLowerCase());
+            const lExt = ext.toLowerCase();
+            const isImg = ['jpg','jpeg','png','gif','webp','svg'].includes(lExt);
+            const isVideo = ['mp4','webm','ogg','mov','mkv','avi','wmv','m4v'].includes(lExt);
+            const url = this.getAttribute('data-url') || this.getAttribute('data-preview-image') || '';
             
-            if (isImg) {
-                const url = this.getAttribute('data-url') || '';
+            if (isImg && url) {
                 previewCont.style.display = 'block';
-                previewBox.innerHTML = `<img src="${url}" style="width:100%; height:auto; display:block;">`;
+                previewBox.innerHTML = `<img src="${url}" style="width:100%; height:auto; display:block; border-radius:4px;">`;
+            } else if (isVideo && url) {
+                previewCont.style.display = 'block';
+                previewBox.innerHTML = `<video src="${url}" style="width:100%; height:auto; display:block; border-radius:4px;" muted loop onmouseover="this.play()" onmouseout="this.pause()"></video>
+                                        <div style="font-size:10px; color:#777; margin-top:5px; text-align:center;">Hover to preview</div>`;
             } else {
                 previewCont.style.display = 'none';
             }
@@ -4783,6 +4850,8 @@ function fm_foldersize($path) {
       $fileTypes['m4a'] = 'video/quicktime';
       $fileTypes['aac'] = 'video/quicktime';
       $fileTypes['m3u'] = 'video/quicktime';
+      $fileTypes['mkv'] = 'video/x-matroska';
+      $fileTypes['webm'] = 'video/webm';
 
       $fileTypes['php'] = ['application/x-php'];
       $fileTypes['html'] = ['text/html'];
@@ -4830,79 +4899,90 @@ function fm_foldersize($path) {
    * instead of download prompt
    * https://stackoverflow.com/a/13821992/1164642
    */
-  function fm_download_file($fileLocation, $fileName, $chunkSize  = 1024)
-  {
-      if (connection_status() != 0)
-          return (false);
-      $extension = pathinfo($fileName, PATHINFO_EXTENSION);
+/**
+ * Stream or Download file
+ * @param string $fileLocation
+ * @param string $fileName
+ * @param int $chunkSize
+ */
+function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
+{
+    if (connection_status() != 0)
+        return (false);
 
-      $contentType = fm_get_file_mimes($extension);
+    $fPath = realpath($fileLocation);
+    if (!$fPath || !is_file($fPath) || !is_readable($fPath)) {
+        header("HTTP/1.1 404 Not Found");
+        echo "File not found";
+        return false;
+    }
 
-      if (is_array($contentType)) {
-          $contentType = implode(' ', $contentType);
-      }
+    $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+    $contentType = fm_get_file_mimes($extension);
+    if (is_array($contentType)) {
+        $contentType = $contentType[0];
+    }
 
-      $size = filesize($fileLocation);
+    $size = filesize($fileLocation);
+    $start = 0;
+    $end = $size - 1;
 
-      if ($size == 0) {
-          fm_set_msg(lng('Zero byte file! Aborting download'), 'error');
-          $FM_PATH = FM_PATH;
-          fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
+    // Default to attachment, but allow inline for streaming
+    $contentDisposition = (isset($_GET['stream'])) ? 'inline' : 'attachment';
 
-          return (false);
-      }
+    // Handle partial content (Range)
+    if (isset($_SERVER['HTTP_RANGE'])) {
+        $range = $_SERVER['HTTP_RANGE'];
+        if (preg_match('/bytes=(\d+)-(\d+)?/', $range, $matches)) {
+            $start = intval($matches[1]);
+            if (isset($matches[2])) {
+                $end = intval($matches[2]);
+            }
+        }
+        header('HTTP/1.1 206 Partial Content');
+    }
 
-      @ini_set('magic_quotes_runtime', 0);
-      $fp = fopen("$fileLocation", "rb");
+    if ($start > $end || $start >= $size || $end >= $size) {
+        header('HTTP/1.1 416 Requested Range Not Satisfiable');
+        header("Content-Range: bytes */$size");
+        exit;
+    }
 
-      if ($fp === false) {
-          fm_set_msg(lng('Cannot open file! Aborting download'), 'error');
-          $FM_PATH = FM_PATH;
-          fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
-          return (false);
-      }
+    $length = $end - $start + 1;
 
-      // headers
-      header('Content-Description: File Transfer');
-      header('Expires: 0');
-      header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
-      header('Pragma: public');
-      header("Content-Transfer-Encoding: binary");
-      header("Content-Type: $contentType");
+    // Close session to allow parallel requests (important for video seeking)
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
 
-      $contentDisposition = 'attachment';
+    while (ob_get_level()) ob_end_clean();
 
-      if (strstr($_SERVER['HTTP_USER_AGENT'], "MSIE")) {
-          $fileName = preg_replace('/\./', '%2e', $fileName, substr_count($fileName, '.') - 1);
-          header("Content-Disposition: $contentDisposition;filename=\"$fileName\"");
-      } else {
-          header("Content-Disposition: $contentDisposition;filename=\"$fileName\"");
-      }
+    header("Content-Type: $contentType");
+    header("Content-Disposition: $contentDisposition; filename=\"$fileName\"");
+    header("Accept-Ranges: bytes");
+    header("Content-Range: bytes $start-$end/$size");
+    header("Content-Length: $length");
+    header("Access-Control-Allow-Origin: *");
+    header("Referrer-Policy: no-referrer");
+    
+    $fp = fopen($fileLocation, "rb");
+    fseek($fp, $start);
+    
+    $buffer = 1024 * 64; // 64KB chunks
+    $remaining = $length;
+    
+    while (!feof($fp) && $remaining > 0) {
+        $read = ($remaining > $buffer) ? $buffer : $remaining;
+        echo fread($fp, $read);
+        $remaining -= $read;
+        flush();
+        if (connection_aborted()) break;
+    }
 
-      header("Accept-Ranges: bytes");
-      $range = 0;
+    fclose($fp);
+    exit;
+}
 
-      if (isset($_SERVER['HTTP_RANGE'])) {
-          list($a, $range) = explode("=", $_SERVER['HTTP_RANGE']);
-          str_replace($range, "-", $range);
-          $size2 = $size - 1;
-          $new_length = $size - $range;
-          header("HTTP/1.1 206 Partial Content");
-          header("Content-Length: $new_length");
-          header("Content-Range: bytes $range$size2/$size");
-      } else {
-          $size2 = $size - 1;
-          header("Content-Range: bytes 0-$size2/$size");
-          header("Content-Length: " . $size);
-      }
-      $fileLocation = realpath($fileLocation);
-      while (ob_get_level()) ob_end_clean();
-      readfile($fileLocation);
-
-      fclose($fp);
-
-      return ((connection_status() == 0) and !connection_aborted());
-  }
 
   /**
    * Class to work with zip files (using ZipArchive)
@@ -5178,15 +5258,43 @@ function fm_foldersize($path) {
    */
   function fm_show_nav_path($path)
   {
-      global $lang, $sticky_navbar, $editFile;
+      global $lang, $sticky_navbar, $editFile, $available_drives, $selected_drive;
       $isStickyNavBar = $sticky_navbar ? 'fixed-top' : '';
   ?>
       <nav class="navbar navbar-expand-md mb-4 main-nav <?php echo $isStickyNavBar ?> bg-body-tertiary" data-bs-theme="<?php echo FM_THEME; ?>">
           <a class="navbar-brand"> <?php echo lng('AppTitle') ?> </a>
           <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
               <span class="navbar-toggler-icon"></span>
-          </button>
-          <div class="collapse navbar-collapse" id="navbarSupportedContent">
+          </button>           <div class="collapse navbar-collapse" id="navbarSupportedContent">
+               <!-- Drive Selector Dynamic -->
+               <div class="ms-md-2 me-md-2 mb-2 mb-md-0">
+                   <div class="dropdown">
+                       <button class="btn btn-sm btn-outline-primary dropdown-toggle d-flex align-items-center" type="button" id="driveSelector" data-bs-toggle="dropdown" aria-expanded="false" style="padding: 0.4rem 0.8rem; border-radius: 8px; background: rgba(13, 110, 253, 0.05);">
+                           <i class="fa fa-hdd-o me-2"></i> 
+                           <span class="d-none d-lg-inline"><?php echo !empty($selected_drive) ? "Disk $selected_drive:" : "Pilih Drive"; ?></span>
+                           <span class="d-inline d-lg-none"><?php echo !empty($selected_drive) ? "$selected_drive:" : "Disk"; ?></span>
+                       </button>
+                       <ul class="dropdown-menu shadow-lg border-0" aria-labelledby="driveSelector" style="z-index: 1000001; background: #1a1a1a; min-width: 180px; border: 1px solid #333 !important;">
+                           <li><a class="dropdown-item py-2 <?php echo empty($selected_drive) ? 'active' : ''; ?>" href="?drive=ROOT&p=" style="color: #eee;"><i class="fa fa-home me-2"></i> Root Server</a></li>
+                           <li><hr class="dropdown-divider" style="border-color: #333;"></li>
+                           <?php foreach ($available_drives as $drive): ?>
+                               <li>
+                                   <a class="dropdown-item py-2 d-flex align-items-center <?php echo ($selected_drive === $drive) ? 'active' : ''; ?>" href="?drive=<?php echo $drive; ?>&p=" style="color: #eee;">
+                                       <i class="fa fa-hdd-o me-2 <?php echo ($selected_drive === $drive) ? 'text-primary' : 'text-secondary'; ?>"></i> 
+                                       Drive <?php echo $drive; ?>:
+                                       <?php 
+                                           // Optional: Simple check if it's the system drive
+                                           if($drive === substr($_SERVER['DOCUMENT_ROOT'], 0, 1)) echo ' <span class="badge bg-dark ms-2" style="font-size: 0.6rem;">OS</span>';
+                                       ?>
+                                   </a>
+                               </li>
+                           <?php endforeach; ?>
+                           <li><hr class="dropdown-divider" style="border-color: #333;"></li>
+                           <li><a class="dropdown-item py-2 text-muted" href="#" onclick="location.reload();" style="font-size: 0.8rem;"><i class="fa fa-refresh me-2"></i> Refresh List Drive</a></li>
+                       </ul>
+                   </div>
+               </div>
+
 
               <?php
               $path = fm_clean_path($path);
@@ -5395,7 +5503,7 @@ function fm_foldersize($path) {
 
 
               <div class="col-12 col-md-6">
-                  <ul class="navbar-nav justify-content-end flex-row flex-wrap" data-bs-theme="<?php echo FM_THEME; ?>">
+                  <ul class="navbar-nav justify-content-start flex-row flex-wrap" data-bs-theme="<?php echo FM_THEME; ?>">
                       <li class="nav-item me-1">
                           <a class="nav-link p-2" href="index.php" title="Dashboard"><i class="fa fa-th"></i><span class="d-md-none ms-1">Dashboard</span></a>
                       </li>
@@ -8272,10 +8380,10 @@ function fm_foldersize($path) {
                   
                   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
-                  } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
-                      content.html('<div class="text-center"><video controls style="max-width:100%; max-height:70vh;"><source src="'+url+'"></video></div>');
+                  } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
+                      content.html('<div class="text-center"><video src="'+url+'" controls autoplay style="max-width:100%; max-height:70vh;"></video></div>');
                   } else if (['mp3', 'wav'].includes(ext)) {
-                      content.html('<div class="text-center"><audio controls style="width:100%; margin-top:20px;"><source src="'+url+'"></audio></div>');
+                      content.html('<div class="text-center"><audio src="'+url+'" controls style="width:100%; margin-top:20px;"></audio></div>');
                   } else if (['pdf'].includes(ext)) {
                       content.html('<iframe src="'+url+'" style="width:100%; height:70vh; border:none;"></iframe>');
                   } else if (textExtensions.includes(ext)) {
@@ -8930,9 +9038,13 @@ function fm_foldersize($path) {
                           // Check for images
                           const ext = val.name.split('.').pop().toLowerCase();
                           const images = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'];
+                          const videos = ['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'];
                           if (images.includes(ext)) {
                               icon = 'fa-file-image-o';
                               color = '#17a2b8';
+                          } else if (videos.includes(ext)) {
+                              icon = 'fa-file-video-o';
+                              color = '#ffc107';
                           } else {
                               icon = 'fa-file-text-o';
                               color = '#ced4da';
