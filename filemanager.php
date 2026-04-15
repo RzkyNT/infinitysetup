@@ -9810,21 +9810,14 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
           <!-- Comparison Modal -->
           <div class="modal fade" id="compareModal" tabindex="-1" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
               <div class="modal-dialog modal-fullscreen">
-                  <div class="modal-content" style="background: #000;">
-                      <div class="modal-header border-0">
-                          <h5 class="modal-title">Side-by-Side Comparison</h5>
+                  <div class="modal-content" style="background: #0b0b0b;">
+                      <div class="modal-header border-0 bg-dark">
+                          <h5 class="modal-title text-white"><i class="fa fa-columns me-2 text-primary"></i> Bulk Visual Comparison</h5>
                           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                       </div>
-                      <div class="modal-body p-0">
-                          <div class="row g-0 h-100">
-                              <div class="col-6 border-end border-secondary h-100 position-relative">
-                                  <div id="compare-left-info" class="p-2 small text-white bg-dark"></div>
-                                  <div id="compare-left-content" class="h-100 d-flex align-items-center justify-content-center overflow-auto p-4"></div>
-                              </div>
-                              <div class="col-6 h-100 position-relative">
-                                  <div id="compare-right-info" class="p-2 small text-white bg-dark"></div>
-                                  <div id="compare-right-content" class="h-100 d-flex align-items-center justify-content-center overflow-auto p-4"></div>
-                              </div>
+                      <div class="modal-body p-3">
+                          <div id="compare-grid" class="row g-3">
+                              <!-- Dynamic items will be injected here -->
                           </div>
                       </div>
                   </div>
@@ -9832,6 +9825,15 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
           </div>
 
           <style>
+              .compare-item { background: #1a1a1a; border-radius: 8px; border: 1px solid #333; overflow: hidden; display: flex; flex-direction: column; transition: transform 0.2s; position: relative; }
+              .compare-item:hover { border-color: #0d6efd; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+              .compare-media { height: 350px; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+              .compare-item img, .compare-item video { max-width: 100%; max-height: 100%; object-fit: contain; }
+              .compare-info { padding: 12px; background: #151515; border-top: 1px solid #222; }
+              .compare-name { font-weight: 600; font-size: 0.85rem; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; }
+              .compare-meta { font-size: 0.75rem; color: #888; display: flex; flex-wrap: wrap; gap: 10px; }
+              .compare-actions { position: absolute; top: 10px; right: 10px; z-index: 10; opacity: 0; transition: opacity 0.2s; }
+              .compare-item:hover .compare-actions { opacity: 1; }
               .dup-group { border-left: 4px solid #0d6efd; background: rgba(13, 110, 253, 0.05); margin-bottom: 20px; border-radius: 4px; overflow: hidden; }
               .dup-header { background: rgba(13, 110, 253, 0.1); padding: 8px 12px; font-weight: bold; font-size: 0.9rem; border-bottom: 1px solid #333; }
               .dup-item { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid #222; font-size: 0.85rem; }
@@ -9940,28 +9942,41 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               }
 
               function openComparison(files) {
-                  // Only compare first two if more
-                  const f1 = files[0];
-                  const f2 = files[1];
-                  
-                  const renderMedia = (f, target) => {
+                  let html = '';
+                  files.forEach(f => {
                       const url = window.location.pathname + '?p=' + encodeURIComponent(f.rel_path.substring(0, f.rel_path.lastIndexOf('/'))) + '&dl=' + encodeURIComponent(f.name) + '&stream=1';
-                      const info = `${f.name} | ${f.size_h} | ${f.mtime_h}`;
-                      $(`#compare-${target}-info`).text(info);
+                      const rowId = btoa(f.path).replace(/=/g, '');
                       
-                      if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(f.ext)) {
-                          $(`#compare-${target}-content`).html(`<img src="${url}" style="max-width: 100%; max-height: 100%; object-fit: contain;">`);
-                      } else {
-                          $(`#compare-${target}-content`).html(`<video src="${url}" controls autoplay loop muted style="max-width: 100%; max-height: 100%;"></video>`);
-                      }
-                  };
+                      html += `
+                      <div class="col-12 col-md-6 col-lg-4" id="compare-card-${rowId}">
+                          <div class="compare-item">
+                              <div class="compare-actions">
+                                  <button class="btn btn-danger btn-sm shadow" onclick="deleteDuplicate('${f.rel_path}', '${rowId}', true)">
+                                      <i class="fa fa-trash"></i> Delete
+                                  </button>
+                              </div>
+                              <div class="compare-media">
+                                  ${['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(f.ext) 
+                                      ? `<img src="${url}" loading="lazy">` 
+                                      : `<video src="${url}" controls loop muted></video>`}
+                              </div>
+                              <div class="compare-info">
+                                  <div class="compare-name" title="${f.name}">${f.name}</div>
+                                  <div class="compare-meta">
+                                      <span><i class="fa fa-database"></i> ${f.size_h}</span>
+                                      <span><i class="fa fa-clock-o"></i> ${f.mtime_h}</span>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                      `;
+                  });
                   
-                  renderMedia(f1, 'left');
-                  renderMedia(f2, 'right');
+                  $('#compare-grid').html(html);
                   $('#compareModal').modal('show');
               }
 
-              function deleteDuplicate(rel_path, rowId) {
+              function deleteDuplicate(rel_path, rowId, fromCompare = false) {
                   const filename = rel_path.split('/').pop();
                   const dir = rel_path.substring(0, rel_path.lastIndexOf('/'));
                   
@@ -9987,8 +10002,16 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                               },
                               success: function(res) {
                                   if (res.success) {
-                                      $('#dup-row-' + rowId).css('opacity', '0.3').find('button').prop('disabled', true);
-                                      $('#dup-row-' + rowId).find('.dup-name').css('text-decoration', 'line-through');
+                                      // Remove from main list
+                                      const mainRow = $('#dup-row-' + rowId);
+                                      mainRow.css('opacity', '0.3').find('button').prop('disabled', true);
+                                      mainRow.find('.dup-name').css('text-decoration', 'line-through');
+                                      
+                                      // Remove from compare grid
+                                      if (fromCompare) {
+                                          $('#compare-card-' + rowId).fadeOut();
+                                      }
+                                      
                                       toast('File deleted successfully', 'success');
                                   } else {
                                       toast('Delete failed', 'error');
