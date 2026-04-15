@@ -773,6 +773,108 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           echo json_encode(['success' => ($errors == 0), 'errors' => $errors]);
           exit();
       }
+
+      // AJAX Get File Meta (EXIF + Subtitles)
+      if (isset($_POST['type']) && $_POST['type'] == "get_file_meta" && !empty($_POST['file'])) {
+          $fileName = fm_clean_path($_POST['file']);
+          $dir = isset($_POST['path']) ? fm_clean_path($_POST['path']) : '';
+          $absPath = FM_ROOT_PATH . ($dir ? '/' . $dir : '') . '/' . $fileName;
+          
+          $meta = ['exif' => null, 'subtitles' => []];
+          
+          if (file_exists($absPath)) {
+              $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+              
+              // 1. EXIF for Images
+              if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp']) && function_exists('exif_read_data')) {
+                  $exif = @exif_read_data($absPath, 'IFD0', true);
+                  if ($exif) {
+                      $meta['exif'] = [
+                          'Resolution' => ($exif['IFD0']['XResolution'] ?? '') . ' x ' . ($exif['IFD0']['YResolution'] ?? ''),
+                          'Make' => $exif['IFD0']['Make'] ?? 'Unknown',
+                          'Model' => $exif['IFD0']['Model'] ?? 'Unknown',
+                          'Software' => $exif['IFD0']['Software'] ?? '',
+                          'DateTime' => $exif['IFD0']['DateTime'] ?? '',
+                      ];
+                      // Add GPS if available
+                      if (isset($exif['GPS'])) {
+                          $meta['exif']['GPS'] = 'Available';
+                      }
+                  }
+              }
+              
+              // 2. Subtitles for Videos
+              if (in_array($ext, ['mp4', 'webm', 'mov', 'mkv', 'avi'])) {
+                  $baseName = pathinfo($fileName, PATHINFO_FILENAME);
+                  $parentDir = dirname($absPath);
+                  $subExts = ['vtt', 'srt'];
+                  foreach ($subExts as $sExt) {
+                      $subFile = $parentDir . '/' . $baseName . '.' . $sExt;
+                      if (file_exists($subFile)) {
+                          $meta['subtitles'][] = [
+                              'url' => window_location_url($subFile), // We need a helper for this
+                              'ext' => $sExt,
+                              'name' => $baseName . '.' . $sExt
+                          ];
+                      }
+                  }
+                  
+                  // Helper for subtitle URLs (streaming proxy)
+                  foreach ($meta['subtitles'] as &$sub) {
+                      $sub['proxy_url'] = FM_SELF_URL . "?p=" . urlencode($dir) . "&dl=" . urlencode($sub['name']) . "&stream=1";
+                  }
+              }
+          }
+          
+          header('Content-Type: application/json');
+          echo json_encode(['success' => true, 'meta' => $meta]);
+          exit();
+      }
+
+      // AJAX Disk Usage (Treemap Data)
+      if (isset($_POST['type']) && $_POST['type'] == "get_disk_usage") {
+          $dir = isset($_POST['path']) ? fm_clean_path($_POST['path']) : '';
+          $absPath = FM_ROOT_PATH . ($dir ? '/' . $dir : '');
+          $absPath = rtrim($absPath, '/');
+          
+          $data = [];
+          
+          if (is_dir($absPath)) {
+              $items = scandir($absPath);
+              foreach ($items as $item) {
+                  if ($item == '.' || $item == '..') continue;
+                  if (!FM_SHOW_HIDDEN && substr($item, 0, 1) === '.') continue;
+                  
+                  $fullPath = $absPath . '/' . $item;
+                  $size = 0;
+                  $isDir = is_dir($fullPath);
+                  
+                  if ($isDir) {
+                      $size = fm_foldersize($fullPath);
+                  } else {
+                      $size = filesize($fullPath);
+                  }
+                  
+                  if ($size > 0) {
+                      $data[] = [
+                          'name' => $item,
+                          'size' => $size,
+                          'size_h' => fm_get_filesize($size),
+                          'type' => $isDir ? 'dir' : 'file',
+                          'ext' => $isDir ? '' : strtolower(pathinfo($item, PATHINFO_EXTENSION))
+                      ];
+                  }
+              }
+              // Sort by size descending
+              usort($data, function($a, $b) {
+                  return $b['size'] - $a['size'];
+              });
+          }
+          
+          header('Content-Type: application/json');
+          echo json_encode(['success' => true, 'data' => $data]);
+          exit();
+      }
 // save editor file
       if (isset($_POST['type']) && $_POST['type'] == "save") {
           // get current path
@@ -5670,6 +5772,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                            </a>
                            <ul class="dropdown-menu dropdown-menu-end shadow border-0" aria-labelledby="toolsDropdown" data-bs-theme="<?php echo FM_THEME; ?>" style="background: #1a1a1a !important;">
                                <li><a class="dropdown-item nav-link py-2" href="javascript:showDuplicateScanner();"><i class="fa fa-search-plus me-2 text-primary"></i> Find Duplicates</a></li>
+                               <li><a class="dropdown-item nav-link py-2" href="javascript:showDiskAnalyzer();"><i class="fa fa-pie-chart me-2 text-warning"></i> Disk Analyzer</a></li>
                            </ul>
                        </li>
                        <?php if (FM_USE_AUTH): ?>
@@ -7750,8 +7853,13 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                             </div>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body" id="preview-content">
-                            <!-- Content populated by JS -->
+                        <div class="modal-body">
+                            <div id="preview-content">
+                                <!-- Content populated by JS -->
+                            </div>
+                            <div id="preview-meta" class="mt-3 p-3 border-top" style="display: none; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                                <!-- Meta populated by JS -->
+                            </div>
                         </div>
                         <div class="modal-body" id="preview-editor" style="display: none; padding: 0;">
                             <div class="simple-text-editor">
@@ -8469,6 +8577,61 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   content.html('<div class="spinner-border text-primary" role="status"></div>');
                   $("#previewModal").modal('show');
                   
+                  // Metadata & Subtitle Fetching
+                  $.ajax({
+                      type: 'POST',
+                      url: window.location.pathname + window.location.search,
+                      data: {
+                          ajax: true,
+                          type: 'get_file_meta',
+                          file: name,
+                          path: p,
+                          token: window.csrf
+                      },
+                      dataType: 'json',
+                      success: function(res) {
+                          if (res.success && res.meta) {
+                              let metaHtml = '';
+                              // Handle EXIF
+                              if (res.meta.exif) {
+                                  metaHtml += '<div class="small mb-2 text-primary fw-bold"><i class="fa fa-info-circle"></i> Image Metadata:</div>';
+                                  metaHtml += '<table class="table table-sm table-dark table-borderless small mb-0 opacity-75">';
+                                  for (const [key, val] of Object.entries(res.meta.exif)) {
+                                      if (val) metaHtml += `<tr><td style="width:100px;">${key}:</td><td>${val}</td></tr>`;
+                                  }
+                                  metaHtml += '</table>';
+                              }
+                              
+                              // Handle Subtitles
+                              if (res.meta.subtitles && res.meta.subtitles.length) {
+                                  metaHtml += '<div class="small mt-2 text-success fw-bold"><i class="fa fa-closed-captioning"></i> Subtitles Found:</div>';
+                                  metaHtml += '<ul class="list-unstyled small mb-0 opacity-75">';
+                                  const video = document.querySelector('#preview-content video');
+                                  res.meta.subtitles.forEach((s, idx) => {
+                                      metaHtml += `<li><i class="fa fa-file-text-o"></i> ${s.name}</li>`;
+                                      if (video) {
+                                          const track = document.createElement('track');
+                                          track.kind = 'subtitles';
+                                          track.label = s.ext.toUpperCase();
+                                          track.src = s.proxy_url;
+                                          track.srclang = 'id';
+                                          if (idx === 0) track.default = true;
+                                          video.appendChild(track);
+                                      }
+                                  });
+                                  metaHtml += '</ul>';
+                                  if (video) { toast('Subtitles loaded automatically', 'success'); }
+                              }
+                              
+                              if (metaHtml) {
+                                  $('#preview-meta').html(metaHtml).show();
+                              } else {
+                                  $('#preview-meta').hide();
+                              }
+                          }
+                      }
+                  });
+
                   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
                   } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
@@ -10020,6 +10183,159 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           });
                       }
                   });
+              }
+          </script>
+          <!-- Disk Analyzer Modal -->
+          <div class="modal fade" id="diskAnalyzerModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+              <div class="modal-dialog modal-xl" role="document">
+                  <div class="modal-content" style="background: #0f0f12; border: 1px solid #333;">
+                      <div class="modal-header border-bottom-0">
+                          <h5 class="modal-title"><i class="fa fa-pie-chart text-warning me-2"></i> Disk Analyzer</h5>
+                          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                      </div>
+                      <div class="modal-body">
+                          <div class="mb-3 d-flex justify-content-between align-items-center">
+                              <span class="text-secondary small">Scanning: <code id="disk-analyzer-path"></code></span>
+                              <button class="btn btn-warning btn-sm" onclick="runDiskAnalysis()"><i class="fa fa-refresh me-1"></i> Rescan</button>
+                          </div>
+                          
+                          <div id="treemap-container" style="height: 60vh; width: 100%; background: #000; border-radius: 8px; overflow: hidden; position: relative;">
+                              <div class="text-center py-5 text-muted"><div class="spinner-border text-warning mb-3"></div><p>Calculating file sizes...</p></div>
+                          </div>
+                          
+                          <div id="treemap-legend" class="mt-3 d-flex flex-wrap gap-3 small">
+                              <!-- Legend will be here -->
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+
+          <style>
+              .treemap-node { position: absolute; border: 1.5px solid #000; overflow: hidden; color: #fff; font-family: sans-serif; transition: all 0.2s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+              .treemap-node:hover { filter: brightness(1.3); z-index: 10; box-shadow: 0 0 15px rgba(0,0,0,0.5); border-color: rgba(255,255,255,0.5); }
+              .treemap-node .name { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 90%; font-size: 0.8rem; }
+              .treemap-node .size { font-size: 0.7rem; opacity: 0.7; }
+              .type-dir { background: #3b82f6; }
+              .type-video { background: #ef4444; }
+              .type-image { background: #10b981; }
+              .type-archive { background: #f59e0b; }
+              .type-other { background: #6b7280; }
+          </style>
+
+          <script>
+              function showDiskAnalyzer() {
+                  const urlParams = new URLSearchParams(window.location.search);
+                  const path = urlParams.get('p') || '.';
+                  $('#disk-analyzer-path').text(path);
+                  $('#diskAnalyzerModal').modal('show');
+                  runDiskAnalysis();
+              }
+
+              function runDiskAnalysis() {
+                  const urlParams = new URLSearchParams(window.location.search);
+                  const path = urlParams.get('p') || '.';
+                  $('#treemap-container').html('<div class="text-center py-5 text-muted"><div class="spinner-border text-warning mb-3"></div><p>Calculating file sizes...</p></div>');
+                  
+                  $.ajax({
+                      type: 'POST',
+                      url: window.location.pathname + window.location.search,
+                      data: {
+                          ajax: true,
+                          type: 'get_disk_usage',
+                          path: path,
+                          token: window.csrf
+                      },
+                      dataType: 'json',
+                      success: function(res) {
+                          if (res.success) {
+                              renderTreemap(res.data);
+                          }
+                      }
+                  });
+              }
+
+              function renderTreemap(data) {
+                  const container = $('#treemap-container');
+                  container.empty();
+                  
+                  if (!data.length) {
+                      container.html('<div class="text-center py-5">Empty folder</div>');
+                      return;
+                  }
+
+                  const width = container.width();
+                  const height = container.height();
+                  const totalSize = data.reduce((acc, item) => acc + item.size, 0);
+                  
+                  // Sort descending
+                  data.sort((a, b) => b.size - a.size);
+
+                  // Simple Squarified Treemap Layout (Approximation)
+                  function layout(items, x, y, w, h) {
+                      if (items.length === 0) return;
+                      
+                      const first = items[0];
+                      const ratio = first.size / items.reduce((a,b)=>a+b.size, 0);
+                      
+                      let nw, nh, nx, ny;
+                      if (w > h) {
+                          nw = w * ratio;
+                          nh = h;
+                          nx = x + nw;
+                          ny = y;
+                          drawNode(first, x, y, nw, nh);
+                          layout(items.slice(1), nx, ny, w - nw, h);
+                      } else {
+                          nw = w;
+                          nh = h * ratio;
+                          nx = x;
+                          ny = y + nh;
+                          drawNode(first, x, y, nw, nh);
+                          layout(items.slice(1), nx, ny, w, h - nh);
+                      }
+                  }
+
+                  function drawNode(item, x, y, w, h) {
+                      if (w < 5 || h < 5) return;
+                      
+                      let typeClass = 'type-other';
+                      if (item.type === 'dir') typeClass = 'type-dir';
+                      else if (['mp4','mov','mkv','avi','webm'].includes(item.ext)) typeClass = 'type-video';
+                      else if (['jpg','jpeg','png','webp','gif'].includes(item.ext)) typeClass = 'type-image';
+                      else if (['zip','rar','7z','tar','gz'].includes(item.ext)) typeClass = 'type-archive';
+
+                      const node = $(`<div class="treemap-node ${typeClass}" style="left:${x}px; top:${y}px; width:${w}px; height:${h}px;" title="${item.name} (${item.size_h})"></div>`);
+                      if (w > 40 && h > 30) {
+                          node.append(`<div class="name">${item.name}</div>`);
+                          node.append(`<div class="size">${item.size_h}</div>`);
+                      }
+                      
+                      node.on('click', function() {
+                          if (item.type === 'dir') {
+                              const currentPath = $('#disk-analyzer-path').text();
+                              const newPath = (currentPath === '.' ? '' : currentPath + '/') + item.name;
+                              window.location.href = '?p=' + encodeURIComponent(newPath);
+                          } else {
+                              const currentPath = $('#disk-analyzer-path').text();
+                              const fileUrl = window.location.pathname + '?p=' + encodeURIComponent(currentPath) + '&dl=' + encodeURIComponent(item.name) + '&stream=1';
+                              preview_file(fileUrl, item.ext, item.name);
+                          }
+                      });
+                      
+                      container.append(node);
+                  }
+
+                  layout(data, 0, 0, width, height);
+                  
+                  // Legend
+                  $('#treemap-legend').html(`
+                      <div class="d-flex align-items-center"><span class="type-dir me-1" style="width:12px;height:120px;height:12px;border-radius:2px;"></span> Folders</div>
+                      <div class="d-flex align-items-center"><span class="type-video me-1" style="width:12px;height:12px;border-radius:2px;"></span> Videos</div>
+                      <div class="d-flex align-items-center"><span class="type-image me-1" style="width:12px;height:12px;border-radius:2px;"></span> Images</div>
+                      <div class="d-flex align-items-center"><span class="type-archive me-1" style="width:12px;height:12px;border-radius:2px;"></span> Archives</div>
+                      <div class="d-flex align-items-center"><span class="type-other me-1" style="width:12px;height:12px;border-radius:2px;"></span> Others</div>
+                  `);
               }
           </script>
           <div id="snackbar"></div>
