@@ -288,7 +288,11 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           $root_path = $selected_drive . ':/';
       } else {
           $selected_drive = ''; // ensure it's empty if invalid
-          $root_path = realpath($_SERVER['DOCUMENT_ROOT'] . '/..');
+          $doc_root = isset($_SERVER['DOCUMENT_ROOT']) ? $_SERVER['DOCUMENT_ROOT'] : __DIR__;
+          $root_path = realpath($doc_root . '/..');
+          if (!$root_path || !@is_dir($root_path)) {
+              $root_path = $doc_root;
+          }
       }
 
       // SSO Logic from Portal
