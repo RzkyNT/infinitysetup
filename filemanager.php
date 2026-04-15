@@ -690,7 +690,90 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           exit();
       }
 
-      // save editor file
+      
+      // Find Duplicates
+      if (isset($_POST['type']) && $_POST['type'] == "find_duplicates") {
+          $dir = $_POST['path'] == "." ? '' : $_POST['path'];
+          $is_recursive = isset($_POST['is_recursive']) && $_POST['is_recursive'] === 'true';
+          $startPath = FM_ROOT_PATH;
+          if ($dir) $startPath .= '/' . fm_clean_path($dir);
+          $startPath = rtrim($startPath, '/');
+          
+          $filesBySize = array();
+          $duplicates = array();
+          
+          if (is_dir($startPath)) {
+              $exclude_dirs = array('node_modules', '.git', 'vendor', '.svn', '.hg', '.venv', '__pycache__');
+              $ite = $is_recursive ? new RecursiveIteratorIterator(new RecursiveCallbackFilterIterator(new RecursiveDirectoryIterator($startPath, FilesystemIterator::SKIP_DOTS | FilesystemIterator::FOLLOW_SYMLINKS), function ($c, $k, $i) use ($exclude_dirs) {
+                  if ($i->hasChildren() && in_array($c->getFilename(), $exclude_dirs)) return false;
+                  return FM_SHOW_HIDDEN || substr($c->getFilename(), 0, 1) !== '.';
+              })) : new DirectoryIterator($startPath);
+              
+              foreach ($ite as $finfo) {
+                  if (!$finfo->isFile()) continue;
+                  try {
+                      $size = $finfo->getSize();
+                      if ($size === 0) continue;
+                      $path = $finfo->getPathname();
+                      $filesBySize[$size][] = array(
+                          'name' => $finfo->getFilename(),
+                          'path' => str_replace('\\', '/', $path),
+                          'rel_path' => str_replace('\\', '/', substr($path, strlen(FM_ROOT_PATH) + 1)),
+                          'size' => $size,
+                          'size_h' => fm_get_filesize($size),
+                          'mtime' => $finfo->getMTime(),
+                          'mtime_h' => date(FM_DATETIME_FORMAT, $finfo->getMTime()),
+                          'ext' => strtolower($finfo->getExtension())
+                      );
+                  } catch (Exception $e) {}
+              }
+              foreach ($filesBySize as $size => $group) {
+                  if (count($group) > 1) {
+                      $byHash = array();
+                      foreach ($group as $f) {
+                          $hash = ""; $fp = @fopen($f['path'], 'rb');
+                          if ($fp) {
+                              $s = 64 * 1024;
+                              $hash .= md5(fread($fp, $s));
+                              if ($f['size'] > $s) { fseek($fp, -$s, SEEK_END); $hash .= md5(fread($fp, $s)); }
+                              fclose($fp);
+                          }
+                          $byHash[$hash][] = $f;
+                      }
+                      foreach ($byHash as $h => $sg) { if (count($sg) > 1) $duplicates[] = $sg; }
+                  }
+              }
+          }
+          header('Content-Type: application/json');
+          echo json_encode(['success' => true, 'duplicates' => $duplicates]);
+          exit();
+      }
+
+      // AJAX Delete
+      if (isset($_POST['type']) && $_POST['type'] == "delete" && !FM_READONLY) {
+          $dir = $_POST['path'] == "." ? '' : $_POST['path'];
+          $files = isset($_POST['file']) ? $_POST['file'] : [];
+          if (!is_array($files)) $files = [$files];
+          
+          $targetDir = FM_ROOT_PATH;
+          if ($dir) $targetDir .= '/' . fm_clean_path($dir);
+          $targetDir = rtrim($targetDir, '/');
+          
+          $errors = 0;
+          foreach ($files as $f) {
+              $f = str_replace(['/', '\\'], '', fm_clean_path($f));
+              if ($f != '' && $f != '..' && $f != '.') {
+                  if (!fm_rdelete($targetDir . '/' . $f)) {
+                      $errors++;
+                  }
+              }
+          }
+          
+          header('Content-Type: application/json');
+          echo json_encode(['success' => ($errors == 0), 'errors' => $errors]);
+          exit();
+      }
+// save editor file
       if (isset($_POST['type']) && $_POST['type'] == "save") {
           // get current path
           $path = FM_ROOT_PATH;
@@ -5581,7 +5664,15 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                               </a>
                           </li>
                       <?php endif; ?>
-                      <?php if (FM_USE_AUTH): ?>
+                       <li class="nav-item dropdown me-1">
+                           <a class="nav-link dropdown-toggle p-2" href="#" id="toolsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false" title="Tools">
+                               <i class="fa fa-briefcase"></i><span class="d-md-none ms-1">Tools</span>
+                           </a>
+                           <ul class="dropdown-menu dropdown-menu-end shadow border-0" aria-labelledby="toolsDropdown" data-bs-theme="<?php echo FM_THEME; ?>" style="background: #1a1a1a !important;">
+                               <li><a class="dropdown-item nav-link py-2" href="javascript:showDuplicateScanner();"><i class="fa fa-search-plus me-2 text-primary"></i> Find Duplicates</a></li>
+                           </ul>
+                       </li>
+                       <?php if (FM_USE_AUTH): ?>
                           <li class="nav-item avatar dropdown">
                               <a class="nav-link dropdown-toggle" id="navbarDropdownMenuLink-5" data-bs-toggle="dropdown" aria-expanded="false">
                                   <i class="fa fa-user-circle"></i>
@@ -9684,6 +9775,230 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   });
               </script>
           <?php endif; ?>
+          <!-- Duplicate Scanner Modal -->
+          <div class="modal fade" id="duplicateScannerModal" tabindex="-1" role="dialog" aria-labelledby="duplicateScannerModalLabel" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+              <div class="modal-dialog modal-xl" role="document">
+                  <div class="modal-content" style="background: #121212; border: 1px solid #333;">
+                      <div class="modal-header border-bottom-0">
+                          <h5 class="modal-title" id="duplicateScannerModalLabel"><i class="fa fa-copy text-primary me-2"></i> Duplicate File Finder</h5>
+                          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                      </div>
+                      <div class="modal-body">
+                          <div class="d-flex justify-content-between align-items-center mb-3">
+                              <div>
+                                  <label class="me-2"><input type="checkbox" id="dup-recursive" checked> Recursive Scan</label>
+                                  <span class="text-secondary small ms-2">Current path: <code id="dup-current-path"></code></span>
+                              </div>
+                              <button class="btn btn-primary btn-sm" onclick="runDuplicateScan()">
+                                  <i class="fa fa-play me-1"></i> Start Scan
+                              </button>
+                          </div>
+                          <hr style="border-color: #333;">
+                          <div id="dup-results" style="max-height: 60vh; overflow-y: auto;">
+                              <div class="text-center py-5 text-muted">
+                                  <i class="fa fa-search fa-3x mb-3" style="opacity: 0.2;"></i>
+                                  <p>Click "Start Scan" to find duplicate files based on content similarity, size, and metadata.</p>
+                              </div>
+                          </div>
+                      </div>
+                      <div class="modal-footer border-top-0">
+                          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+          <!-- Comparison Modal -->
+          <div class="modal fade" id="compareModal" tabindex="-1" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+              <div class="modal-dialog modal-fullscreen">
+                  <div class="modal-content" style="background: #000;">
+                      <div class="modal-header border-0">
+                          <h5 class="modal-title">Side-by-Side Comparison</h5>
+                          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                      </div>
+                      <div class="modal-body p-0">
+                          <div class="row g-0 h-100">
+                              <div class="col-6 border-end border-secondary h-100 position-relative">
+                                  <div id="compare-left-info" class="p-2 small text-white bg-dark"></div>
+                                  <div id="compare-left-content" class="h-100 d-flex align-items-center justify-content-center overflow-auto p-4"></div>
+                              </div>
+                              <div class="col-6 h-100 position-relative">
+                                  <div id="compare-right-info" class="p-2 small text-white bg-dark"></div>
+                                  <div id="compare-right-content" class="h-100 d-flex align-items-center justify-content-center overflow-auto p-4"></div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+
+          <style>
+              .dup-group { border-left: 4px solid #0d6efd; background: rgba(13, 110, 253, 0.05); margin-bottom: 20px; border-radius: 4px; overflow: hidden; }
+              .dup-header { background: rgba(13, 110, 253, 0.1); padding: 8px 12px; font-weight: bold; font-size: 0.9rem; border-bottom: 1px solid #333; }
+              .dup-item { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid #222; font-size: 0.85rem; }
+              .dup-item:last-child { border-bottom: none; }
+              .dup-info { flex: 1; overflow: hidden; }
+              .dup-name { font-weight: 600; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+              .dup-path { color: #888; font-size: 0.75rem; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+              .dup-meta { display: flex; gap: 15px; color: #666; font-size: 0.75rem; margin-top: 2px; }
+              .dup-actions { margin-left: 20px; display: flex; align-items: center; }
+          </style>
+
+          <script>
+              function showDuplicateScanner() {
+                  const urlParams = new URLSearchParams(window.location.search);
+                  const path = urlParams.get('p') || '.';
+                  $('#dup-current-path').text(path);
+                  $('#dup-results').html('<div class="text-center py-5 text-muted"><i class="fa fa-search fa-3x mb-3" style="opacity: 0.2;"></i><p>Click "Start Scan" to find duplicate files.</p></div>');
+                  $('#duplicateScannerModal').modal('show');
+              }
+
+              function runDuplicateScan() {
+                  const urlParams = new URLSearchParams(window.location.search);
+                  const path = urlParams.get('p') || '.';
+                  const recursive = $('#dup-recursive').is(':checked');
+                  
+                  $('#dup-results').html('<div class="text-center py-5"><div class="spinner-border text-primary mb-3"></div><p>Scanning files for duplicates... this may take a while for large folders.</p></div>');
+                  
+                  $.ajax({
+                      type: 'POST',
+                      url: window.location.pathname + window.location.search,
+                      data: {
+                          ajax: true,
+                          type: 'find_duplicates',
+                          path: path,
+                          is_recursive: recursive,
+                          token: window.csrf
+                      },
+                      dataType: 'json',
+                      success: function(response) {
+                          if (response.success) {
+                              renderDuplicateResults(response.duplicates);
+                          } else {
+                              $('#dup-results').html('<div class="alert alert-danger">'+(response.message || 'Error occurred')+'</div>');
+                          }
+                      },
+                      error: function() {
+                          $('#dup-results').html('<div class="alert alert-danger">Error reaching server.</div>');
+                      }
+                  });
+              }
+
+              function renderDuplicateResults(groups) {
+                  if (!groups.length) {
+                      $('#dup-results').html('<div class="text-center py-5"><i class="fa fa-check-circle fa-3x text-success mb-3"></i><p>No duplicates found! Your files are unique.</p></div>');
+                      return;
+                  }
+                  
+                  let html = `<div class="mb-3 text-secondary small">Found ${groups.length} groups of potential duplicates.</div>`;
+                  
+                  groups.forEach((group, idx) => {
+                      const first = group[0];
+                      const canCompare = group.length >= 2;
+                      const hasVisualMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'webm'].includes(first.ext);
+
+                      html += `
+                      <div class="dup-group">
+                          <div class="dup-header d-flex justify-content-between align-items-center">
+                              <span>Duplicate Group ${idx + 1} (${first.size_h})</span>
+                              <div>
+                                  ${(canCompare && hasVisualMedia) ? `<button class="btn btn-xs btn-primary me-2" onclick="openComparison(${JSON.stringify(group).replace(/"/g, '&quot;')})"><i class="fa fa-columns me-1"></i> Visual Compare</button>` : ''}
+                                  <span class="text-muted small">${group.length} files</span>
+                              </div>
+                          </div>
+                          <div class="dup-items">
+                      `;
+                      
+                      group.forEach(file => {
+                          html += `
+                          <div class="dup-item" id="dup-row-${btoa(file.path).replace(/=/g, '')}">
+                              <div class="me-3"><i class="fa fa-file-o fa-lg text-secondary"></i></div>
+                              <div class="dup-info">
+                                  <div class="dup-name" title="${file.name}">${file.name}</div>
+                                  <div class="dup-path" title="${file.path}">${file.rel_path}</div>
+                                  <div class="dup-meta">
+                                      <span><i class="fa fa-clock-o me-1"></i> ${file.mtime_h}</span>
+                                      <span><i class="fa fa-database me-1"></i> ${file.size_h}</span>
+                                      <span><i class="fa fa-tag me-1"></i> ${file.ext.toUpperCase()}</span>
+                                  </div>
+                              </div>
+                              <div class="dup-actions">
+                                  <button class="btn btn-sm btn-outline-danger" title="Delete" onclick="deleteDuplicate('${file.rel_path}', '${btoa(file.path).replace(/=/g, '')}')">
+                                      <i class="fa fa-trash"></i>
+                                  </button>
+                                  <button class="btn btn-sm btn-outline-primary ms-1" title="Preview" onclick="preview_file('${window.location.protocol + '//' + window.location.host + '/?p=' + encodeURIComponent(file.rel_path.substring(0, file.rel_path.lastIndexOf('/'))) + '&view=' + encodeURIComponent(file.name)}', '${file.ext}', '${file.name}')">
+                                      <i class="fa fa-eye"></i>
+                                  </button>
+                              </div>
+                          </div>
+                          `;
+                      });
+                      
+                      html += `</div></div>`;
+                  });
+                  
+                  $('#dup-results').html(html);
+              }
+
+              function openComparison(files) {
+                  // Only compare first two if more
+                  const f1 = files[0];
+                  const f2 = files[1];
+                  
+                  const renderMedia = (f, target) => {
+                      const url = window.location.pathname + '?p=' + encodeURIComponent(f.rel_path.substring(0, f.rel_path.lastIndexOf('/'))) + '&dl=' + encodeURIComponent(f.name) + '&stream=1';
+                      const info = `${f.name} | ${f.size_h} | ${f.mtime_h}`;
+                      $(`#compare-${target}-info`).text(info);
+                      
+                      if (['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(f.ext)) {
+                          $(`#compare-${target}-content`).html(`<img src="${url}" style="max-width: 100%; max-height: 100%; object-fit: contain;">`);
+                      } else {
+                          $(`#compare-${target}-content`).html(`<video src="${url}" controls autoplay loop muted style="max-width: 100%; max-height: 100%;"></video>`);
+                      }
+                  };
+                  
+                  renderMedia(f1, 'left');
+                  renderMedia(f2, 'right');
+                  $('#compareModal').modal('show');
+              }
+
+              function deleteDuplicate(rel_path, rowId) {
+                  const filename = rel_path.split('/').pop();
+                  const dir = rel_path.substring(0, rel_path.lastIndexOf('/'));
+                  
+                  Swal.fire({
+                      title: 'Delete duplicate?',
+                      text: "Are you sure you want to delete: " + filename,
+                      icon: 'warning',
+                      showCancelButton: true,
+                      confirmButtonColor: '#d33',
+                      cancelButtonColor: '#3085d6',
+                      confirmButtonText: 'Yes, delete it!'
+                  }).then((result) => {
+                      if (result.isConfirmed) {
+                          $.ajax({
+                              type: 'POST',
+                              url: window.location.pathname + window.location.search,
+                              data: {
+                                  ajax: true,
+                                  type: 'delete',
+                                  path: dir,
+                                  file: [filename],
+                                  token: window.csrf
+                              },
+                              success: function(res) {
+                                  if (res.success) {
+                                      $('#dup-row-' + rowId).css('opacity', '0.3').find('button').prop('disabled', true);
+                                      $('#dup-row-' + rowId).find('.dup-name').css('text-decoration', 'line-through');
+                                      toast('File deleted successfully', 'success');
+                                  } else {
+                                      toast('Delete failed', 'error');
+                                  }
+                              }
+                          });
+                      }
+                  });
+              }
+          </script>
           <div id="snackbar"></div>
       </body>
 
