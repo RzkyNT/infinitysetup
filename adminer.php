@@ -3254,8 +3254,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 echo "-- Data for table `$t`\n\n";
-                $pkCol = function_exists('getPrimaryKey') ? getPrimaryKey($pdo, $t) : 'id';
-                if (!$pkCol) $pkCol = 'id';
+                if ($sqlMode === 'update' && !empty($_POST['where_column'])) {
+                    $pkCol = $_POST['where_column'];
+                } else {
+                    $pkCol = function_exists('getPrimaryKey') ? getPrimaryKey($pdo, $t) : 'id';
+                    if (!$pkCol) $pkCol = 'id';
+                }
                 
                 if ($selCols && is_array($selCols) && count($tablesToExport) === 1) {
                     $queryCols = $selCols;
@@ -7919,11 +7923,35 @@ var advancedFilters = null;
                     
                     <div id="sql_mode_container" style="display:${format==='sql'?'block':'none'}">
                         <label>SQL Mode:</label>
-                        <select id="swal_sql_mode" class="form-select" style="margin-bottom:10px;">
+                        <select id="swal_sql_mode" class="form-select" style="margin-bottom:10px;" onchange="
+                            const isUpdate = this.value === 'update';
+                            const wcc = document.getElementById('where_col_container');
+                            if(wcc) {
+                                wcc.style.display = isUpdate ? 'block' : 'none';
+                                if(isUpdate) {
+                                    document.getElementById('swal_where_col').dispatchEvent(new Event('change'));
+                                } else {
+                                    document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; });
+                                }
+                            }
+                        ">
                             <option value="insert">INSERT (Default)</option>
                             <option value="update">UPDATE</option>
                         </select>
                     </div>
+                    
+                    ${window._currentTableStructure ? `
+                    <div id="where_col_container" style="display:none;">
+                        <label>Where Column:</label>
+                        <select id="swal_where_col" class="form-select" style="margin-bottom:10px;" onchange="
+                            document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; });
+                            const cb = Array.from(document.querySelectorAll('.exp-col-cb')).find(el => el.value === this.value);
+                            if(cb) { cb.checked = false; cb.disabled = true; }
+                        ">
+                            ${window._currentTableStructure.map(c => `<option value="${c.name}">${c.name}</option>`).join('')}
+                        </select>
+                    </div>
+                    ` : ''}
                     
                     <label>Action:</label>
                     <select id="swal_exp_action" class="form-select">
@@ -7947,6 +7975,9 @@ var advancedFilters = null;
                 fd.set('format', selFormat);
                 if (selFormat === 'sql') {
                     fd.set('sql_mode', selSqlMode);
+                    if (selSqlMode === 'update' && document.getElementById('swal_where_col')) {
+                        fd.set('where_column', document.getElementById('swal_where_col').value);
+                    }
                 }
                 if (checkedCols.length > 0) {
                     fd.set('columns', JSON.stringify(checkedCols));
