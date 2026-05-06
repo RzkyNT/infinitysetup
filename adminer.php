@@ -3174,9 +3174,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } else {
             // SQL EXPORT (Default)
-            header('Content-Type: application/octet-stream');
-            header("Content-Transfer-Encoding: Binary"); 
-            header("Content-disposition: attachment; filename=\"$filename.sql\""); 
+            if (isset($_POST['copy_mode']) && $_POST['copy_mode'] === '1') {
+                header('Content-Type: text/plain');
+            } else {
+                header('Content-Type: application/octet-stream');
+                header("Content-Transfer-Encoding: Binary"); 
+                header("Content-disposition: attachment; filename=\"$filename.sql\""); 
+            }
+            
+            $colsJson = $_POST['columns'] ?? '';
+            $selCols = !empty($colsJson) ? json_decode($colsJson, true) : null;
+            $sqlMode = $_POST['sql_mode'] ?? 'insert'; // 'insert' or 'update'
             
             $tablesToExport = [];
             if ($exportTable) {
@@ -3229,31 +3237,75 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $useFkChecks = true;
             if (count($ordered) !== count($tablesToExport)) {
-                // Couldn't resolve dependencies (cycle) — fallback to disabling FK checks
                 $useFkChecks = false;
                 echo "SET FOREIGN_KEY_CHECKS=0;\n\n";
             }
 
-            // Decide sequence: ordered if possible, else original list
             $sequence = count($ordered) === count($tablesToExport) ? $ordered : $tablesToExport;
 
-            // Emit structure and data in sequence (parents before children)
             foreach ($sequence as $t) {
                 echo "-- --------------------------------------------------------\n";
-                echo "-- Structure for table `$t`\n";
-                echo "--\n\n";
-                echo "DROP TABLE IF EXISTS `$t`;\n";
-                echo ($creates[$t] ?? '') . ";\n\n";
+                
+                if (!$selCols && $sqlMode !== 'update') {
+                    echo "-- Structure for table `$t`\n";
+                    echo "--\n\n";
+                    echo "DROP TABLE IF EXISTS `$t`;\n";
+                    echo ($creates[$t] ?? '') . ";\n\n";
+                }
 
                 echo "-- Data for table `$t`\n\n";
-                $stmt = $pdo->query("SELECT * FROM `$t`");
-                while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                    $keys = array_keys($r);
-                    $vals = array_values($r);
-                    $vals = array_map(function($v) use ($pdo) {
-                        return $v === null ? "NULL" : $pdo->quote($v);
-                    }, $vals);
-                    echo "INSERT INTO `$t` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+                $pkCol = function_exists('getPrimaryKey') ? getPrimaryKey($pdo, $t) : 'id';
+                if (!$pkCol) $pkCol = 'id';
+                
+                if ($selCols && is_array($selCols) && count($tablesToExport) === 1) {
+                    $queryCols = $selCols;
+                    if ($sqlMode === 'update' && !in_array($pkCol, $queryCols)) {
+                        $queryCols[] = $pkCol;
+                    }
+                    $colsStr = "`" . implode("`, `", $queryCols) . "`";
+                } else {
+                    $colsStr = "*";
+                }
+                
+                try {
+                    $stmt = $pdo->query("SELECT $colsStr FROM `$t`");
+                    $buffer = [];
+                    $keys = [];
+                    $first = true;
+                    while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        if ($sqlMode === 'update') {
+                            $pkVal = $r[$pkCol] ?? null;
+                            if ($pkVal === null) continue;
+                            $sets = [];
+                            foreach ($r as $k => $v) {
+                                if ($k === $pkCol) continue;
+                                if ($selCols && is_array($selCols) && count($tablesToExport) === 1 && !in_array($k, $selCols)) continue;
+                                $sets[] = "`$k` = " . ($v === null ? "NULL" : $pdo->quote($v));
+                            }
+                            if (!empty($sets)) {
+                                echo "UPDATE `$t` SET " . implode(', ', $sets) . " WHERE `$pkCol` = " . $pdo->quote($pkVal) . ";\n";
+                            }
+                        } else {
+                            if ($first) {
+                                $keys = array_keys($r);
+                                $first = false;
+                            }
+                            $vals = [];
+                            foreach ($r as $v) {
+                                $vals[] = ($v === null) ? 'NULL' : $pdo->quote($v);
+                            }
+                            $buffer[] = "(" . implode(', ', $vals) . ")";
+                            if (count($buffer) >= 100) {
+                                echo "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES\n" . implode(",\n", $buffer) . ";\n";
+                                $buffer = [];
+                            }
+                        }
+                    }
+                    if (!empty($buffer) && $sqlMode !== 'update') {
+                        echo "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES\n" . implode(",\n", $buffer) . ";\n";
+                    }
+                } catch (Exception $e) {
+                    echo "-- Error exporting data for $t: " . $e->getMessage() . "\n";
                 }
                 echo "\n";
             }
@@ -7858,12 +7910,20 @@ var advancedFilters = null;
             html: `
                 <div style="text-align:left;">
                     <label>Format:</label>
-                    <select id="swal_exp_format" class="form-select" style="margin-bottom:10px;">
+                    <select id="swal_exp_format" class="form-select" style="margin-bottom:10px;" onchange="document.getElementById('sql_mode_container').style.display = this.value === 'sql' ? 'block' : 'none'">
                         <option value="sql" ${format==='sql'?'selected':''}>SQL</option>
                         <option value="json" ${format==='json'?'selected':''}>JSON</option>
                         <option value="csv" ${format==='csv'?'selected':''}>CSV</option>
                         <option value="xlsx" ${format==='xlsx'?'selected':''}>XLSX</option>
                     </select>
+                    
+                    <div id="sql_mode_container" style="display:${format==='sql'?'block':'none'}">
+                        <label>SQL Mode:</label>
+                        <select id="swal_sql_mode" class="form-select" style="margin-bottom:10px;">
+                            <option value="insert">INSERT (Default)</option>
+                            <option value="update">UPDATE</option>
+                        </select>
+                    </div>
                     
                     <label>Action:</label>
                     <select id="swal_exp_action" class="form-select">
@@ -7880,10 +7940,14 @@ var advancedFilters = null;
             if (res.isConfirmed) {
                 const selFormat = document.getElementById('swal_exp_format').value;
                 const selAction = document.getElementById('swal_exp_action').value;
+                const selSqlMode = document.getElementById('swal_sql_mode').value;
                 const checkedCols = Array.from(document.querySelectorAll('.exp-col-cb:checked')).map(cb => cb.value);
                 
                 const fd = new FormData(form);
                 fd.set('format', selFormat);
+                if (selFormat === 'sql') {
+                    fd.set('sql_mode', selSqlMode);
+                }
                 if (checkedCols.length > 0) {
                     fd.set('columns', JSON.stringify(checkedCols));
                 }
