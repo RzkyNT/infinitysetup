@@ -2313,6 +2313,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+
+
     // --- SQL QUERY ---
     if ($action === 'sql_query') {
         $sql = $_POST['query'] ?? '';
@@ -3049,40 +3051,80 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Content-Type: text/csv');
             header("Content-disposition: attachment; filename=\"$filename.csv\"");
             $out = fopen('php://output', 'w');
+            $colsJson = $_POST['columns'] ?? '';
+            $selCols = !empty($colsJson) ? json_decode($colsJson, true) : null;
             
+            $csvOut = fopen('php://temp', 'w+');
             // Support JSON, SQLite, and SQL modes
             if ($dbMode === 'json' && $exportTable) {
                 $data = $jsonDb->select($exportTable);
                 if (!empty($data)) {
-                    fputcsv($out, array_keys($data[0]));
+                    $keys = $selCols && is_array($selCols) ? $selCols : array_keys($data[0]);
+                    fputcsv($csvOut, $keys);
                     foreach ($data as $row) {
-                        fputcsv($out, $row);
+                        $csvRow = [];
+                        foreach ($keys as $k) $csvRow[] = $row[$k] ?? '';
+                        fputcsv($csvOut, $csvRow);
                     }
                 }
             } elseif ($exportTable) {
-                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $colsStr = ($selCols && is_array($selCols)) ? "`" . implode("`, `", $selCols) . "`" : "*";
+                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`");
                 $first = true;
+                $keys = [];
                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     if ($first) {
-                        fputcsv($out, array_keys($row));
+                        $keys = $selCols && is_array($selCols) ? $selCols : array_keys($row);
+                        fputcsv($csvOut, $keys);
                         $first = false;
                     }
-                    fputcsv($out, $row);
+                    $csvRow = [];
+                    foreach ($keys as $k) $csvRow[] = $row[$k] ?? '';
+                    fputcsv($csvOut, $csvRow);
                 }
             }
-            fclose($out);
+            
+            rewind($csvOut);
+            $csvData = stream_get_contents($csvOut);
+            fclose($csvOut);
+            
+            if (isset($_POST['copy_mode']) && $_POST['copy_mode'] === '1') {
+                header('Content-Type: text/plain');
+                echo $csvData;
+                exit;
+            }
+            echo $csvData;
         } elseif ($format === 'json') {
             header('Content-Type: application/json');
             header("Content-disposition: attachment; filename=\"$filename.json\"");
             
             $data = [];
+            $colsJson = $_POST['columns'] ?? '';
+            $selCols = !empty($colsJson) ? json_decode($colsJson, true) : null;
+            
             if ($dbMode === 'json' && $exportTable) {
-                $data = $jsonDb->select($exportTable);
+                $raw = $jsonDb->select($exportTable);
+                foreach($raw as $r) {
+                    if ($selCols && is_array($selCols)) {
+                        $n = []; foreach($selCols as $c) if (isset($r[$c])) $n[$c] = $r[$c];
+                        $data[] = $n;
+                    } else $data[] = $r;
+                }
             } elseif ($exportTable) {
-                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $colsStr = ($selCols && is_array($selCols)) ? "`" . implode("`, `", $selCols) . "`" : "*";
+                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`");
                 $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
-            echo json_encode($data, JSON_PRETTY_PRINT);
+            
+            $outputStr = json_encode($data, JSON_PRETTY_PRINT);
+            
+            if (isset($_POST['copy_mode']) && $_POST['copy_mode'] === '1') {
+                header('Content-Type: text/plain');
+                echo $outputStr;
+                exit;
+            }
+            
+            echo $outputStr;
         } elseif ($format === 'xlsx') {
             // Excel export - support all modes
             // Using simple XML format compatible with Excel
@@ -7790,36 +7832,116 @@ var advancedFilters = null;
 
     document.addEventListener('DOMContentLoaded', initSearchableSelects);
 
-    // --- XLSX Export Logic ---
+    // --- Custom Export Logic ---
     function handleExport(event) {
-        const formatSelect = document.getElementById('exportFormat');
-        if (formatSelect.value === 'xlsx') {
-            event.preventDefault(); // Prevent form submission
-            exportTableAsXLSX();
-            return false;
+        event.preventDefault();
+        const form = event.target;
+        const formatSelect = form.querySelector('select[name="format"]');
+        let format = formatSelect ? formatSelect.value : 'sql';
+        const tableInput = form.querySelector('input[name="table"]');
+        let table = tableInput ? tableInput.value : '';
+        
+        let colsHtml = '';
+        if (table && window._currentTableStructure) {
+            colsHtml = `<p style="margin-top:10px; margin-bottom:5px;">Select columns to export:</p>
+            <div style="max-height:150px; overflow-y:auto; border:1px solid #333; padding:10px; border-radius:4px; text-align:left; background:#111;">
+            <label style="display:block; margin-bottom:5px;"><input type="checkbox" id="exp_check_all" checked onchange="document.querySelectorAll('.exp-col-cb').forEach(cb=>cb.checked=this.checked)"> <strong>Select All</strong></label>
+            <hr style="border-color:#333; margin:5px 0;">`;
+            window._currentTableStructure.forEach(col => {
+                colsHtml += `<label style="display:block;"><input type="checkbox" class="exp-col-cb" value="${col.name}" checked> ${col.name}</label>`;
+            });
+            colsHtml += `</div>`;
         }
-        return true; // Allow other formats to submit normally
+
+        Swal.fire({
+            title: 'Export Options',
+            html: `
+                <div style="text-align:left;">
+                    <label>Format:</label>
+                    <select id="swal_exp_format" class="form-select" style="margin-bottom:10px;">
+                        <option value="sql" ${format==='sql'?'selected':''}>SQL</option>
+                        <option value="json" ${format==='json'?'selected':''}>JSON</option>
+                        <option value="csv" ${format==='csv'?'selected':''}>CSV</option>
+                        <option value="xlsx" ${format==='xlsx'?'selected':''}>XLSX</option>
+                    </select>
+                    
+                    <label>Action:</label>
+                    <select id="swal_exp_action" class="form-select">
+                        <option value="download">Download File</option>
+                        <option value="copy">Copy to Clipboard</option>
+                    </select>
+                    
+                    ${colsHtml}
+                </div>
+            `,
+            showCancelButton: true,
+            confirmButtonText: 'Execute',
+        }).then(async res => {
+            if (res.isConfirmed) {
+                const selFormat = document.getElementById('swal_exp_format').value;
+                const selAction = document.getElementById('swal_exp_action').value;
+                const checkedCols = Array.from(document.querySelectorAll('.exp-col-cb:checked')).map(cb => cb.value);
+                
+                const fd = new FormData(form);
+                fd.set('format', selFormat);
+                if (checkedCols.length > 0) {
+                    fd.set('columns', JSON.stringify(checkedCols));
+                }
+                
+                if (selFormat === 'xlsx' && selAction === 'download') {
+                    if (typeof exportTableAsXLSX === 'function') {
+                        exportTableAsXLSX(table, checkedCols);
+                    } else if (typeof window.exportTableAsXLSX === 'function') {
+                        window.exportTableAsXLSX(table, checkedCols);
+                    }
+                    return;
+                }
+                
+                if (selAction === 'copy') {
+                    fd.set('copy_mode', '1');
+                    Swal.fire({title:'Processing...', allowOutsideClick:false, didOpen:()=>{Swal.showLoading()}});
+                    try {
+                        const r = await fetch(location.href, {method:'POST', body:fd});
+                        const txt = await r.text();
+                        await navigator.clipboard.writeText(txt);
+                        Swal.fire('Success', 'Export content copied to clipboard!', 'success');
+                    } catch (err) {
+                        Swal.fire('Error', 'Failed to copy: ' + err.message, 'error');
+                    }
+                } else {
+                    const dlForm = document.createElement('form');
+                    dlForm.method = 'POST';
+                    dlForm.action = location.href;
+                    for (let [key, val] of fd.entries()) {
+                        const i = document.createElement('input');
+                        i.type = 'hidden';
+                        i.name = key;
+                        i.value = val;
+                        dlForm.appendChild(i);
+                    }
+                    document.body.appendChild(dlForm);
+                    dlForm.submit();
+                    document.body.removeChild(dlForm);
+                }
+            }
+        });
+        
+        return false;
     }
 
-        async function exportTableAsXLSX() {
+    window.exportTableAsXLSX = async function(table = '', checkedCols = []) {
+        const currentTable = table || "<?= htmlspecialchars($currentTable ?? '') ?>";
+        const filename = `${currentTable}_${new Date().toISOString().slice(0,10)}.xlsx`;
 
-            const currentTable = "<?= htmlspecialchars($currentTable ?? '') ?>";
-
-            const filename = `${currentTable}_${new Date().toISOString().slice(0,10)}.xlsx`;
-
-    
-
-            try {
-
-                // Fetch full data as JSON using the existing export action
-
-                const formData = new FormData();
-
-                formData.append('action', 'export');
-
-                formData.append('table', currentTable);
-
-                formData.append('format', 'json'); // Request JSON data from the server
+        try {
+            // Fetch full data as JSON using the existing export action
+            const formData = new FormData();
+            formData.append('action', 'export');
+            formData.append('table', currentTable);
+            formData.append('format', 'json'); // Request JSON data from the server
+            if (checkedCols && checkedCols.length > 0) {
+                formData.append('columns', JSON.stringify(checkedCols));
+            }
 
             const response = await fetch('?', {
                 method: 'POST',
@@ -9281,6 +9403,8 @@ var advancedFilters = null;
                                 document.getElementById('comp-sql').innerHTML = data.highlighted;
                                 document.getElementById('comp-summary').innerHTML = Object.entries(data.summary).map(([k,v]) => `<div class="scard"><div class="scard-val ${v>0?'v-green':''}">${v}</div><div class="scard-label">${k.replace(/([A-Z])/g,' $1')}</div></div>`).join('');
                                 document.getElementById('compare-results').style.display = 'block';
+                            } else {
+                                Swal.fire('Error', data.message || 'Unknown error', 'error');
                             }
                         } catch (e) {
                             Swal.fire('Error', e.message, 'error');
@@ -10043,8 +10167,10 @@ var advancedFilters = null;
                 </div>
                 <?php endif; ?>
                 
-            <?php if ($currentTable):
+                <?php if ($currentTable):
+                $tsJSON = json_encode(array_map(function($c) { return ['name' => $c['Field'], 'type' => $c['Type']]; }, $tableStructure ?? []));
                 ?>
+                <script>window._currentTableStructure = <?= $tsJSON ?>;</script>
                 <!-- TABLE VIEW -->
                 <div class="tabs">
                     <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure" class="tab <?=$view==='structure'?'active':''?>">Structure</a>
