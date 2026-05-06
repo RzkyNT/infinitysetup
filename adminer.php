@@ -993,6 +993,84 @@ function guess_fake_type($name, $dbType) {
     return 'default';
 }
 
+/**
+ * Smart table name guesser for convention-based FK
+ * Tries multiple variations and checks if table exists
+ */
+function guess_fk_table_name($columnName, $pdo, $tables = []) {
+    // Remove '_id' suffix
+    $baseName = substr($columnName, 0, -3);
+    
+    // Build list of possible table names
+    $candidates = [];
+    
+    // 1. Exact match (e.g., google_id -> google)
+    $candidates[] = $baseName;
+    
+    // 2. Plural form (e.g., user_id -> users)
+    $candidates[] = $baseName . 's';
+    
+    // 3. Handle irregular plurals
+    $irregularPlurals = [
+        'person' => 'people',
+        'child' => 'children',
+        'man' => 'men',
+        'woman' => 'women',
+        'tooth' => 'teeth',
+        'foot' => 'feet',
+        'mouse' => 'mice',
+        'goose' => 'geese',
+        'category' => 'categories',
+        'company' => 'companies',
+        'city' => 'cities',
+    ];
+    
+    if (isset($irregularPlurals[$baseName])) {
+        $candidates[] = $irregularPlurals[$baseName];
+    }
+    
+    // 4. Handle words ending in 'y' (e.g., category -> categories)
+    if (substr($baseName, -1) === 'y' && !in_array(substr($baseName, -2, 1), ['a', 'e', 'i', 'o', 'u'])) {
+        $candidates[] = substr($baseName, 0, -1) . 'ies';
+    }
+    
+    // 5. Handle words ending in 's', 'x', 'z', 'ch', 'sh' (e.g., box -> boxes)
+    if (preg_match('/(s|x|z|ch|sh)$/i', $baseName)) {
+        $candidates[] = $baseName . 'es';
+    }
+    
+    // Check if we have a tables array (from current session)
+    if (!empty($tables)) {
+        $tableNames = array_map(function($t) {
+            return strtolower($t['Name'] ?? $t['TABLE_NAME'] ?? '');
+        }, $tables);
+        
+        foreach ($candidates as $candidate) {
+            if (in_array(strtolower($candidate), $tableNames)) {
+                return $candidate;
+            }
+        }
+    }
+    
+    // If PDO available, check database directly
+    if ($pdo) {
+        try {
+            foreach ($candidates as $candidate) {
+                $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
+                $stmt->execute([$candidate]);
+                if ($stmt->fetch()) {
+                    return $candidate;
+                }
+            }
+        } catch (Exception $e) {
+            // Fallback to first candidate if query fails
+        }
+    }
+    
+    // Fallback: return first candidate (most likely)
+    return $candidates[0] ?? $baseName;
+}
+
 // Deprecated wrapper functions for compatibility if needed, but we use load_config directly now
 function load_db_config($path) { return load_config($path); }
 function save_db_config($path, $data) { return save_config($path, $data); }
@@ -3069,7 +3147,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } elseif ($exportTable) {
                 $colsStr = ($selCols && is_array($selCols)) ? "`" . implode("`, `", $selCols) . "`" : "*";
-                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`");
+                $whereSql = '';
+                if (!empty($_POST['export_where'])) {
+                    $whereSql = " WHERE " . $_POST['export_where'];
+                }
+                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`$whereSql");
                 $first = true;
                 $keys = [];
                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -3112,7 +3194,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } elseif ($exportTable) {
                 $colsStr = ($selCols && is_array($selCols)) ? "`" . implode("`, `", $selCols) . "`" : "*";
-                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`");
+                $whereSql = '';
+                if (!empty($_POST['export_where'])) {
+                    $whereSql = " WHERE " . $_POST['export_where'];
+                }
+                $stmt = $pdo->query("SELECT $colsStr FROM `$exportTable`$whereSql");
                 $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
             
@@ -3133,7 +3219,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($dbMode === 'json' && $exportTable) {
                 $data = $jsonDb->select($exportTable);
             } elseif ($exportTable) {
-                $stmt = $pdo->query("SELECT * FROM `$exportTable`");
+                $whereSql = '';
+                if (!empty($_POST['export_where'])) {
+                    $whereSql = " WHERE " . $_POST['export_where'];
+                }
+                $stmt = $pdo->query("SELECT * FROM `$exportTable`$whereSql");
                 $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
             
@@ -3246,7 +3336,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($sequence as $t) {
                 echo "-- --------------------------------------------------------\n";
                 
-                if (!$selCols && $sqlMode !== 'update') {
+                if (!$selCols && $sqlMode !== 'update' && $sqlMode !== 'upsert') {
                     echo "-- Structure for table `$t`\n";
                     echo "--\n\n";
                     echo "DROP TABLE IF EXISTS `$t`;\n";
@@ -3271,8 +3361,13 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $colsStr = "*";
                 }
                 
+                $whereSql = '';
+                if (!empty($_POST['export_where']) && count($tablesToExport) === 1) {
+                    $whereSql = " WHERE " . $_POST['export_where'];
+                }
+                
                 try {
-                    $stmt = $pdo->query("SELECT $colsStr FROM `$t`");
+                    $stmt = $pdo->query("SELECT $colsStr FROM `$t`$whereSql");
                     $buffer = [];
                     $keys = [];
                     $first = true;
@@ -3289,6 +3384,25 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             if (!empty($sets)) {
                                 echo "UPDATE `$t` SET " . implode(', ', $sets) . " WHERE `$pkCol` = " . $pdo->quote($pkVal) . ";\n";
                             }
+                        } elseif ($sqlMode === 'upsert') {
+                            if ($first) {
+                                $keys = array_keys($r);
+                                $first = false;
+                            }
+                            $vals = [];
+                            foreach ($r as $v) {
+                                $vals[] = ($v === null) ? 'NULL' : $pdo->quote($v);
+                            }
+                            
+                            $updates = [];
+                            foreach ($r as $k => $v) {
+                                if ($selCols && is_array($selCols) && count($tablesToExport) === 1 && !in_array($k, $selCols)) continue;
+                                $updates[] = "`$k` = " . ($v === null ? 'NULL' : $pdo->quote($v));
+                            }
+                            
+                            $updateStr = !empty($updates) ? implode(', ', $updates) : "`" . $keys[0] . "` = `" . $keys[0] . "`";
+                            
+                            echo "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ") ON DUPLICATE KEY UPDATE " . $updateStr . ";\n";
                         } else {
                             if ($first) {
                                 $keys = array_keys($r);
@@ -3305,7 +3419,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                             }
                         }
                     }
-                    if (!empty($buffer) && $sqlMode !== 'update') {
+                    if (!empty($buffer) && $sqlMode !== 'update' && $sqlMode !== 'upsert') {
                         echo "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES\n" . implode(",\n", $buffer) . ";\n";
                     }
                 } catch (Exception $e) {
@@ -3763,7 +3877,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     // --- BULK ROW OPERATIONS (DELETE & EXPORT) ---
-    elseif (in_array($action, ['bulk_delete', 'export_sql', 'export_csv', 'export_json'])) {
+    elseif (in_array($action, ['bulk_delete', 'bulk_edit', 'export_sql', 'export_csv', 'export_json'])) {
         $ids = $_POST['ids'] ?? [];
         $pk = $_POST['pk'] ?? null;
         
@@ -3779,6 +3893,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     redirect("?table=$table&view=data&msg=" . urlencode("$count rows deleted."));
                 } catch (Exception $e) {
                     $error = $e->getMessage();
+                }
+            } elseif ($action === 'bulk_edit') {
+                $bulkCol = $_POST['bulk_col'] ?? '';
+                $bulkVal = $_POST['bulk_val'] ?? '';
+                if ($bulkCol) {
+                    try {
+                        $sql = "UPDATE `$table` SET `$bulkCol` = ? WHERE `$pk` IN ($placeholders)";
+                        $stmt = $pdo->prepare($sql);
+                        $params = array_merge([$bulkVal === '' ? null : $bulkVal], $ids);
+                        $stmt->execute($params);
+                        $count = $stmt->rowCount();
+                        redirect("?table=$table&view=data&msg=" . urlencode("$count rows updated."));
+                    } catch (Exception $e) {
+                        $error = $e->getMessage();
+                    }
                 }
             } else {
                 // EXPORT SELECTED
@@ -4048,24 +4177,54 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     }
-    // --- SAVE GITHUB CONFIG ---
+    // --- SAVE GITHUB CONFIG (PER DATABASE) ---
     elseif ($action === 'save_github_config') {
         $cfg = load_config($configFile);
-        $cfg['github'] = [
+        $dbName = $_POST['db_name'] ?? '';
+        
+        // Initialize backup_configs if not exists
+        if (!isset($cfg['backup_configs'])) {
+            $cfg['backup_configs'] = [];
+        }
+        
+        // Initialize database config if not exists
+        if (!isset($cfg['backup_configs'][$dbName])) {
+            $cfg['backup_configs'][$dbName] = [];
+        }
+        
+        // Save GitHub config for this database
+        $cfg['backup_configs'][$dbName]['github'] = [
+            'enabled' => isset($_POST['gh_enabled']) && $_POST['gh_enabled'] === '1',
             'token' => $_POST['gh_token'] ?? '',
             'repo' => $_POST['gh_repo'] ?? '',
             'user' => $_POST['gh_user'] ?? '',
             'path' => $_POST['gh_path'] ?? 'backups',
             'auto' => $_POST['gh_auto'] ?? '',
-            'last_backup' => $cfg['github']['last_backup'] ?? 0
+            'last_backup' => $cfg['backup_configs'][$dbName]['github']['last_backup'] ?? 0
         ];
+        
         save_config($configFile, $cfg);
-        redirect("?msg=" . urlencode("GitHub settings saved."));
+        redirect("?msg=" . urlencode("GitHub settings saved for database: $dbName"));
     }
-    // --- SAVE TELEGRAM CONFIG ---
+    
+    // --- SAVE TELEGRAM CONFIG (PER DATABASE) ---
     elseif ($action === 'save_telegram_config') {
         $cfg = load_config($configFile);
-        $cfg['telegram'] = [
+        $dbName = $_POST['db_name'] ?? '';
+        
+        // Initialize backup_configs if not exists
+        if (!isset($cfg['backup_configs'])) {
+            $cfg['backup_configs'] = [];
+        }
+        
+        // Initialize database config if not exists
+        if (!isset($cfg['backup_configs'][$dbName])) {
+            $cfg['backup_configs'][$dbName] = [];
+        }
+        
+        // Save Telegram config for this database
+        $cfg['backup_configs'][$dbName]['telegram'] = [
+            'enabled' => isset($_POST['tg_enabled']) && $_POST['tg_enabled'] === '1',
             'token' => trim($_POST['tg_token'] ?? ''),
             'chat_id' => trim($_POST['tg_chat_id'] ?? ''),
             'base' => trim($_POST['tg_base'] ?? 'https://api.telegram.org'),
@@ -4073,21 +4232,33 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'auto' => $_POST['tg_auto'] ?? '',
             'use_zip' => isset($_POST['tg_zip']) && $_POST['tg_zip'] === '1' ? '1' : '0',
             'zip_password' => $_POST['tg_zip_password'] ?? '',
-            'last_backup' => $cfg['telegram']['last_backup'] ?? 0,
-            'last_health_report' => $cfg['telegram']['last_health_report'] ?? 0,
-            'history' => $cfg['telegram']['history'] ?? []
+            'last_backup' => $cfg['backup_configs'][$dbName]['telegram']['last_backup'] ?? 0,
+            'last_health_report' => $cfg['backup_configs'][$dbName]['telegram']['last_health_report'] ?? 0,
+            'history' => $cfg['backup_configs'][$dbName]['telegram']['history'] ?? []
         ];
+        
         save_config($configFile, $cfg);
-        redirect("?msg=" . urlencode("Telegram settings saved."));
+        redirect("?msg=" . urlencode("Telegram settings saved for database: $dbName"));
     }
     
     elseif ($action === 'push_telegram_backup') {
         @set_time_limit(180);
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
-        $cfg = load_config($configFile)['telegram'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['telegram'] ?? null;
+        
         if (!$cfg || empty($cfg['token']) || empty($cfg['chat_id'])) {
-            echo json_encode(['success' => false, 'message' => 'Telegram not configured (Token and Chat ID required)']);
+            echo json_encode(['success' => false, 'message' => 'Telegram not configured for this database (Token and Chat ID required)']);
             exit;
         }
 
@@ -4167,11 +4338,23 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $fileId = $resData['result']['document']['file_id'] ?? '';
                 
                 $config = load_config($configFile);
-                $config['telegram']['last_backup'] = time();
+                $dbName = $_SESSION['db_name'] ?? '';
                 
-                // Add to history
-                if (!isset($config['telegram']['history'])) $config['telegram']['history'] = [];
-                array_unshift($config['telegram']['history'], [
+                // Update last_backup for this database
+                if (!isset($config['backup_configs'][$dbName])) {
+                    $config['backup_configs'][$dbName] = [];
+                }
+                if (!isset($config['backup_configs'][$dbName]['telegram'])) {
+                    $config['backup_configs'][$dbName]['telegram'] = [];
+                }
+                
+                $config['backup_configs'][$dbName]['telegram']['last_backup'] = time();
+                
+                // Add to history for this database
+                if (!isset($config['backup_configs'][$dbName]['telegram']['history'])) {
+                    $config['backup_configs'][$dbName]['telegram']['history'] = [];
+                }
+                array_unshift($config['backup_configs'][$dbName]['telegram']['history'], [
                     'name' => $filename,
                     'date' => time(),
                     'file_id' => $fileId,
@@ -4180,7 +4363,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     'size' => strlen($sqlDump)
                 ]);
                 
-                $config['telegram']['history'] = array_slice($config['telegram']['history'], 0, 20);
+                $config['backup_configs'][$dbName]['telegram']['history'] = array_slice($config['backup_configs'][$dbName]['telegram']['history'], 0, 20);
                 save_config($configFile, $config);
                 echo json_encode(['success' => true, 'message' => 'Backup sent successfully']);
             } else {
@@ -4196,7 +4379,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $fileId = $_POST['file_id'] ?? '';
-        $cfg = load_config($configFile)['telegram'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['telegram'] ?? null;
         
         if (!$cfg || !$fileId) {
             echo json_encode(['success' => false, 'message' => 'Invalid request']);
@@ -4265,8 +4458,16 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Content-Type: application/json');
         $dateId = $_POST['date_id'] ?? '';
         $msgId = $_POST['message_id'] ?? '';
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
         $config = load_config($configFile);
-        $cfg = $config['telegram'] ?? null;
+        $cfg = $config['backup_configs'][$dbName]['telegram'] ?? null;
 
         if (!$cfg || !$dateId) {
             echo json_encode(['success' => false, 'message' => 'Invalid request']);
@@ -4279,12 +4480,15 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 @file_get_contents("https://api.telegram.org/bot{$cfg['token']}/deleteMessage?chat_id={$cfg['chat_id']}&message_id=$msgId");
             }
 
-            // 2. Remove from Local Index
-            if (isset($config['telegram']['history'])) {
-                $config['telegram']['history'] = array_filter($config['telegram']['history'], function($h) use ($dateId) {
-                    return (string)$h['date'] !== (string)$dateId;
-                });
-                $config['telegram']['history'] = array_values($config['telegram']['history']);
+            // 2. Remove from Local Index for this database
+            if (isset($config['backup_configs'][$dbName]['telegram']['history'])) {
+                $config['backup_configs'][$dbName]['telegram']['history'] = array_filter(
+                    $config['backup_configs'][$dbName]['telegram']['history'], 
+                    function($h) use ($dateId) {
+                        return (string)$h['date'] !== (string)$dateId;
+                    }
+                );
+                $config['backup_configs'][$dbName]['telegram']['history'] = array_values($config['backup_configs'][$dbName]['telegram']['history']);
                 save_config($configFile, $config);
             }
 
@@ -4358,9 +4562,20 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'push_github_backup') {
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
-        $cfg = load_config($configFile)['github'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
+        
         if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
-            echo json_encode(['success' => false, 'message' => 'GitHub not configured (Token, User, and Repo required)']);
+            echo json_encode(['success' => false, 'message' => 'GitHub not configured for this database (Token, User, and Repo required)']);
             exit;
         }
 
@@ -4413,12 +4628,20 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             curl_close($ch);
 
             if ($httpCode >= 200 && $httpCode < 300) {
-                // Update last backup time
-                if ($cfg) {
-                    $config = load_config($configFile);
-                    $config['github']['last_backup'] = time();
-                    save_config($configFile, $config);
+                // Update last backup time for this database
+                $config = load_config($configFile);
+                $dbName = $_SESSION['db_name'] ?? '';
+                
+                if (!isset($config['backup_configs'][$dbName])) {
+                    $config['backup_configs'][$dbName] = [];
                 }
+                if (!isset($config['backup_configs'][$dbName]['github'])) {
+                    $config['backup_configs'][$dbName]['github'] = [];
+                }
+                
+                $config['backup_configs'][$dbName]['github']['last_backup'] = time();
+                save_config($configFile, $config);
+                
                 echo json_encode(['success' => true, 'message' => 'Backup pushed to GitHub successfully']);
             } else {
                 $err = json_decode($response, true);
@@ -4433,7 +4656,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'get_github_backups') {
         while (ob_get_level()) ob_end_clean();
         header('Content-Type: application/json');
-        $cfg = load_config($configFile)['github'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode([]);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
+        
         if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
             echo json_encode([]);
             exit;
@@ -4474,7 +4708,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- RESTORE FROM GITHUB ---
     elseif ($action === 'restore_github_backup') {
         header('Content-Type: application/json');
-        $cfg = load_config($configFile)['github'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
         $url = $_POST['url'] ?? '';
         
         if (!$cfg || empty($cfg['token']) || !$url) {
@@ -4532,7 +4776,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'delete_github_backup') {
         while (ob_get_level()) ob_end_clean();
         header('Content-Type: application/json');
-        $cfg = load_config($configFile)['github'] ?? null;
+        
+        // Get current database name
+        $dbName = $_SESSION['db_name'] ?? '';
+        if (empty($dbName)) {
+            echo json_encode(['success' => false, 'message' => 'No database selected']);
+            exit;
+        }
+        
+        // Load config for this specific database
+        $allConfig = load_config($configFile);
+        $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
+        
         $path = $_POST['path'] ?? '';
         $sha = $_POST['sha'] ?? '';
         
@@ -5333,7 +5588,7 @@ $totalDataCount = 0;
 /**
  * Reusable function to render a single data row
  */
-function render_data_row($row, $currentTable, $primaryKey, $colTypes) {
+function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [], $pdo = null, $tables = []) {
     ob_start();
     ?>
     <tr>
@@ -5424,10 +5679,106 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes) {
                 }
             }
             
-            // 3. Foreign Key Logic
-            if (!$isMediaColumn && $val !== null && substr($key, -3) === '_id') {
-                $targetTable = substr($key, 0, -3) . 's';
-                $displayVal = "<a href='?table=$targetTable&view=data&search_col=id&search_op==&search_val=" . urlencode($val) . "' style='color:var(--accent); text-decoration:underline;'>$displayVal</a>";
+            // 3. Foreign Key Logic with Enhanced Preview
+            if (!$isMediaColumn && $val !== null) {
+                if (isset($fkMap[$key])) {
+                    $refInfo = $fkMap[$key];
+                    $label = $refInfo['data'][$val] ?? null;
+                    
+                    // Build FK preview attributes
+                    $fkAttrs = sprintf(
+                        'data-fk-table="%s" data-fk-col="%s" data-fk-val="%s" data-fk-label="%s"',
+                        htmlspecialchars($refInfo['table']),
+                        htmlspecialchars($refInfo['col']),
+                        htmlspecialchars($val),
+                        htmlspecialchars($label ?? '')
+                    );
+                    
+                    $labelDisplay = '';
+                    if ($label !== null && (string)$label !== (string)$val) {
+                        $labelDisplay = ' <small class="fk-label" style="color:#94a3b8;">(' . htmlspecialchars($label) . ')</small>';
+                    }
+                    
+                    // Add from_fk parameter for breadcrumb trail
+                    $navUrl = sprintf(
+                        '?table=%s&view=data&search_col=%s&search_op=%s&search_val=%s&from_fk=%s',
+                        htmlspecialchars($refInfo['table']),
+                        htmlspecialchars($refInfo['col']),
+                        urlencode('='),
+                        urlencode($val),
+                        urlencode($currentTable)
+                    );
+                    
+                    $displayVal = sprintf(
+                        '<div class="fk-cell-wrapper" style="display:inline-flex; align-items:center; gap:6px;">
+                            <span class="fk-indicator" style="display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); border-radius:3px; font-size:10px; color:#6366f1;" title="Foreign Key">
+                                <i class="fas fa-link"></i>
+                            </span>
+                            <a href="%s" 
+                               class="fk-link" 
+                               %s
+                               style="color:var(--accent); text-decoration:none; border-bottom:1px dashed var(--accent); cursor:pointer;" 
+                               onmouseenter="showFKTooltip(this, event)" 
+                               onmouseleave="hideFKTooltip()" 
+                               onclick="event.preventDefault(); showFKModal(this);"
+                               title="Click to preview, Ctrl+Click to navigate">
+                                %s%s
+                            </a>
+                            <a href="%s" 
+                               style="color:#94a3b8; font-size:0.85em; opacity:0.6; text-decoration:none;" 
+                               title="Open in new view">
+                                <i class="fas fa-external-link-alt"></i>
+                            </a>
+                        </div>',
+                        $navUrl,
+                        $fkAttrs,
+                        htmlspecialchars($val),
+                        $labelDisplay,
+                        $navUrl
+                    );
+                } elseif (substr($key, -3) === '_id') {
+                    // Convention-based FK detection with smart table name guessing
+                    $targetTable = guess_fk_table_name($key, $pdo, $tables);
+                    
+                    // Verify table exists before creating link
+                    $tableExists = false;
+                    if ($pdo) {
+                        try {
+                            $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
+                            $stmt->execute([$targetTable]);
+                            $tableExists = (bool)$stmt->fetch();
+                        } catch (Exception $e) {
+                            $tableExists = false;
+                        }
+                    }
+                    
+                    if ($tableExists) {
+                        $navUrl = sprintf(
+                            '?table=%s&view=data&search_col=id&search_op==&search_val=%s&from_fk=%s',
+                            htmlspecialchars($targetTable),
+                            urlencode($val),
+                            urlencode($currentTable)
+                        );
+                        
+                        $displayVal = sprintf(
+                            '<div class="fk-cell-wrapper" style="display:inline-flex; align-items:center; gap:6px;">
+                                <span class="fk-indicator-convention" style="display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; background:rgba(168,85,247,0.15); border:1px solid rgba(168,85,247,0.3); border-radius:3px; font-size:10px; color:#a855f7;" title="Convention-based FK → %s">
+                                    <i class="fas fa-link"></i>
+                                </span>
+                                <a href="%s" 
+                                   style="color:#a855f7; text-decoration:none; border-bottom:1px dashed #a855f7;" 
+                                   title="View Related Record in %s (Convention)">
+                                    %s
+                                </a>
+                            </div>',
+                            htmlspecialchars($targetTable),
+                            $navUrl,
+                            htmlspecialchars($targetTable),
+                            htmlspecialchars($displayVal)
+                        );
+                    }
+                    // If table doesn't exist, just show the value without FK link
+                }
             }
             ?>
             <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>>
@@ -5519,6 +5870,35 @@ if ($is_logged_in && $currentTable) {
                 if ($searchColumn && in_array($searchColumn, $tableColumns)) {
                     $sql .= " WHERE `$searchColumn` $op ?";
                     $params[] = $val;
+                } else {
+                    $where = [];
+                    foreach ($tableColumns as $col) {
+                        $where[] = "`$col` LIKE ?";
+                        $params[] = "%$searchVal%";
+                    }
+                    if ($where) $sql .= " WHERE (" . implode(" OR ", $where) . ")";
+                }
+            }
+            
+            // Advanced Filters
+            $advancedFiltersJson = $_GET['advanced_filters'] ?? '[]';
+            $advancedFilters = json_decode($advancedFiltersJson, true) ?: [];
+            if (is_array($advancedFilters) && count($advancedFilters) > 0) {
+                $afWhere = [];
+                foreach ($advancedFilters as $af) {
+                    if (!empty($af['col']) && in_array($af['col'], $tableColumns) && !empty($af['op']) && isset($af['val'])) {
+                        $aop = in_array($af['op'], ['=', '!=', '>', '<', '>=', '<=', 'LIKE']) ? $af['op'] : '=';
+                        $aval = $aop === 'LIKE' ? "%{$af['val']}%" : $af['val'];
+                        $afWhere[] = "`{$af['col']}` $aop ?";
+                        $params[] = $aval;
+                    }
+                }
+                if (!empty($afWhere)) {
+                    if (strpos($sql, 'WHERE') !== false) {
+                        $sql .= " AND " . implode(" AND ", $afWhere);
+                    } else {
+                        $sql .= " WHERE " . implode(" AND ", $afWhere);
+                    }
                 }
             }
             
@@ -5569,7 +5949,29 @@ if ($is_logged_in && $currentTable) {
                         $where[] = "`$col` LIKE ?";
                         $params[] = "%$searchVal%";
                     }
-                    if ($where) $sql .= " WHERE " . implode(" OR ", $where);
+                    if ($where) $sql .= " WHERE (" . implode(" OR ", $where) . ")";
+                }
+            }
+            
+            // Advanced Filters
+            $advancedFiltersJson = $_GET['advanced_filters'] ?? '[]';
+            $advancedFilters = json_decode($advancedFiltersJson, true) ?: [];
+            if (is_array($advancedFilters) && count($advancedFilters) > 0) {
+                $afWhere = [];
+                foreach ($advancedFilters as $af) {
+                    if (!empty($af['col']) && in_array($af['col'], $tableColumns) && !empty($af['op']) && isset($af['val'])) {
+                        $aop = in_array($af['op'], ['=', '!=', '>', '<', '>=', '<=', 'LIKE']) ? $af['op'] : '=';
+                        $aval = $aop === 'LIKE' ? "%{$af['val']}%" : $af['val'];
+                        $afWhere[] = "`{$af['col']}` $aop ?";
+                        $params[] = $aval;
+                    }
+                }
+                if (!empty($afWhere)) {
+                    if (strpos($sql, 'WHERE') !== false) {
+                        $sql .= " AND " . implode(" AND ", $afWhere);
+                    } else {
+                        $sql .= " WHERE " . implode(" AND ", $afWhere);
+                    }
                 }
             }
             
@@ -5607,6 +6009,153 @@ if (!empty($tableStructure)) {
     }
 }
 
+// --- Foreign Key Auto-Lookup Pre-fetch ---
+$fkMap = [];
+if (($_SESSION['db_mode'] ?? 'sql') === 'sql' && $currentTable && !empty($tableData)) {
+    try {
+        $stmt = $pdo->prepare("SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                               FROM information_schema.KEY_COLUMN_USAGE 
+                               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL");
+        $stmt->execute([$currentTable]);
+        while ($fk = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $colName = $fk['COLUMN_NAME'];
+            $refTable = $fk['REFERENCED_TABLE_NAME'];
+            $refCol = $fk['REFERENCED_COLUMN_NAME'];
+            
+            $refVals = array_unique(array_filter(array_column($tableData, $colName)));
+            if (!empty($refVals)) {
+                $colStmt = $pdo->query("SHOW COLUMNS FROM `$refTable`");
+                $refCols = $colStmt->fetchAll(PDO::FETCH_ASSOC);
+                $labelCol = $refCol;
+                foreach ($refCols as $rc) {
+                    $cType = strtolower($rc['Type']);
+                    $cName = strtolower($rc['Field']);
+                    if (strpos($cType, 'varchar') !== false || strpos($cType, 'text') !== false || $cName === 'name' || $cName === 'title' || $cName === 'username') {
+                        $labelCol = $rc['Field'];
+                        if ($cName === 'name' || $cName === 'title') break;
+                    }
+                }
+                
+                $inStr = implode(',', array_map([$pdo, 'quote'], $refVals));
+                $fkStmt = $pdo->query("SELECT `$refCol`, `$labelCol` FROM `$refTable` WHERE `$refCol` IN ($inStr)");
+                $lookup = [];
+                while ($r = $fkStmt->fetch(PDO::FETCH_ASSOC)) {
+                    $lookup[$r[$refCol]] = $r[$labelCol];
+                }
+                $fkMap[$colName] = [
+                    'table' => $refTable,
+                    'col' => $refCol,
+                    'labelCol' => $labelCol,
+                    'data' => $lookup
+                ];
+            }
+        }
+    } catch (Exception $e) {}
+}
+
+// Handle AJAX FK Preview Request
+if ($action === 'fetch_fk_preview') {
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/json');
+    
+    $refTable = $_GET['ref_table'] ?? '';
+    $refCol = $_GET['ref_col'] ?? '';
+    $refVal = $_GET['ref_val'] ?? '';
+    
+    if (!$refTable || !$refCol || !$refVal) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        exit;
+    }
+    
+    try {
+        if (($_SESSION['db_mode'] ?? 'sql') === 'sql' && isset($pdo)) {
+            // Get all columns from referenced table
+            $colStmt = $pdo->query("SHOW COLUMNS FROM `$refTable`");
+            $columns = $colStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            // Fetch the record
+            $stmt = $pdo->prepare("SELECT * FROM `$refTable` WHERE `$refCol` = ? LIMIT 1");
+            $stmt->execute([$refVal]);
+            $record = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($record) {
+                // Format data for display
+                $formattedData = [];
+                foreach ($record as $col => $val) {
+                    $formattedData[] = [
+                        'column' => $col,
+                        'value' => $val,
+                        'type' => array_reduce($columns, function($carry, $c) use ($col) {
+                            return $c['Field'] === $col ? $c['Type'] : $carry;
+                        }, 'unknown')
+                    ];
+                }
+                
+                echo json_encode([
+                    'success' => true,
+                    'data' => $formattedData,
+                    'table' => $refTable,
+                    'primaryKey' => $refCol,
+                    'primaryValue' => $refVal
+                ]);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Record not found']);
+            }
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Not supported in current mode']);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// Handle AJAX FK Inline Edit Request
+if ($action === 'update_fk_field') {
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/json');
+    
+    $refTable = $_POST['ref_table'] ?? '';
+    $refCol = $_POST['ref_col'] ?? '';
+    $refVal = $_POST['ref_val'] ?? '';
+    $fieldName = $_POST['field_name'] ?? '';
+    $fieldValue = $_POST['field_value'] ?? '';
+    
+    if (!$refTable || !$refCol || !$refVal || !$fieldName) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        exit;
+    }
+    
+    // Check write permission
+    if (!has_permission('adminer', 'write')) {
+        echo json_encode(['success' => false, 'error' => 'No write permission']);
+        exit;
+    }
+    
+    try {
+        if (($_SESSION['db_mode'] ?? 'sql') === 'sql' && isset($pdo)) {
+            // Update the field
+            $stmt = $pdo->prepare("UPDATE `$refTable` SET `$fieldName` = ? WHERE `$refCol` = ?");
+            $result = $stmt->execute([$fieldValue, $refVal]);
+            
+            if ($result) {
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Field updated successfully',
+                    'newValue' => $fieldValue
+                ]);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'Update failed']);
+            }
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Not supported in current mode']);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
+
 // Handle AJAX Data Fetching (Load More)
 if ($action === 'fetch_data') {
     while (ob_get_level()) ob_end_clean();
@@ -5614,7 +6163,7 @@ if ($action === 'fetch_data') {
     
     $html = '';
     foreach ($tableData as $row) {
-        $html .= render_data_row($row, $currentTable, $primaryKey, $colTypesMap ?? []);
+        $html .= render_data_row($row, $currentTable, $primaryKey, $colTypesMap ?? [], $fkMap, $pdo ?? null, $tables ?? []);
     }
 
     echo json_encode([
@@ -7778,6 +8327,562 @@ var advancedFilters = null;
         });
     }
 
+    // ===== FOREIGN KEY PREVIEW SYSTEM =====
+    let fkTooltip = null;
+    let fkTooltipTimeout = null;
+
+    function showFKTooltip(element, event) {
+        clearTimeout(fkTooltipTimeout);
+        
+        fkTooltipTimeout = setTimeout(() => {
+            const table = element.getAttribute('data-fk-table');
+            const col = element.getAttribute('data-fk-col');
+            const val = element.getAttribute('data-fk-val');
+            const label = element.getAttribute('data-fk-label');
+            
+            if (!table || !col || !val) return;
+            
+            // Create tooltip if doesn't exist
+            if (!fkTooltip) {
+                fkTooltip = document.createElement('div');
+                fkTooltip.id = 'fk-tooltip';
+                fkTooltip.style.cssText = `
+                    position: fixed;
+                    background: #1a1a1a;
+                    border: 1px solid #333;
+                    border-radius: 8px;
+                    padding: 12px 16px;
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+                    z-index: 10000;
+                    max-width: 350px;
+                    font-size: 0.85rem;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 0.2s;
+                `;
+                document.body.appendChild(fkTooltip);
+            }
+            
+            // Show loading state
+            fkTooltip.innerHTML = `
+                <div style="display:flex; align-items:center; gap:8px; color:#94a3b8;">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <span>Loading preview...</span>
+                </div>
+            `;
+            
+            // Position tooltip
+            const rect = element.getBoundingClientRect();
+            fkTooltip.style.left = (rect.left + window.scrollX) + 'px';
+            fkTooltip.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+            fkTooltip.style.opacity = '1';
+            
+            // Fetch FK data
+            fetch(`?action=fetch_fk_preview&ref_table=${encodeURIComponent(table)}&ref_col=${encodeURIComponent(col)}&ref_val=${encodeURIComponent(val)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.data) {
+                        const previewFields = data.data.slice(0, 5); // Show first 5 fields
+                        const hasMore = data.data.length > 5;
+                        
+                        // Detect media fields
+                        const mediaFields = data.data.filter(field => {
+                            if (!field.value || field.value === null) return false;
+                            const colName = field.column.toLowerCase();
+                            const value = String(field.value);
+                            
+                            // Check if it's an image/video URL or base64
+                            const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(value) ||
+                                          /^data:image\//i.test(value) ||
+                                          /(image|img|photo|picture|avatar|thumbnail|icon|logo|banner)/i.test(colName);
+                            
+                            const isVideo = /\.(mp4|webm|ogg|mov|avi)$/i.test(value) ||
+                                          /(video|movie|media)/i.test(colName);
+                            
+                            return isImage || isVideo;
+                        });
+                        
+                        let html = `
+                            <div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #333;">
+                                <div style="display:flex; align-items:center; gap:6px; color:#6366f1; font-weight:600; font-size:0.9rem;">
+                                    <i class="fas fa-table"></i>
+                                    <span>${table}</span>
+                                </div>
+                            </div>
+                        `;
+                        
+                        // Show media preview if found
+                        if (mediaFields.length > 0) {
+                            html += `<div style="margin-bottom:10px; padding:8px; background:rgba(99,102,241,0.05); border-radius:6px;">`;
+                            
+                            mediaFields.forEach(field => {
+                                const value = String(field.value);
+                                const colName = field.column.toLowerCase();
+                                
+                                // Determine if image or video
+                                const isVideo = /\.(mp4|webm|ogg|mov|avi)$/i.test(value) || /(video|movie)/i.test(colName);
+                                
+                                if (isVideo) {
+                                    // Video preview
+                                    const videoUrl = /^https?:\/\//i.test(value) ? value : (value.startsWith('/') ? value : '/' + value);
+                                    html += `
+                                        <div style="margin-bottom:6px;">
+                                            <div style="font-size:0.75rem; color:#94a3b8; margin-bottom:4px;">${field.column}</div>
+                                            <div style="position:relative; width:100%; height:120px; background:#0a0a0a; border-radius:6px; overflow:hidden;">
+                                                <video style="width:100%; height:100%; object-fit:cover;" muted>
+                                                    <source src="${videoUrl}">
+                                                </video>
+                                                <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#fff; font-size:2rem; opacity:0.7;">
+                                                    <i class="fas fa-play-circle"></i>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                } else {
+                                    // Image preview
+                                    let imgUrl = value;
+                                    if (!/^data:image\//i.test(value) && !/^https?:\/\//i.test(value)) {
+                                        imgUrl = value.startsWith('/') ? value : '/' + value;
+                                    }
+                                    
+                                    html += `
+                                        <div style="margin-bottom:6px;">
+                                            <div style="font-size:0.75rem; color:#94a3b8; margin-bottom:4px;">${field.column}</div>
+                                            <div style="position:relative; width:100%; height:120px; background:#0a0a0a; border-radius:6px; overflow:hidden;">
+                                                <img src="${imgUrl}" 
+                                                     style="width:100%; height:100%; object-fit:cover;" 
+                                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                                     loading="lazy">
+                                                <div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.8rem; text-align:center; padding:10px;">
+                                                    <div>
+                                                        <i class="fas fa-image" style="font-size:1.5rem; margin-bottom:5px; display:block;"></i>
+                                                        Image not available
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }
+                            });
+                            
+                            html += `</div>`;
+                        }
+                        
+                        // Show text fields
+                        html += `<div style="display:flex; flex-direction:column; gap:6px;">`;
+                        
+                        previewFields.forEach(field => {
+                            // Skip media fields (already shown above)
+                            const colName = field.column.toLowerCase();
+                            const value = String(field.value || '');
+                            const isMediaField = mediaFields.some(mf => mf.column === field.column);
+                            
+                            if (!isMediaField) {
+                                const displayValue = field.value === null ? '<span style="color:#666;">NULL</span>' : 
+                                                     (value.length > 50 ? value.substring(0, 50) + '...' : value);
+                                html += `
+                                    <div style="display:flex; justify-content:space-between; gap:12px;">
+                                        <span style="color:#94a3b8; font-weight:500;">${field.column}:</span>
+                                        <span style="color:#e2e8f0; text-align:right; word-break:break-word;">${displayValue}</span>
+                                    </div>
+                                `;
+                            }
+                        });
+                        
+                        if (hasMore) {
+                            html += `<div style="margin-top:4px; color:#6366f1; font-size:0.8rem; text-align:center;">+${data.data.length - 5} more fields</div>`;
+                        }
+                        
+                        html += `
+                            </div>
+                            <div style="margin-top:10px; padding-top:8px; border-top:1px solid #333; color:#94a3b8; font-size:0.75rem; text-align:center;">
+                                Click to view full details
+                            </div>
+                        `;
+                        
+                        fkTooltip.innerHTML = html;
+                    } else {
+                        fkTooltip.innerHTML = `
+                            <div style="color:#f87171;">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                Failed to load preview
+                            </div>
+                        `;
+                    }
+                })
+                .catch(err => {
+                    fkTooltip.innerHTML = `
+                        <div style="color:#f87171;">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            Error loading preview
+                        </div>
+                    `;
+                });
+        }, 300); // 300ms delay before showing tooltip
+    }
+
+    function hideFKTooltip() {
+        clearTimeout(fkTooltipTimeout);
+        if (fkTooltip) {
+            fkTooltip.style.opacity = '0';
+            setTimeout(() => {
+                if (fkTooltip && fkTooltip.style.opacity === '0') {
+                    fkTooltip.remove();
+                    fkTooltip = null;
+                }
+            }, 200);
+        }
+    }
+
+    function showFKModal(element) {
+        const table = element.getAttribute('data-fk-table');
+        const col = element.getAttribute('data-fk-col');
+        const val = element.getAttribute('data-fk-val');
+        const label = element.getAttribute('data-fk-label');
+        
+        if (!table || !col || !val) return;
+        
+        // Show loading modal
+        Swal.fire({
+            title: '<i class="fas fa-spinner fa-spin"></i> Loading...',
+            text: 'Fetching foreign key details',
+            background: 'var(--bg-card)',
+            color: 'var(--text-primary)',
+            showConfirmButton: false,
+            allowOutsideClick: false
+        });
+        
+        // Fetch full FK data
+        fetch(`?action=fetch_fk_preview&ref_table=${encodeURIComponent(table)}&ref_col=${encodeURIComponent(col)}&ref_val=${encodeURIComponent(val)}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.success && data.data) {
+                    let html = `
+                        <div style="text-align:left; max-height:500px; overflow-y:auto;">
+                            <div style="margin-bottom:16px; padding:12px; background:rgba(99,102,241,0.1); border:1px solid rgba(99,102,241,0.3); border-radius:8px;">
+                                <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                                    <i class="fas fa-table" style="color:#6366f1;"></i>
+                                    <span style="font-weight:600; color:#6366f1;">Table: ${table}</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:8px; color:#94a3b8; font-size:0.9rem;">
+                                    <i class="fas fa-key"></i>
+                                    <span>Primary Key: ${col} = ${val}</span>
+                                </div>
+                            </div>
+                            
+                            <table style="width:100%; border-collapse:collapse;">
+                                <thead>
+                                    <tr style="background:#1a1a1a; border-bottom:2px solid #333;">
+                                        <th style="padding:10px; text-align:left; color:#94a3b8; font-weight:600;">Column</th>
+                                        <th style="padding:10px; text-align:left; color:#94a3b8; font-weight:600;">Value</th>
+                                        <th style="padding:10px; text-align:left; color:#94a3b8; font-weight:600;">Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    data.data.forEach((field, idx) => {
+                        const bgColor = idx % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent';
+                        const colName = field.column.toLowerCase();
+                        const value = String(field.value || '');
+                        
+                        // Detect if this is a media field
+                        const isImage = /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(value) ||
+                                      /^data:image\//i.test(value) ||
+                                      /(image|img|photo|picture|avatar|thumbnail|icon|logo|banner)/i.test(colName);
+                        
+                        const isVideo = /\.(mp4|webm|ogg|mov|avi)$/i.test(value) ||
+                                      /(video|movie|media)/i.test(colName);
+                        
+                        let displayValue = field.value === null ? '<span style="color:#666; font-style:italic;">NULL</span>' : value;
+                        
+                        // Determine if field is editable (not primary key, not media)
+                        const isPrimaryKey = field.column === col;
+                        const isEditable = !isPrimaryKey && !isImage && !isVideo;
+                        
+                        // Create media preview if applicable
+                        if (field.value && (isImage || isVideo)) {
+                            if (isVideo) {
+                                // Video preview
+                                const videoUrl = /^https?:\/\//i.test(value) ? value : (value.startsWith('/') ? value : '/' + value);
+                                displayValue = `
+                                    <div style="display:flex; flex-direction:column; gap:8px;">
+                                        <div style="position:relative; width:200px; height:120px; background:#0a0a0a; border-radius:6px; overflow:hidden; cursor:pointer;" onclick="showVideoModal('${videoUrl}')">
+                                            <video style="width:100%; height:100%; object-fit:cover;" muted>
+                                                <source src="${videoUrl}">
+                                            </video>
+                                            <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#fff; font-size:2rem; opacity:0.8; pointer-events:none;">
+                                                <i class="fas fa-play-circle"></i>
+                                            </div>
+                                        </div>
+                                        <div class="fk-editable-field" 
+                                             data-table="${table}" 
+                                             data-pk-col="${col}" 
+                                             data-pk-val="${val}" 
+                                             data-field="${field.column}" 
+                                             data-value="${value.replace(/"/g, '&quot;')}"
+                                             ondblclick="editFKField(this)"
+                                             style="font-size:0.75rem; color:#94a3b8; word-break:break-all; cursor:text; padding:4px; border-radius:3px; transition:background 0.2s;"
+                                             onmouseover="this.style.background='rgba(99,102,241,0.1)'"
+                                             onmouseout="this.style.background='transparent'"
+                                             title="Double-click to edit">
+                                            ${value.length > 60 ? value.substring(0, 60) + '...' : value}
+                                        </div>
+                                    </div>
+                                `;
+                            } else {
+                                // Image preview
+                                let imgUrl = value;
+                                if (!/^data:image\//i.test(value) && !/^https?:\/\//i.test(value)) {
+                                    imgUrl = value.startsWith('/') ? value : '/' + value;
+                                }
+                                
+                                displayValue = `
+                                    <div style="display:flex; flex-direction:column; gap:8px;">
+                                        <div style="position:relative; width:200px; height:120px; background:#0a0a0a; border-radius:6px; overflow:hidden; cursor:pointer;" onclick="showImageModal('${imgUrl}')">
+                                            <img src="${imgUrl}" 
+                                                 style="width:100%; height:100%; object-fit:cover;" 
+                                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                                 loading="lazy">
+                                            <div style="display:none; width:100%; height:100%; align-items:center; justify-content:center; color:#666; font-size:0.8rem; text-align:center; padding:10px; position:absolute; top:0; left:0;">
+                                                <div>
+                                                    <i class="fas fa-image" style="font-size:1.5rem; margin-bottom:5px; display:block;"></i>
+                                                    Image not available
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="fk-editable-field" 
+                                             data-table="${table}" 
+                                             data-pk-col="${col}" 
+                                             data-pk-val="${val}" 
+                                             data-field="${field.column}" 
+                                             data-value="${value.replace(/"/g, '&quot;')}"
+                                             ondblclick="editFKField(this)"
+                                             style="font-size:0.75rem; color:#94a3b8; word-break:break-all; cursor:text; padding:4px; border-radius:3px; transition:background 0.2s;"
+                                             onmouseover="this.style.background='rgba(99,102,241,0.1)'"
+                                             onmouseout="this.style.background='transparent'"
+                                             title="Double-click to edit">
+                                            ${value.length > 60 ? value.substring(0, 60) + '...' : value}
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                        } else if (isEditable) {
+                            // Make text fields editable
+                            const escapedValue = String(field.value || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                            const displayText = typeof field.value === 'string' && field.value.length > 100 ? 
+                                              field.value.substring(0, 100) + '...' : 
+                                              (field.value === null ? 'NULL' : field.value);
+                            
+                            displayValue = `
+                                <div class="fk-editable-field" 
+                                     data-table="${table}" 
+                                     data-pk-col="${col}" 
+                                     data-pk-val="${val}" 
+                                     data-field="${field.column}" 
+                                     data-value="${escapedValue}"
+                                     ondblclick="editFKField(this)"
+                                     style="cursor:text; padding:6px; border-radius:4px; transition:background 0.2s; min-height:24px;"
+                                     onmouseover="this.style.background='rgba(99,102,241,0.1)'; this.style.outline='1px dashed rgba(99,102,241,0.3)'"
+                                     onmouseout="this.style.background='transparent'; this.style.outline='none'"
+                                     title="Double-click to edit">
+                                    ${displayText}
+                                </div>
+                            `;
+                        } else if (typeof field.value === 'string' && field.value.length > 100) {
+                            displayValue = `<span title="${field.value}">${field.value.substring(0, 100)}...</span>`;
+                        }
+                        
+                        html += `
+                            <tr style="background:${bgColor}; border-bottom:1px solid #222;">
+                                <td style="padding:10px; color:#e2e8f0; font-weight:500; vertical-align:top;">${field.column}</td>
+                                <td style="padding:10px; color:#cbd5e1; word-break:break-word; vertical-align:top;">${displayValue}</td>
+                                <td style="padding:10px; color:#94a3b8; font-size:0.85rem; font-family:monospace; vertical-align:top;">${field.type}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += `
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    
+                    Swal.fire({
+                        title: `<div style="display:flex; align-items:center; gap:10px; justify-content:center;">
+                                    <i class="fas fa-link"></i>
+                                    <span>Foreign Key Preview</span>
+                                </div>`,
+                        html: html,
+                        width: '800px',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        showCloseButton: true,
+                        showCancelButton: true,
+                        confirmButtonText: '<i class="fas fa-external-link-alt"></i> Open Table',
+                        cancelButtonText: '<i class="fas fa-times"></i> Close',
+                        customClass: {
+                            popup: 'dark-modal',
+                            confirmButton: 'btn btn-primary',
+                            cancelButton: 'btn btn-secondary'
+                        }
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            window.location.href = `?table=${encodeURIComponent(table)}&view=data&search_col=${encodeURIComponent(col)}&search_op=%3D&search_val=${encodeURIComponent(val)}`;
+                        }
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Error',
+                        text: data.error || 'Failed to load foreign key details',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)'
+                    });
+                }
+            })
+            .catch(err => {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to fetch foreign key details',
+                    background: 'var(--bg-card)',
+                    color: 'var(--text-primary)'
+                });
+            });
+    }
+    // ===== END FOREIGN KEY PREVIEW SYSTEM =====
+
+    // ===== FK INLINE EDIT SYSTEM =====
+    function editFKField(element) {
+        const table = element.getAttribute('data-table');
+        const pkCol = element.getAttribute('data-pk-col');
+        const pkVal = element.getAttribute('data-pk-val');
+        const fieldName = element.getAttribute('data-field');
+        const currentValue = element.getAttribute('data-value');
+        
+        // Create input element
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = currentValue;
+        input.style.cssText = `
+            width: 100%;
+            padding: 6px;
+            background: #0a0a0a;
+            border: 2px solid #6366f1;
+            border-radius: 4px;
+            color: #e2e8f0;
+            font-size: 0.9rem;
+            outline: none;
+        `;
+        
+        // Store original content
+        const originalContent = element.innerHTML;
+        
+        // Replace content with input
+        element.innerHTML = '';
+        element.appendChild(input);
+        input.focus();
+        input.select();
+        
+        // Save on Enter
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                saveFKField(element, input.value, table, pkCol, pkVal, fieldName, originalContent);
+            } else if (e.key === 'Escape') {
+                // Cancel edit
+                element.innerHTML = originalContent;
+            }
+        });
+        
+        // Save on blur
+        input.addEventListener('blur', function() {
+            setTimeout(() => {
+                if (element.contains(input)) {
+                    saveFKField(element, input.value, table, pkCol, pkVal, fieldName, originalContent);
+                }
+            }, 200);
+        });
+    }
+    
+    function saveFKField(element, newValue, table, pkCol, pkVal, fieldName, originalContent) {
+        const currentValue = element.getAttribute('data-value');
+        
+        // Check if value changed
+        if (newValue === currentValue) {
+            element.innerHTML = originalContent;
+            return;
+        }
+        
+        // Show saving state
+        element.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+        
+        // Send AJAX request
+        const formData = new FormData();
+        formData.append('ref_table', table);
+        formData.append('ref_col', pkCol);
+        formData.append('ref_val', pkVal);
+        formData.append('field_name', fieldName);
+        formData.append('field_value', newValue);
+        
+        fetch('?action=update_fk_field', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                // Update display
+                const displayValue = newValue.length > 100 ? newValue.substring(0, 100) + '...' : newValue;
+                element.setAttribute('data-value', newValue);
+                element.innerHTML = displayValue;
+                
+                // Show success feedback
+                element.style.background = 'rgba(34,197,94,0.2)';
+                element.style.outline = '2px solid rgba(34,197,94,0.5)';
+                
+                setTimeout(() => {
+                    element.style.background = 'transparent';
+                    element.style.outline = 'none';
+                }, 1500);
+                
+                // Show toast notification
+                Swal.fire({
+                    toast: true,
+                    position: 'top-end',
+                    icon: 'success',
+                    title: 'Field updated!',
+                    showConfirmButton: false,
+                    timer: 2000,
+                    timerProgressBar: true,
+                    background: 'var(--bg-card)',
+                    color: 'var(--text-primary)'
+                });
+            } else {
+                // Show error
+                element.innerHTML = originalContent;
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Update Failed',
+                    text: data.error || 'Failed to update field',
+                    background: 'var(--bg-card)',
+                    color: 'var(--text-primary)'
+                });
+            }
+        })
+        .catch(err => {
+            element.innerHTML = originalContent;
+            Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: 'Network error occurred',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)'
+            });
+        });
+    }
+    // ===== END FK INLINE EDIT SYSTEM =====
+
     function openQuickSqlModal() {
         Swal.fire({
             title: '<i class="fas fa-terminal"></i> Quick SQL Command',
@@ -7937,12 +9042,13 @@ var advancedFilters = null;
                         ">
                             <option value="insert">INSERT (Default)</option>
                             <option value="update">UPDATE</option>
+                            <option value="upsert">UPSERT (On Duplicate Key Update)</option>
                         </select>
                     </div>
                     
                     ${window._currentTableStructure ? `
                     <div id="where_col_container" style="display:none;">
-                        <label>Where Column:</label>
+                        <label>Where Column (for UPDATE mode):</label>
                         <select id="swal_where_col" class="form-select" style="margin-bottom:10px;" onchange="
                             document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; });
                             const cb = Array.from(document.querySelectorAll('.exp-col-cb')).find(el => el.value === this.value);
@@ -7954,10 +9060,15 @@ var advancedFilters = null;
                     ` : ''}
                     
                     <label>Action:</label>
-                    <select id="swal_exp_action" class="form-select">
+                    <select id="swal_exp_action" class="form-select" style="margin-bottom:10px;">
                         <option value="download">Download File</option>
                         <option value="copy">Copy to Clipboard</option>
                     </select>
+
+                    <div>
+                        <label>Custom WHERE (Optional):</label>
+                        <input type="text" id="swal_exp_where" class="form-control" placeholder="e.g. status='active'" style="margin-bottom:10px; font-family:monospace; font-size:12px;">
+                    </div>
                     
                     ${colsHtml}
                 </div>
@@ -7969,10 +9080,14 @@ var advancedFilters = null;
                 const selFormat = document.getElementById('swal_exp_format').value;
                 const selAction = document.getElementById('swal_exp_action').value;
                 const selSqlMode = document.getElementById('swal_sql_mode').value;
+                const expWhere = document.getElementById('swal_exp_where').value;
                 const checkedCols = Array.from(document.querySelectorAll('.exp-col-cb:checked')).map(cb => cb.value);
                 
                 const fd = new FormData(form);
                 fd.set('format', selFormat);
+                if (expWhere.trim() !== '') {
+                    fd.set('export_where', expWhere.trim());
+                }
                 if (selFormat === 'sql') {
                     fd.set('sql_mode', selSqlMode);
                     if (selSqlMode === 'update' && document.getElementById('swal_where_col')) {
@@ -8306,11 +9421,38 @@ var advancedFilters = null;
         thead.innerHTML = '';
         tbody.innerHTML = '';
 
+        // Generate mapping dropdown options
+        let colOptions = '<option value="_skip_">-- Skip / Ignore --</option>';
+        if (window._currentTableStructure) {
+            window._currentTableStructure.forEach(c => {
+                colOptions += `<option value="${c.name}">${c.name}</option>`;
+            });
+        }
+
         // Headers
         const trHead = document.createElement('tr');
         headers.forEach(h => {
             const th = document.createElement('th');
-            th.textContent = h;
+            if (window._currentTableStructure) {
+                th.innerHTML = `<div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:5px;">CSV: <strong>${h}</strong></div>
+                                <select class="form-select import-map-select" style="font-size:0.85rem; padding:4px;">
+                                    ${colOptions}
+                                </select>`;
+                const sel = th.querySelector('select');
+                const matchedCol = window._currentTableStructure.find(c => c.name.toLowerCase() === String(h).toLowerCase());
+                if (matchedCol) {
+                    sel.value = matchedCol.name;
+                } else {
+                    sel.value = '_skip_';
+                }
+            } else {
+                // Fallback if table structure is missing
+                th.innerHTML = `<div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:5px;">CSV: <strong>${h}</strong></div>
+                                <select class="form-select import-map-select" style="font-size:0.85rem; padding:4px;">
+                                    <option value="${h}">${h}</option>
+                                    <option value="_skip_">-- Skip --</option>
+                                </select>`;
+            }
             trHead.appendChild(th);
         });
         thead.appendChild(trHead);
@@ -8345,19 +9487,44 @@ var advancedFilters = null;
 
         updateImportStatus('Sending data to server...', 'info');
         
-        // Scrape data from table
         const table = document.getElementById('previewTable');
+        const selectEls = table.querySelectorAll('thead select.import-map-select');
+        const mappedHeaders = [];
+        const includeIndices = [];
+
+        selectEls.forEach((sel, index) => {
+            if (sel.value !== '_skip_') {
+                mappedHeaders.push(sel.value);
+                includeIndices.push(index);
+            }
+        });
+
+        if (mappedHeaders.length === 0) {
+            updateImportStatus('Error: No columns mapped for import.', 'danger');
+            return;
+        }
+
+        // Scrape data from table
         const rows = table.querySelectorAll('tbody tr');
         const finalData = [];
 
         rows.forEach(tr => {
             const rowData = [];
-            tr.querySelectorAll('td').forEach(td => {
-                rowData.push(td.textContent); // Text content from contenteditable
+            const tds = tr.querySelectorAll('td');
+            includeIndices.forEach(idx => {
+                if (tds[idx]) {
+                    rowData.push(tds[idx].textContent);
+                } else {
+                    rowData.push("");
+                }
             });
-            finalData.push(rowData);
+            // Only add row if it contains at least one non-empty value
+            if (rowData.some(v => v.trim() !== '')) {
+                finalData.push(rowData);
+            }
         });
 
+        importDataPayload.headers = mappedHeaders;
         importDataPayload.data = finalData;
 
         try {
@@ -8772,6 +9939,115 @@ var advancedFilters = null;
     background: var(--bg-card) !important;
     color: var(--text-primary) !important;
 }
+
+/* Foreign Key Preview Styles */
+.fk-cell-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fk-indicator,
+.fk-indicator-convention {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    font-size: 10px;
+    transition: all 0.2s ease;
+}
+
+.fk-indicator {
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    color: #6366f1;
+}
+
+.fk-indicator-convention {
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    color: #a855f7;
+}
+
+.fk-cell-wrapper:hover .fk-indicator,
+.fk-cell-wrapper:hover .fk-indicator-convention {
+    transform: scale(1.1);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.fk-link {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dashed var(--accent);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.fk-link:hover {
+    color: #818cf8;
+    border-bottom-color: #818cf8;
+}
+
+.fk-label {
+    color: #94a3b8;
+    font-size: 0.85em;
+    font-weight: normal;
+}
+
+#fk-tooltip {
+    position: fixed;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 12px 16px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    z-index: 10000;
+    max-width: 350px;
+    font-size: 0.85rem;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+#fk-tooltip img,
+#fk-tooltip video {
+    border-radius: 6px;
+    transition: transform 0.2s;
+}
+
+#fk-tooltip img:hover,
+#fk-tooltip video:hover {
+    transform: scale(1.02);
+}
+
+/* FK Inline Edit Styles */
+.fk-editable-field {
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+.fk-editable-field:hover::after {
+    content: '✎';
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #6366f1;
+    font-size: 0.9rem;
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.fk-editable-field input {
+    font-family: inherit;
+}
+
+.fk-editable-field input:focus {
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+}
+
 /* Query Builder & Advanced Filters Styles */
 
 .query-builder,
@@ -9111,12 +10387,28 @@ var advancedFilters = null;
     <!-- MAIN CONTENT -->
     <div class="main-content">
         <div class="top-bar">
-            <!-- BREADCRUMB -->
-            <div class="breadcrumb" style="min-width: 150px;">
+            <!-- BREADCRUMB WITH FK TRAIL -->
+            <div class="breadcrumb" style="min-width: 150px; max-width: 400px; overflow-x: auto; white-space: nowrap;">
                 <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> <span>Dashboard</span></a>
                 <?php if ($currentTable): ?>
                     <span style="color:var(--text-secondary);">/</span>
-                    <span><?=htmlspecialchars($currentTable)?></span>
+                    <span style="display:inline-flex; align-items:center; gap:4px;">
+                        <i class="fas fa-table" style="font-size:0.8em; color:var(--accent);"></i>
+                        <?=htmlspecialchars($currentTable)?>
+                    </span>
+                    <?php 
+                    // Show FK breadcrumb trail if navigating via FK
+                    if (isset($_GET['search_col']) && isset($_GET['search_val']) && isset($_GET['from_fk'])):
+                        $fromTable = $_GET['from_fk'];
+                    ?>
+                        <span style="color:var(--text-secondary); font-size:0.8em;"><i class="fas fa-arrow-left"></i></span>
+                        <a href="?table=<?=htmlspecialchars($fromTable)?>&view=data" 
+                           style="text-decoration:none; color:#94a3b8; font-size:0.85em; display:inline-flex; align-items:center; gap:4px;"
+                           title="Back to <?=htmlspecialchars($fromTable)?>">
+                            <i class="fas fa-link" style="font-size:0.7em;"></i>
+                            <?=htmlspecialchars($fromTable)?>
+                        </a>
+                    <?php endif; ?>
                 <?php endif; ?>
             </div>
 
@@ -9633,10 +10925,15 @@ var advancedFilters = null;
                         </div>
                         
                         <?php 
-                        $ghCfg = load_config($configFile)['github'] ?? null;
-                        if (!$ghCfg || empty($ghCfg['token'])): ?>
+                        $currentDbName = $_SESSION['db_name'] ?? '';
+                        $allCfg = load_config($configFile);
+                        $ghCfg = ($currentDbName && isset($allCfg['backup_configs'][$currentDbName]['github'])) 
+                            ? $allCfg['backup_configs'][$currentDbName]['github'] 
+                            : null;
+                        
+                        if (!$ghCfg || empty($ghCfg['token']) || !$ghCfg['enabled']): ?>
                             <div style="text-align:center; padding:20px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
-                                <i class="fas fa-info-circle"></i> GitHub not configured.
+                                <i class="fas fa-info-circle"></i> GitHub not configured for this database.
                             </div>
                         <?php else: ?>
                             <div id="github-backups-container">
@@ -9669,10 +10966,15 @@ var advancedFilters = null;
                         </div>
                         
                         <?php 
-                        $tgCfg = load_config($configFile)['telegram'] ?? null;
-                        if (!$tgCfg || empty($tgCfg['token'])): ?>
+                        $currentDbName = $_SESSION['db_name'] ?? '';
+                        $allCfg = load_config($configFile);
+                        $tgCfg = ($currentDbName && isset($allCfg['backup_configs'][$currentDbName]['telegram'])) 
+                            ? $allCfg['backup_configs'][$currentDbName]['telegram'] 
+                            : null;
+                        
+                        if (!$tgCfg || empty($tgCfg['token']) || !$tgCfg['enabled']): ?>
                             <div style="text-align:center; padding:20px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
-                                <i class="fas fa-info-circle"></i> Telegram not configured. Click "Settings" to link your bot.
+                                <i class="fas fa-info-circle"></i> Telegram not configured for this database. Click "Settings" to link your bot.
                             </div>
                         <?php else: ?>
                             <div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:10px; border:1px solid rgba(255,255,255,0.05); margin-bottom:15px;">
@@ -9761,12 +11063,26 @@ var advancedFilters = null;
 
                 // --- GITHUB BACKUP FUNCTIONS ---
                 function openGithubSettings() {
-                    const gh = <?= json_encode(load_config($configFile)['github'] ?? (object)[]); ?>;
+                    const dbName = '<?= addslashes($_SESSION['db_name'] ?? '') ?>';
+                    if (!dbName) {
+                        Swal.fire('Error', 'No database selected', 'error');
+                        return;
+                    }
+                    
+                    const allConfig = <?= json_encode(load_config($configFile)); ?>;
+                    const gh = (allConfig.backup_configs && allConfig.backup_configs[dbName] && allConfig.backup_configs[dbName].github) 
+                        ? allConfig.backup_configs[dbName].github 
+                        : {};
+                    
                     Swal.fire({
-                        title: '<i class="fab fa-github"></i> GitHub API Settings',
+                        title: '<i class="fab fa-github"></i> GitHub Settings for: ' + dbName,
                         background: 'var(--bg-card)',
                         color: 'var(--text-primary)',
                         html: `<div style="text-align:left;">
+                                <div style="display:flex; align-items:center; gap:10px; margin-bottom:15px; padding:10px; background:rgba(99,102,241,0.1); border-radius:6px;">
+                                    <input type="checkbox" id="gh_enabled" value="1" ${gh.enabled ? 'checked' : ''} style="width:20px; height:20px;">
+                                    <label for="gh_enabled" class="form-label" style="margin:0; font-weight:600; color:#6366f1;">Enable GitHub Backup for this Database</label>
+                                </div>
                                 <label class="form-label">GitHub Username</label>
                                 <input type="text" id="gh_user" class="swal2-input" value="${gh.user || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
                                 <label class="form-label">Private Repo Name</label>
@@ -9787,6 +11103,8 @@ var advancedFilters = null;
                         confirmButtonText: 'Save Settings',
                         preConfirm: () => ({
                             action: 'save_github_config',
+                            db_name: dbName,
+                            gh_enabled: document.getElementById('gh_enabled').checked ? '1' : '0',
                             gh_user: document.getElementById('gh_user').value,
                             gh_repo: document.getElementById('gh_repo').value,
                             gh_token: document.getElementById('gh_token').value,
@@ -9869,12 +11187,26 @@ var advancedFilters = null;
 
                 // --- TELEGRAM BACKUP FUNCTIONS ---
                 function openTelegramSettings() {
-                    const tg = <?= json_encode(load_config($configFile)['telegram'] ?? (object)[]); ?>;
+                    const dbName = '<?= addslashes($_SESSION['db_name'] ?? '') ?>';
+                    if (!dbName) {
+                        Swal.fire('Error', 'No database selected', 'error');
+                        return;
+                    }
+                    
+                    const allConfig = <?= json_encode(load_config($configFile)); ?>;
+                    const tg = (allConfig.backup_configs && allConfig.backup_configs[dbName] && allConfig.backup_configs[dbName].telegram) 
+                        ? allConfig.backup_configs[dbName].telegram 
+                        : {};
+                    
                     Swal.fire({
-                        title: '<i class="fab fa-telegram"></i> Telegram Bot Settings',
+                        title: '<i class="fab fa-telegram"></i> Telegram Settings for: ' + dbName,
                         background: 'var(--bg-card)',
                         color: 'var(--text-primary)',
                         html: `<div style="text-align:left;">
+                                <div style="display:flex; align-items:center; gap:10px; margin-bottom:15px; padding:10px; background:rgba(99,102,241,0.1); border-radius:6px;">
+                                    <input type="checkbox" id="tg_enabled" value="1" ${tg.enabled ? 'checked' : ''} style="width:20px; height:20px;">
+                                    <label for="tg_enabled" class="form-label" style="margin:0; font-weight:600; color:#6366f1;">Enable Telegram Backup for this Database</label>
+                                </div>
                                 <label class="form-label">Bot Token</label>
                                 <input type="password" id="tg_token" class="swal2-input" value="${tg.token || ''}" style="margin:0 0 15px 0; width:100%; box-sizing:border-box;">
                                 <label class="form-label">API Base Hub (For InfinityFree)</label>
@@ -9903,6 +11235,8 @@ var advancedFilters = null;
                         confirmButtonText: 'Save Settings',
                         preConfirm: () => ({
                             action: 'save_telegram_config',
+                            db_name: dbName,
+                            tg_enabled: document.getElementById('tg_enabled').checked ? '1' : '0',
                             tg_token: document.getElementById('tg_token').value,
                             tg_base: document.getElementById('tg_base').value,
                             tg_chat_id: document.getElementById('tg_chat_id').value,
@@ -10438,10 +11772,81 @@ var advancedFilters = null;
                                 <input type="text" name="search_val" class="form-control" placeholder="Server-side Search..." value="<?=htmlspecialchars($searchVal)?>" style="width: 100%;">
                             </div>
                             <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Filter</button>
-                            <?php if($searchVal):
-                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i></a><?php 
+                            <button type="button" class="btn" style="background:var(--bg-hover);" onclick="document.getElementById('advancedFiltersContainer').style.display = document.getElementById('advancedFiltersContainer').style.display === 'none' ? 'block' : 'none';"><i class="fas fa-sliders-h"></i> Advanced Filter</button>
+                            <?php if($searchVal || !empty($_GET['advanced_filters'])):
+                                ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a><?php 
                             endif; ?>
                         </form>
+                        
+                        <div id="advancedFiltersContainer" style="display:<?= !empty($_GET['advanced_filters']) ? 'block' : 'none' ?>; background:var(--bg-card); padding:15px; border-radius:6px; margin-bottom:15px; border:1px solid var(--border-color);">
+                             <h4 style="margin-top:0; font-size:1rem; margin-bottom:10px;"><i class="fas fa-filter"></i> Visual Advanced Filters</h4>
+                             <div id="af-list"></div>
+                             <button type="button" class="btn btn-sm" onclick="addAdvancedFilter()"><i class="fas fa-plus"></i> Add Condition</button>
+                             <button type="button" class="btn btn-primary btn-sm" onclick="applyAdvancedFilters()"><i class="fas fa-check"></i> Apply Filters</button>
+                        </div>
+                        
+                        <script>
+                        const currentTableColumns = <?= json_encode($tableColumns ?? []) ?>;
+                        const existingFilters = <?= $_GET['advanced_filters'] ?? '[]' ?>;
+                        
+                        function addAdvancedFilter(col = '', op = '=', val = '') {
+                            const list = document.getElementById('af-list');
+                            const row = document.createElement('div');
+                            row.style.display = 'flex';
+                            row.style.gap = '10px';
+                            row.style.marginBottom = '10px';
+                            
+                            let colOpts = '';
+                            currentTableColumns.forEach(c => {
+                                colOpts += `<option value="${c}" ${c === col ? 'selected' : ''}>${c}</option>`;
+                            });
+                            
+                            row.innerHTML = `
+                                <select class="form-select af-col" style="width:150px; background:var(--bg-hover);">${colOpts}</select>
+                                <select class="form-select af-op" style="width:100px; background:var(--bg-hover);">
+                                    <option value="=" ${op === '=' ? 'selected' : ''}>=</option>
+                                    <option value="!=" ${op === '!=' ? 'selected' : ''}>!=</option>
+                                    <option value="LIKE" ${op === 'LIKE' ? 'selected' : ''}>LIKE</option>
+                                    <option value=">" ${op === '>' ? 'selected' : ''}>&gt;</option>
+                                    <option value="<" ${op === '<' ? 'selected' : ''}>&lt;</option>
+                                    <option value=">=" ${op === '>=' ? 'selected' : ''}>&gt;=</option>
+                                    <option value="<=" ${op === '<=' ? 'selected' : ''}>&lt;=</option>
+                                </select>
+                                <input type="text" class="form-control af-val" style="flex:1; background:var(--bg-hover);" value="${val.replace(/"/g, '&quot;')}" placeholder="Value">
+                                <button type="button" class="btn btn-danger" onclick="this.parentElement.remove()"><i class="fas fa-trash"></i></button>
+                            `;
+                            list.appendChild(row);
+                        }
+                        
+                        function applyAdvancedFilters() {
+                            const rows = document.querySelectorAll('#af-list > div');
+                            const filters = [];
+                            rows.forEach(r => {
+                                filters.push({
+                                    col: r.querySelector('.af-col').value,
+                                    op: r.querySelector('.af-op').value,
+                                    val: r.querySelector('.af-val').value
+                                });
+                            });
+                            
+                            const url = new URL(window.location.href);
+                            if (filters.length > 0) {
+                                url.searchParams.set('advanced_filters', JSON.stringify(filters));
+                            } else {
+                                url.searchParams.delete('advanced_filters');
+                            }
+                            url.searchParams.set('offset', '0'); // reset pagination
+                            window.location.href = url.toString();
+                        }
+                        
+                        document.addEventListener('DOMContentLoaded', () => {
+                            if (Array.isArray(existingFilters) && existingFilters.length > 0) {
+                                existingFilters.forEach(f => addAdvancedFilter(f.col, f.op, f.val));
+                            } else {
+                                addAdvancedFilter();
+                            }
+                        });
+                        </script>
                         
                         <!-- Client-side Controls -->
                         <div style="display:flex; gap:10px; align-items:center; background:var(--bg-hover); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
@@ -10485,6 +11890,7 @@ var advancedFilters = null;
                                 <select id="bulkActionSelect" class="form-select" style="width:150px; display:none;">
                                     <option value="">With Selected:</option>
                                     <option value="delete">Delete</option>
+                                    <option value="bulk_edit">Bulk Edit</option>
                                     <option value="export_sql">Export SQL</option>
                                     <option value="export_csv">Export CSV</option>
                                     <option value="export_json">Export JSON</option>
@@ -10526,7 +11932,7 @@ var advancedFilters = null;
                             </thead>
                             <tbody>
                                 <?php foreach ($tableData as $row):
-                                    echo render_data_row($row, $currentTable, $primaryKey, $colTypes ?? []);
+                                    echo render_data_row($row, $currentTable, $primaryKey, $colTypes ?? [], $fkMap, $pdo ?? null, $tables ?? []);
                                 endforeach; ?>
                                 <?php if(empty($tableData)):
                                     ?><td colspan="<?=count($tableColumns)+1?>" style="text-align:center; padding:30px; color:var(--text-secondary);">No data found</td><?php 
@@ -12317,6 +13723,40 @@ function readFileContent(file) {
                     </div>
                 </div>
 
+                <!-- FK Preview Feature Info -->
+                <div class="card" style="margin-bottom:20px; background:linear-gradient(135deg, rgba(99,102,241,0.1) 0%, rgba(168,85,247,0.1) 100%); border:1px solid rgba(99,102,241,0.3);">
+                    <div style="display:flex; align-items:start; gap:20px;">
+                        <div style="flex-shrink:0; width:60px; height:60px; background:rgba(99,102,241,0.2); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.8rem; color:#6366f1;">
+                            <i class="fas fa-link"></i>
+                        </div>
+                        <div style="flex:1;">
+                            <h3 style="margin:0 0 8px 0; color:#6366f1; display:flex; align-items:center; gap:8px;">
+                                <span>Foreign Key Preview</span>
+                                <span style="background:rgba(99,102,241,0.2); color:#818cf8; font-size:0.7rem; padding:2px 8px; border-radius:12px; font-weight:600;">NEW</span>
+                            </h3>
+                            <p style="margin:0 0 12px 0; color:#cbd5e1; font-size:0.9rem; line-height:1.6;">
+                                Explore database relationships with interactive foreign key previews. Hover over FK values to see quick previews, click for detailed views, and navigate seamlessly between related records.
+                            </p>
+                            <div style="display:flex; gap:15px; flex-wrap:wrap;">
+                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
+                                    <span style="width:20px; height:20px; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); border-radius:3px; display:flex; align-items:center; justify-content:center; font-size:0.7rem; color:#6366f1;">
+                                        <i class="fas fa-link"></i>
+                                    </span>
+                                    <span>Hover for quick preview</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
+                                    <i class="fas fa-mouse-pointer" style="color:#6366f1;"></i>
+                                    <span>Click for full details</span>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
+                                    <i class="fas fa-route" style="color:#6366f1;"></i>
+                                    <span>Breadcrumb navigation</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div style="gap:20px; margin-bottom:20px;">
                     <!-- Row Distribution Chart -->
                     <div class="card" style="margin-bottom:0;">
@@ -13216,6 +14656,55 @@ var queryBuilder = null;
                     confirmButtonText: 'Yes, delete!'
                 }).then((result) => {
                     if (result.isConfirmed) form.submit();
+                });
+            } else if (action === 'bulk_edit') {
+                if (!window._currentTableStructure) return;
+                let optionsHtml = '';
+                window._currentTableStructure.forEach(c => {
+                    optionsHtml += `<option value="${c.name}">${c.name}</option>`;
+                });
+                
+                Swal.fire({
+                    title: 'Bulk Edit',
+                    html: `
+                        <div style="margin-bottom:10px; text-align:left;">Select Column to Update:</div>
+                        <select id="swal-bulk-col" class="form-select" style="margin-bottom:15px; width:100%; background:var(--bg-card); color:var(--text-primary); border:1px solid var(--border-color); padding:8px;">${optionsHtml}</select>
+                        <div style="margin-bottom:10px; text-align:left;">New Value:</div>
+                        <input id="swal-bulk-val" class="form-control" placeholder="New Value (leave blank for empty/NULL)" style="width:100%; background:var(--bg-card); color:var(--text-primary); border:1px solid var(--border-color); padding:8px;">
+                    `,
+                    showCancelButton: true,
+                    confirmButtonText: '<i class="fas fa-save"></i> Apply Bulk Edit',
+                    preConfirm: () => {
+                        return {
+                            col: document.getElementById('swal-bulk-col').value,
+                            val: document.getElementById('swal-bulk-val').value
+                        }
+                    }
+                }).then((result) => {
+                    if (result.isConfirmed) {
+                        let actionInput = form.querySelector('input[name="action"]');
+                        if(!actionInput) {
+                            actionInput = document.createElement('input');
+                            actionInput.type = 'hidden';
+                            actionInput.name = 'action';
+                            form.appendChild(actionInput);
+                        }
+                        actionInput.value = 'bulk_edit';
+                        
+                        let colInput = document.createElement('input');
+                        colInput.type = 'hidden';
+                        colInput.name = 'bulk_col';
+                        colInput.value = result.value.col;
+                        form.appendChild(colInput);
+                        
+                        let valInput = document.createElement('input');
+                        valInput.type = 'hidden';
+                        valInput.name = 'bulk_val';
+                        valInput.value = result.value.val;
+                        form.appendChild(valInput);
+                        
+                        form.submit();
+                    }
                 });
             } else {
                 let actionInput = form.querySelector('input[name="action"]');
