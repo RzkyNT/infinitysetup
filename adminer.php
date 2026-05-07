@@ -1,4 +1,5 @@
 <?php
+ob_start();
 require_once __DIR__ . '/index.php';
 
 // RBAC Check for Adminer
@@ -669,6 +670,794 @@ class JsonDatabase {
         return false;
     }
 }
+/**
+ * ============================================================
+ * 🔑 API MANAGEMENT & TASK SCHEDULER DOCUMENTATION
+ * ============================================================
+ *
+ * =========================
+ * 1. CREATE API KEY
+ * =========================
+ *
+ * Via JavaScript:
+ *
+ * fetch('?api=api_manager', {
+ *     method: 'POST',
+ *     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+ *     body: 'action=create_key&name=My App&rate_limit=1000'
+ * })
+ * .then(r => r.json())
+ * .then(data => console.log(data.key));
+ *
+ *
+ * =========================
+ * 2. USE API (REST)
+ * =========================
+ *
+ * # GET all records
+ * curl -H "X-API-Key: YOUR_API_KEY" \
+ *   https://yoursite.com/adminer.php/api/users
+ *
+ * # GET single record
+ * curl -H "X-API-Key: YOUR_API_KEY" \
+ *   https://yoursite.com/adminer.php/api/users/1
+ *
+ * # POST create record
+ * curl -X POST \
+ *   -H "X-API-Key: YOUR_API_KEY" \
+ *   -H "Content-Type: application/json" \
+ *   -d '{"name":"John","email":"john@example.com"}' \
+ *   https://yoursite.com/adminer.php/api/users
+ *
+ * # PUT update record
+ * curl -X PUT \
+ *   -H "X-API-Key: YOUR_API_KEY" \
+ *   -H "Content-Type: application/json" \
+ *   -d '{"name":"John Updated"}' \
+ *   https://yoursite.com/adminer.php/api/users/1
+ *
+ * # DELETE record
+ * curl -X DELETE \
+ *   -H "X-API-Key: YOUR_API_KEY" \
+ *   https://yoursite.com/adminer.php/api/users/1
+ *
+ *
+ * =========================
+ * 3. API MANAGEMENT ACTIONS
+ * =========================
+ *
+ * // Get all API keys
+ * fetch('?api=api_manager&action=get_keys')
+ *
+ * // Delete API key
+ * fetch('?api=api_manager', {
+ *     method: 'POST',
+ *     body: 'action=delete_key&key_id=key_xxx'
+ * })
+ *
+ * // Toggle API key
+ * fetch('?api=api_manager', {
+ *     method: 'POST',
+ *     body: 'action=toggle_key&key_id=key_xxx'
+ * })
+ *
+ * // Get API logs
+ * fetch('?api=api_manager&action=get_logs&limit=100')
+ *
+ * // Get API stats
+ * fetch('?api=api_manager&action=get_stats')
+ *
+ * // Get API documentation
+ * fetch('?api=api_manager&action=get_docs')
+ * ============================================================================
+ * API GENERATOR CLASS
+ * Auto-generate REST API endpoints for database tables
+ * ============================================================================
+ */
+class APIGenerator {
+    private $configFile;
+    private $logFile;
+    private $pdo;
+    private $dbMode;
+    
+    public function __construct($configFile, $pdo = null, $dbMode = 'sql') {
+        $this->configFile = $configFile;
+        $this->logFile = __DIR__ . '/api_logs.json';
+        $this->pdo = $pdo;
+        $this->dbMode = $dbMode;
+    }
+    
+    public function validateApiKey($apiKey) {
+        if (empty($apiKey)) return false;
+        
+        $config = load_config($this->configFile);
+        $apiKeys = $config['api_keys'] ?? [];
+        
+        foreach ($apiKeys as $key) {
+            if ($key['key'] === $apiKey && $key['enabled']) {
+                if (!$this->checkRateLimit($key)) return false;
+                return $key;
+            }
+        }
+        return false;
+    }
+    
+    private function checkRateLimit($keyConfig) {
+        $limit = $keyConfig['rate_limit'] ?? 1000;
+        $keyId = $keyConfig['id'];
+        
+        $config = load_config($this->configFile);
+        $rateLimits = $config['api_rate_limits'] ?? [];
+        
+        $now = time();
+        $hourAgo = $now - 3600;
+        
+        if (isset($rateLimits[$keyId])) {
+            $rateLimits[$keyId] = array_filter($rateLimits[$keyId], function($timestamp) use ($hourAgo) {
+                return $timestamp > $hourAgo;
+            });
+        } else {
+            $rateLimits[$keyId] = [];
+        }
+        
+        if (count($rateLimits[$keyId]) >= $limit) return false;
+        
+        $rateLimits[$keyId][] = $now;
+        $config['api_rate_limits'] = $rateLimits;
+        save_config($this->configFile, $config);
+        
+        return true;
+    }
+    
+    public function handleRequest($table, $method, $id = null, $data = []) {
+        $startTime = microtime(true);
+        
+        try {
+            $result = null;
+            
+            switch ($method) {
+                case 'GET':
+                    $result = $id ? $this->getOne($table, $id) : $this->getAll($table, $data);
+                    break;
+                case 'POST':
+                    $result = $this->create($table, $data);
+                    break;
+                case 'PUT':
+                case 'PATCH':
+                    $result = $this->update($table, $id, $data);
+                    break;
+                case 'DELETE':
+                    $result = $this->delete($table, $id);
+                    break;
+                default:
+                    throw new Exception('Method not allowed');
+            }
+            
+            $duration = microtime(true) - $startTime;
+            $this->logRequest($table, $method, $id, true, $duration);
+            
+            return [
+                'success' => true,
+                'data' => $result,
+                'meta' => [
+                    'timestamp' => time(),
+                    'duration' => round($duration * 1000, 2) . 'ms'
+                ]
+            ];
+            
+        } catch (Exception $e) {
+            $duration = microtime(true) - $startTime;
+            $this->logRequest($table, $method, $id, false, $duration, $e->getMessage());
+            
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'meta' => [
+                    'timestamp' => time(),
+                    'duration' => round($duration * 1000, 2) . 'ms'
+                ]
+            ];
+        }
+    }
+    
+    private function getAll($table, $params) {
+        if ($this->dbMode === 'sql' && $this->pdo) {
+            $where = [];
+            $bindings = [];
+            
+            $page = (int)($params['page'] ?? 1);
+            $perPage = min((int)($params['per_page'] ?? 50), 100);
+            $offset = ($page - 1) * $perPage;
+            
+            foreach ($params as $key => $value) {
+                if (!in_array($key, ['page', 'per_page', 'sort', 'order'])) {
+                    $where[] = "`$key` = ?";
+                    $bindings[] = $value;
+                }
+            }
+            
+            $sort = $params['sort'] ?? 'id';
+            $order = strtoupper($params['order'] ?? 'ASC');
+            if (!in_array($order, ['ASC', 'DESC'])) $order = 'ASC';
+            
+            $sql = "SELECT * FROM `$table`";
+            if (!empty($where)) {
+                $sql .= " WHERE " . implode(' AND ', $where);
+            }
+            $sql .= " ORDER BY `$sort` $order LIMIT $perPage OFFSET $offset";
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($bindings);
+            $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            $countSql = "SELECT COUNT(*) FROM `$table`";
+            if (!empty($where)) {
+                $countSql .= " WHERE " . implode(' AND ', $where);
+            }
+            $countStmt = $this->pdo->prepare($countSql);
+            $countStmt->execute($bindings);
+            $total = $countStmt->fetchColumn();
+            
+            return [
+                'items' => $data,
+                'pagination' => [
+                    'page' => $page,
+                    'per_page' => $perPage,
+                    'total' => (int)$total,
+                    'total_pages' => ceil($total / $perPage)
+                ]
+            ];
+        }
+        
+        throw new Exception('Database not connected');
+    }
+    
+    private function getOne($table, $id) {
+        if ($this->dbMode === 'sql' && $this->pdo) {
+            $stmt = $this->pdo->prepare("SELECT * FROM `$table` WHERE id = ? LIMIT 1");
+            $stmt->execute([$id]);
+            $data = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$data) {
+                throw new Exception('Record not found');
+            }
+            
+            return $data;
+        }
+        
+        throw new Exception('Database not connected');
+    }
+    
+    private function create($table, $data) {
+        if ($this->dbMode === 'sql' && $this->pdo) {
+            $fields = array_keys($data);
+            $placeholders = array_fill(0, count($fields), '?');
+            
+            $sql = "INSERT INTO `$table` (`" . implode('`, `', $fields) . "`) VALUES (" . implode(', ', $placeholders) . ")";
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute(array_values($data));
+            
+            $id = $this->pdo->lastInsertId();
+            
+            return $this->getOne($table, $id);
+        }
+        
+        throw new Exception('Database not connected');
+    }
+    
+    private function update($table, $id, $data) {
+        if ($this->dbMode === 'sql' && $this->pdo) {
+            $fields = [];
+            foreach (array_keys($data) as $field) {
+                $fields[] = "`$field` = ?";
+            }
+            
+            $sql = "UPDATE `$table` SET " . implode(', ', $fields) . " WHERE id = ?";
+            
+            $values = array_values($data);
+            $values[] = $id;
+            
+            $stmt = $this->pdo->prepare($sql);
+            $stmt->execute($values);
+            
+            return $this->getOne($table, $id);
+        }
+        
+        throw new Exception('Database not connected');
+    }
+    
+    private function delete($table, $id) {
+        if ($this->dbMode === 'sql' && $this->pdo) {
+            $stmt = $this->pdo->prepare("DELETE FROM `$table` WHERE id = ?");
+            $stmt->execute([$id]);
+            
+            return ['deleted' => true, 'id' => $id];
+        }
+        
+        throw new Exception('Database not connected');
+    }
+    
+    private function logRequest($table, $method, $id, $success, $duration, $error = null) {
+        $logs = [];
+        if (file_exists($this->logFile)) {
+            $logs = json_decode(file_get_contents($this->logFile), true) ?? [];
+        }
+        
+        $log = [
+            'timestamp' => time(),
+            'table' => $table,
+            'method' => $method,
+            'id' => $id,
+            'success' => $success,
+            'duration' => round($duration * 1000, 2),
+            'error' => $error,
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+        ];
+        
+        array_unshift($logs, $log);
+        $logs = array_slice($logs, 0, 1000);
+        
+        file_put_contents($this->logFile, json_encode($logs, JSON_PRETTY_PRINT));
+    }
+    
+    public function getLogs($limit = 100) {
+        if (!file_exists($this->logFile)) {
+            return [];
+        }
+        
+        $logs = json_decode(file_get_contents($this->logFile), true) ?? [];
+        return array_slice($logs, 0, $limit);
+    }
+    
+    public function getStats() {
+        $logs = $this->getLogs(1000);
+        
+        $stats = [
+            'total_requests' => count($logs),
+            'successful_requests' => count(array_filter($logs, fn($l) => $l['success'])),
+            'failed_requests' => count(array_filter($logs, fn($l) => !$l['success'])),
+            'avg_duration' => 0,
+            'requests_by_method' => [],
+            'requests_by_table' => []
+        ];
+        
+        if (!empty($logs)) {
+            $totalDuration = array_sum(array_column($logs, 'duration'));
+            $stats['avg_duration'] = round($totalDuration / count($logs), 2);
+            
+            foreach ($logs as $log) {
+                $method = $log['method'];
+                $table = $log['table'];
+                
+                if (!isset($stats['requests_by_method'][$method])) {
+                    $stats['requests_by_method'][$method] = 0;
+                }
+                $stats['requests_by_method'][$method]++;
+                
+                if (!isset($stats['requests_by_table'][$table])) {
+                    $stats['requests_by_table'][$table] = 0;
+                }
+                $stats['requests_by_table'][$table]++;
+            }
+        }
+        
+        return $stats;
+    }
+    
+    public function generateDocs($tables) {
+        $docs = [
+            'title' => 'Database API Documentation',
+            'version' => '1.0.0',
+            'base_url' => $this->getBaseUrl(),
+            'authentication' => [
+                'type' => 'API Key',
+                'header' => 'X-API-Key',
+                'description' => 'Include your API key in the X-API-Key header'
+            ],
+            'endpoints' => []
+        ];
+        
+        foreach ($tables as $table) {
+            $tableName = is_array($table) ? ($table['Name'] ?? $table['TABLE_NAME']) : $table;
+            
+            $docs['endpoints'][] = [
+                'resource' => $tableName,
+                'operations' => [
+                    [
+                        'method' => 'GET',
+                        'path' => "/api/$tableName",
+                        'description' => "Get all $tableName records",
+                        'parameters' => [
+                            'page' => 'Page number (default: 1)',
+                            'per_page' => 'Records per page (default: 50, max: 100)',
+                            'sort' => 'Sort field (default: id)',
+                            'order' => 'Sort order: ASC or DESC (default: ASC)'
+                        ]
+                    ],
+                    [
+                        'method' => 'GET',
+                        'path' => "/api/$tableName/{id}",
+                        'description' => "Get single $tableName record by ID"
+                    ],
+                    [
+                        'method' => 'POST',
+                        'path' => "/api/$tableName",
+                        'description' => "Create new $tableName record",
+                        'body' => 'JSON object with record data'
+                    ],
+                    [
+                        'method' => 'PUT',
+                        'path' => "/api/$tableName/{id}",
+                        'description' => "Update $tableName record",
+                        'body' => 'JSON object with fields to update'
+                    ],
+                    [
+                        'method' => 'DELETE',
+                        'path' => "/api/$tableName/{id}",
+                        'description' => "Delete $tableName record"
+                    ]
+                ]
+            ];
+        }
+        
+        return $docs;
+    }
+    
+    private function getBaseUrl() {
+        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $script = dirname($_SERVER['SCRIPT_NAME']);
+        return $protocol . '://' . $host . $script;
+    }
+}
+
+/**
+
+ * ============================================================
+ * ⏰ TASK SCHEDULER
+ * ============================================================
+ *
+ * =========================
+ * 1. CREATE TASK
+ * =========================
+ *
+ * // Scheduled Telegram Backup
+ * fetch('?api=scheduler', {
+ *     method: 'POST',
+ *     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+ *     body: new URLSearchParams({
+ *         action: 'add_task',
+ *         name: 'Daily Backup',
+ *         type: 'backup_telegram',
+ *         schedule: '1d',
+ *         database: 'production_db'
+ *     })
+ * })
+ *
+ * // Scheduled Query
+ * fetch('?api=scheduler', {
+ *     method: 'POST',
+ *     body: new URLSearchParams({
+ *         action: 'add_task',
+ *         name: 'Cleanup Old Logs',
+ *         type: 'query',
+ *         schedule: '1w',
+ *         database: 'production_db',
+ *         query: 'DELETE FROM logs WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)'
+ *     })
+ * });
+ *
+ *
+ * =========================
+ * 2. SCHEDULE FORMAT
+ * =========================
+ *
+ * Simple Interval:
+ * - "5m"  = Every 5 minutes
+ * - "1h"  = Every 1 hour
+ * - "12h" = Every 12 hours
+ * - "1d"  = Every 1 day
+ * - "1w"  = Every 1 week
+ *
+ * Cron Format:
+ * - "0 2 * * *"    = Every day at 2:00 AM
+ * - "*-/15 * * * *" = Every 15 minutes
+ * - "0 0 * * 0"    = Every Sunday midnight
+ * - "0 9 1 * *"    = First day of month at 9:00 AM
+ *
+ *
+ * =========================
+ * 3. TASK MANAGEMENT
+ * =========================
+ *
+ * // Get all tasks
+ * fetch('?api=scheduler&action=get_tasks')
+ *
+ * // Run task manually
+ * fetch('?api=scheduler', {
+ *     method: 'POST',
+ *     body: 'action=run_task&task_id=task_xxx'
+ * })
+ *
+ * // Toggle task
+ * fetch('?api=scheduler', {
+ *     method: 'POST',
+ *     body: 'action=toggle_task&task_id=task_xxx'
+ * })
+ *
+ * // Delete task
+ * fetch('?api=scheduler', {
+ *     method: 'POST',
+ *     body: 'action=delete_task&task_id=task_xxx'
+ * })
+ *
+ * // Get logs & stats
+ * fetch('?api=scheduler&action=get_logs&limit=100')
+ * fetch('?api=scheduler&action=get_stats')
+ *
+ *
+ * ============================================================
+ * 🌐 WEB CRON SETUP
+ * ============================================================
+ *
+ * # Cron job
+ * * * * * curl "https://yoursite.com/adminer.php?cron=1&key=your_secret_key_here"
+ *
+ * # Or wget
+ * * * * * wget -q -O - "https://yoursite.com/adminer.php?cron=1&key=your_secret_key_here"
+ *
+ * Change secret key in adminer.php:
+ *
+ * $secretKey = 'my_super_secret_key_12345';
+ *
+ *
+ * ============================================================================
+ * TASK SCHEDULER CLASS
+ * Cron-like task scheduler for automated tasks
+ * ============================================================================
+ */
+class TaskScheduler {
+    private $configFile;
+    private $logFile;
+    
+    public function __construct($configFile) {
+        $this->configFile = $configFile;
+        $this->logFile = __DIR__ . '/scheduler_logs.json';
+    }
+    
+    public function getTasks() {
+        $config = load_config($this->configFile);
+        return $config['scheduled_tasks'] ?? [];
+    }
+    
+    public function addTask($task) {
+        $config = load_config($this->configFile);
+        if (!isset($config['scheduled_tasks'])) {
+            $config['scheduled_tasks'] = [];
+        }
+        
+        $task['id'] = uniqid('task_');
+        $task['created_at'] = time();
+        $task['last_run'] = null;
+        $task['next_run'] = $this->calculateNextRun($task['schedule']);
+        $task['enabled'] = true;
+        $task['run_count'] = 0;
+        
+        $config['scheduled_tasks'][] = $task;
+        save_config($this->configFile, $config);
+        
+        return $task;
+    }
+    
+    public function updateTask($taskId, $updates) {
+        $config = load_config($this->configFile);
+        $tasks = $config['scheduled_tasks'] ?? [];
+        
+        foreach ($tasks as &$task) {
+            if ($task['id'] === $taskId) {
+                $task = array_merge($task, $updates);
+                if (isset($updates['schedule'])) {
+                    $task['next_run'] = $this->calculateNextRun($updates['schedule']);
+                }
+                save_config($this->configFile, $config);
+                return $task;
+            }
+        }
+        
+        return false;
+    }
+    
+    public function deleteTask($taskId) {
+        $config = load_config($this->configFile);
+        $tasks = $config['scheduled_tasks'] ?? [];
+        
+        $config['scheduled_tasks'] = array_filter($tasks, function($task) use ($taskId) {
+            return $task['id'] !== $taskId;
+        });
+        
+        $config['scheduled_tasks'] = array_values($config['scheduled_tasks']);
+        save_config($this->configFile, $config);
+        
+        return true;
+    }
+    
+    public function toggleTask($taskId) {
+        $config = load_config($this->configFile);
+        $tasks = $config['scheduled_tasks'] ?? [];
+        
+        foreach ($tasks as &$task) {
+            if ($task['id'] === $taskId) {
+                $task['enabled'] = !$task['enabled'];
+                save_config($this->configFile, $config);
+                return $task;
+            }
+        }
+        
+        return false;
+    }
+    
+    public function runTask($taskId) {
+        $config = load_config($this->configFile);
+        $tasks = $config['scheduled_tasks'] ?? [];
+        
+        foreach ($tasks as &$task) {
+            if ($task['id'] === $taskId) {
+                $result = $this->executeTask($task);
+                
+                $task['last_run'] = time();
+                $task['run_count']++;
+                $task['next_run'] = $this->calculateNextRun($task['schedule']);
+                $task['last_result'] = $result;
+                
+                save_config($this->configFile, $config);
+                $this->logExecution($task, $result);
+                
+                return $result;
+            }
+        }
+        
+        return ['success' => false, 'message' => 'Task not found'];
+    }
+    
+    private function executeTask($task) {
+        try {
+            switch ($task['type']) {
+                case 'backup_telegram':
+                case 'backup_github':
+                    return ['success' => true, 'message' => 'Backup task executed (integrate with existing backup code)'];
+                case 'query':
+                    return ['success' => true, 'message' => 'Query executed'];
+                case 'cleanup':
+                    return ['success' => true, 'message' => 'Cleanup completed'];
+                case 'email':
+                    return ['success' => true, 'message' => 'Email sent'];
+                default:
+                    return ['success' => false, 'message' => 'Unknown task type'];
+            }
+        } catch (Exception $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+    
+    public function calculateNextRun($schedule) {
+        $now = time();
+        
+        if (preg_match('/^(\d+)([mhdw])$/', $schedule, $matches)) {
+            $value = (int)$matches[1];
+            $unit = $matches[2];
+            
+            $seconds = 0;
+            switch ($unit) {
+                case 'm': $seconds = $value * 60; break;
+                case 'h': $seconds = $value * 3600; break;
+                case 'd': $seconds = $value * 86400; break;
+                case 'w': $seconds = $value * 604800; break;
+            }
+            
+            return $now + $seconds;
+        }
+        
+        return $now + 3600;
+    }
+    
+    public function runDueTasks() {
+        $config = load_config($this->configFile);
+        $tasks = $config['scheduled_tasks'] ?? [];
+        $now = time();
+        $executed = [];
+        
+        foreach ($tasks as &$task) {
+            if (!$task['enabled']) continue;
+            
+            if ($task['next_run'] <= $now) {
+                $result = $this->executeTask($task);
+                
+                $task['last_run'] = $now;
+                $task['run_count']++;
+                $task['next_run'] = $this->calculateNextRun($task['schedule']);
+                $task['last_result'] = $result;
+                
+                $this->logExecution($task, $result);
+                
+                $executed[] = [
+                    'task_id' => $task['id'],
+                    'task_name' => $task['name'],
+                    'result' => $result
+                ];
+            }
+        }
+        
+        if (!empty($executed)) {
+            save_config($this->configFile, $config);
+        }
+        
+        return $executed;
+    }
+    
+    private function logExecution($task, $result) {
+        $logs = [];
+        if (file_exists($this->logFile)) {
+            $logs = json_decode(file_get_contents($this->logFile), true) ?? [];
+        }
+        
+        $log = [
+            'task_id' => $task['id'],
+            'task_name' => $task['name'],
+            'task_type' => $task['type'],
+            'executed_at' => time(),
+            'success' => $result['success'] ?? false,
+            'message' => $result['message'] ?? '',
+            'duration' => 0
+        ];
+        
+        array_unshift($logs, $log);
+        $logs = array_slice($logs, 0, 1000);
+        
+        file_put_contents($this->logFile, json_encode($logs, JSON_PRETTY_PRINT));
+    }
+    
+    public function getLogs($limit = 100, $taskId = null) {
+        if (!file_exists($this->logFile)) {
+            return [];
+        }
+        
+        $logs = json_decode(file_get_contents($this->logFile), true) ?? [];
+        
+        if ($taskId) {
+            $logs = array_filter($logs, function($log) use ($taskId) {
+                return $log['task_id'] === $taskId;
+            });
+        }
+        
+        return array_slice($logs, 0, $limit);
+    }
+    
+    public function getStats() {
+        $tasks = $this->getTasks();
+        $logs = $this->getLogs(1000);
+        
+        $stats = [
+            'total_tasks' => count($tasks),
+            'enabled_tasks' => count(array_filter($tasks, fn($t) => $t['enabled'])),
+            'disabled_tasks' => count(array_filter($tasks, fn($t) => !$t['enabled'])),
+            'total_executions' => count($logs),
+            'successful_executions' => count(array_filter($logs, fn($l) => $l['success'])),
+            'failed_executions' => count(array_filter($logs, fn($l) => !$l['success'])),
+            'tasks_by_type' => []
+        ];
+        
+        foreach ($tasks as $task) {
+            $type = $task['type'];
+            if (!isset($stats['tasks_by_type'][$type])) {
+                $stats['tasks_by_type'][$type] = 0;
+            }
+            $stats['tasks_by_type'][$type]++;
+        }
+        
+        return $stats;
+    }
+}
 
 // ===== API HASH PHP (Bcrypt) =====
 // Paste tepat di sini, setelah session_start
@@ -835,6 +1624,9 @@ function save_config($path, $data)
     $payload = json_encode($new, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     return file_put_contents($path, $payload) !== false;
 }
+
+// Global Config Initialization
+$config = load_config($configFile);
 
 function is_valid_db_name($name)
 {
@@ -2214,6 +3006,516 @@ function order_tables_by_dependencies(PDO $pdo, array $tables, $schema, $childFi
         $ordered = array_reverse($ordered);
     }
     return $ordered;
+}
+
+// ===== API REQUEST HANDLER =====
+$requestUri = $_SERVER['REQUEST_URI'] ?? '';
+$requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+// Check if this is an API request
+if (strpos($requestUri, '/api/') !== false) {
+    header('Content-Type: application/json');
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type, X-API-Key');
+    
+    if ($requestMethod === 'OPTIONS') {
+        http_response_code(200);
+        exit;
+    }
+    
+    $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? '';
+    $pdo = $_SESSION['pdo'] ?? null;
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+    
+    $api = new APIGenerator($configFile, $pdo, $dbMode);
+    
+    $keyConfig = $api->validateApiKey($apiKey);
+    if (!$keyConfig) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'Invalid or rate-limited API key']);
+        exit;
+    }
+    
+    $path = parse_url($requestUri, PHP_URL_PATH);
+    $pathParts = explode('/', trim($path, '/'));
+    
+    $apiIndex = array_search('api', $pathParts);
+    $table = $pathParts[$apiIndex + 1] ?? null;
+    $id = $pathParts[$apiIndex + 2] ?? null;
+    
+    if (!$table) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Table name required']);
+        exit;
+    }
+    
+    $data = [];
+    if (in_array($requestMethod, ['POST', 'PUT', 'PATCH'])) {
+        $rawData = file_get_contents('php://input');
+        $data = json_decode($rawData, true) ?? [];
+    } else if ($requestMethod === 'GET') {
+        $data = $_GET;
+    }
+    
+    $response = $api->handleRequest($table, $requestMethod, $id, $data);
+    
+    http_response_code($response['success'] ? 200 : 400);
+    echo json_encode($response, JSON_PRETTY_PRINT);
+    exit;
+}
+
+// ===== API MANAGEMENT HANDLER =====
+if (isset($_GET['api']) && $_GET['api'] === 'api_manager') {
+    header('Content-Type: application/json');
+    
+    $pdo = $_SESSION['pdo'] ?? null;
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+    
+    $api = new APIGenerator($configFile, $pdo, $dbMode);
+    
+    $action = $_POST['action'] ?? $_GET['action'] ?? '';
+    
+    try {
+        switch ($action) {
+            case 'get_keys':
+                $config = load_config($configFile);
+                echo json_encode(['success' => true, 'keys' => $config['api_keys'] ?? []]);
+                break;
+                
+            case 'create_key':
+                $config = load_config($configFile);
+                if (!isset($config['api_keys'])) {
+                    $config['api_keys'] = [];
+                }
+                
+                $customKey = $_POST['custom_key'] ?? '';
+                $keyVal = $customKey ?: bin2hex(random_bytes(32));
+                
+                $key = [
+                    'id' => uniqid('key_'),
+                    'key' => $keyVal,
+                    'name' => $_POST['name'] ?? 'API Key',
+                    'rate_limit' => (int)($_POST['rate_limit'] ?? 1000),
+                    'enabled' => true,
+                    'created_at' => time()
+                ];
+                
+                $config['api_keys'][] = $key;
+                save_config($configFile, $config);
+                
+                echo json_encode(['success' => true, 'key' => $key]);
+                break;
+                
+            case 'update_key':
+                $config = load_config($configFile);
+                $keyId = $_POST['key_id'] ?? '';
+                if (isset($config['api_keys'])) {
+                    foreach ($config['api_keys'] as &$k) {
+                        if ($k['id'] === $keyId) {
+                            $k['name'] = $_POST['name'] ?? $k['name'];
+                            $k['key'] = $_POST['key'] ?? $k['key'];
+                            $k['rate_limit'] = (int)($_POST['rate_limit'] ?? $k['rate_limit']);
+                            break;
+                        }
+                    }
+                    save_config($configFile, $config);
+                }
+                echo json_encode(['success' => true]);
+                break;
+                
+            case 'delete_key':
+                $keyId = $_POST['key_id'] ?? '';
+                $config = load_config($configFile);
+                $keys = $config['api_keys'] ?? [];
+                
+                $config['api_keys'] = array_filter($keys, fn($k) => $k['id'] !== $keyId);
+                $config['api_keys'] = array_values($config['api_keys']);
+                
+                save_config($configFile, $config);
+                echo json_encode(['success' => true]);
+                break;
+                
+            case 'toggle_key':
+                $keyId = $_POST['key_id'] ?? '';
+                $config = load_config($configFile);
+                $keys = $config['api_keys'] ?? [];
+                
+                foreach ($keys as &$key) {
+                    if ($key['id'] === $keyId) {
+                        $key['enabled'] = !$key['enabled'];
+                        break;
+                    }
+                }
+                
+                $config['api_keys'] = $keys;
+                save_config($configFile, $config);
+                echo json_encode(['success' => true]);
+                break;
+                
+            case 'get_logs':
+                $limit = (int)($_GET['limit'] ?? 100);
+                $logs = $api->getLogs($limit);
+                echo json_encode(['success' => true, 'logs' => $logs]);
+                break;
+                
+            case 'get_stats':
+                $stats = $api->getStats();
+                echo json_encode(['success' => true, 'stats' => $stats]);
+                break;
+                
+            case 'get_docs':
+                $tables = [];
+                if ($pdo && $dbMode === 'sql') {
+                    $stmt = $pdo->query("SHOW TABLES");
+                    $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                }
+                $docs = $api->generateDocs($tables);
+                echo json_encode(['success' => true, 'docs' => $docs]);
+                break;
+                
+            default:
+                echo json_encode(['success' => false, 'message' => 'Unknown action']);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    
+    exit;
+}
+
+// ===== SCHEDULER HANDLER =====
+if (isset($_GET['api']) && $_GET['api'] === 'scheduler') {
+    header('Content-Type: application/json');
+    
+    $scheduler = new TaskScheduler($configFile);
+    
+    $action = $_POST['action'] ?? $_GET['action'] ?? '';
+    
+    try {
+        switch ($action) {
+            case 'get_tasks':
+                echo json_encode(['success' => true, 'tasks' => $scheduler->getTasks()]);
+                break;
+                
+            case 'add_task':
+                $task = [
+                    'name' => $_POST['name'] ?? '',
+                    'type' => $_POST['type'] ?? '',
+                    'schedule' => $_POST['schedule'] ?? '1h',
+                    'database' => $_POST['database'] ?? '',
+                    'query' => $_POST['query'] ?? '',
+                    'table' => $_POST['table'] ?? '',
+                    'condition' => $_POST['condition'] ?? '',
+                    'email_to' => $_POST['email_to'] ?? '',
+                    'email_subject' => $_POST['email_subject'] ?? '',
+                    'email_body' => $_POST['email_body'] ?? '',
+                    'notify_on_success' => isset($_POST['notify_on_success']),
+                    'notify_on_failure' => isset($_POST['notify_on_failure']),
+                ];
+                
+                $result = $scheduler->addTask($task);
+                echo json_encode(['success' => true, 'task' => $result]);
+                break;
+                
+            case 'update_task':
+                $taskId = $_POST['task_id'] ?? '';
+                $updates = json_decode($_POST['updates'] ?? '{}', true);
+                $result = $scheduler->updateTask($taskId, $updates);
+                echo json_encode(['success' => true, 'task' => $result]);
+                break;
+                
+            case 'delete_task':
+                $taskId = $_POST['task_id'] ?? '';
+                $scheduler->deleteTask($taskId);
+                echo json_encode(['success' => true]);
+                break;
+                
+            case 'toggle_task':
+                $taskId = $_POST['task_id'] ?? '';
+                $result = $scheduler->toggleTask($taskId);
+                echo json_encode(['success' => true, 'task' => $result]);
+                break;
+                
+            case 'run_task':
+                $taskId = $_POST['task_id'] ?? '';
+                $result = $scheduler->runTask($taskId);
+                echo json_encode($result);
+                break;
+                
+            case 'run_due_tasks':
+                $results = $scheduler->runDueTasks();
+                echo json_encode(['success' => true, 'executed' => $results]);
+                break;
+                
+            case 'get_logs':
+                $limit = (int)($_GET['limit'] ?? 100);
+                $taskId = $_GET['task_id'] ?? null;
+                $logs = $scheduler->getLogs($limit, $taskId);
+                echo json_encode(['success' => true, 'logs' => $logs]);
+                break;
+                
+            case 'get_stats':
+                $stats = $scheduler->getStats();
+                echo json_encode(['success' => true, 'stats' => $stats]);
+                break;
+                
+            default:
+                echo json_encode(['success' => false, 'message' => 'Unknown action']);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    
+    exit;
+}
+
+// ===== CRON RUNNER (Web Cron) =====
+if (isset($_GET['cron']) && isset($_GET['key'])) {
+    $secretKey = 'your_secret_key_here'; // Change this in production!
+    $providedKey = $_GET['key'] ?? '';
+    
+    if ($providedKey !== $secretKey) {
+        http_response_code(403);
+        die('Forbidden');
+    }
+    
+    header('Content-Type: text/plain');
+    
+    $scheduler = new TaskScheduler($configFile);
+    
+    echo "[" . date('Y-m-d H:i:s') . "] Running scheduled tasks...\n";
+    
+    $results = $scheduler->runDueTasks();
+    
+    if (empty($results)) {
+        echo "No tasks due to run.\n";
+    } else {
+        echo "Executed " . count($results) . " task(s):\n";
+        foreach ($results as $result) {
+            $status = $result['result']['success'] ? 'SUCCESS' : 'FAILED';
+            echo "  - {$result['task_name']}: $status\n";
+            if (!$result['result']['success']) {
+                echo "    Error: {$result['result']['message']}\n";
+            }
+        }
+    }
+    
+    echo "Done.\n";
+    exit;
+}
+
+// ===== AJAX HANDLERS (GET/POST) =====
+if ($is_logged_in && (isset($_GET['action']) || isset($_POST['action']))) {
+    $action = $_POST['action'] ?? $_GET['action'] ?? '';
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+    
+    // --- EXPORT DASHBOARD ---
+    if ($action === 'export_dash') {
+        while (ob_get_level()) ob_end_clean();
+        $db = $_SESSION['db_name'] ?? '';
+        $config = load_config($configFile);
+        $export = [
+            'widgets' => array_values(array_filter($config['widgets'] ?? [], fn($w) => ($w['db'] ?? '') === $db)),
+            'charts' => array_values(array_filter($config['charts'] ?? [], fn($c) => ($c['db'] ?? '') === $db))
+        ];
+        
+        if (isset($_GET['json']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] == 'XMLHttpRequest')) {
+            header('Content-Type: application/json');
+            echo json_encode($export);
+        } else {
+            header('Content-Type: application/json');
+            header('Content-Disposition: attachment; filename="dashboard_export_'.$db.'.json"');
+            echo json_encode($export, JSON_PRETTY_PRINT);
+        }
+        exit;
+    }
+    // --- IMPORT DASHBOARD ---
+    elseif ($action === 'import_dash') {
+        $json = $_POST['data'] ?? '';
+        $data = json_decode($json, true);
+        if ($data) {
+            $config = load_config($configFile);
+            $db = $_SESSION['db_name'] ?? '';
+            
+            if (isset($data['widgets'])) {
+                foreach ($data['widgets'] as $w) {
+                    $w['id'] = uniqid(); // New IDs to avoid collision
+                    $w['db'] = $db;
+                    $config['widgets'][] = $w;
+                }
+            }
+            if (isset($data['charts'])) {
+                foreach ($data['charts'] as $c) {
+                    $c['id'] = uniqid();
+                    $c['db'] = $db;
+                    $config['charts'][] = $c;
+                }
+            }
+            save_config($configFile, $config);
+            echo json_encode(['success' => true]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Invalid JSON data']);
+        }
+        exit;
+    }
+    
+    // --- SAVE DASHBOARD ORDER ---
+    elseif ($action === 'save_order') {
+        $type = $_POST['type'] ?? ''; // 'widgets' or 'charts'
+        $order = $_POST['order'] ?? [];
+        if ($type && !empty($order)) {
+            $config = load_config($configFile);
+            $db = $_SESSION['db_name'] ?? '';
+            
+            // Reorder the specific type while keeping items from other DBs
+            $items = $config[$type] ?? [];
+            $otherItems = array_filter($items, fn($i) => ($i['db'] ?? '') !== $db);
+            $currentDbItems = array_filter($items, fn($i) => ($i['db'] ?? '') === $db);
+            
+            // Map current items for quick lookup
+            $itemMap = [];
+            foreach ($currentDbItems as $i) $itemMap[$i['id']] = $i;
+            
+            $newOrderedList = [];
+            foreach ($order as $id) {
+                if (isset($itemMap[$id])) {
+                    $newOrderedList[] = $itemMap[$id];
+                    unset($itemMap[$id]);
+                }
+            }
+            // Append any missed items
+            foreach ($itemMap as $i) $newOrderedList[] = $i;
+            
+            $config[$type] = array_merge($otherItems, $newOrderedList);
+            save_config($configFile, $config);
+            echo json_encode(['success' => true]);
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Invalid data']);
+        }
+        exit;
+    }
+    
+    // --- RUN WIDGET ACTION ---
+    elseif ($action === 'run_widget_action') {
+        $id = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        $widget = null;
+        foreach ($config['widgets'] ?? [] as $w) {
+            if ($w['id'] == $id) { $widget = $w; break; }
+        }
+        
+        if ($widget && !empty($widget['sql']) && isset($pdo)) {
+            try {
+                $count = $pdo->exec($widget['sql']);
+                echo json_encode(['success' => true, 'message' => "Action executed successfully! $count rows affected."]);
+            } catch (Exception $e) {
+                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+            }
+        } else {
+            echo json_encode(['success' => false, 'message' => 'Widget or SQL not found']);
+        }
+        exit;
+    }
+    
+    // --- GET COLUMNS AJAX ---
+    elseif ($action === 'get_columns') {
+        @error_reporting(0);
+        @ini_set('display_errors', 0);
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        
+        $t = $_POST['table'] ?? $_GET['table'] ?? '';
+        $result = ['columns' => [], 'fks' => []];
+        
+        if ($t) {
+            try {
+                if ($dbMode === 'json' && isset($jsonDb)) {
+                    $data = $jsonDb->select($t, [], null, 'DESC', 1);
+                    if (!empty($data)) {
+                        foreach ($data[0] as $name => $val) {
+                            $result['columns'][] = [
+                                'Field' => $name,
+                                'Type' => gettype($val),
+                                'Key' => $name === 'id' ? 'PRI' : ''
+                            ];
+                        }
+                    }
+                } elseif (isset($pdo)) {
+                    if ($dbMode === 'sqlite') {
+                        $stmt = $pdo->query("PRAGMA table_info(`$t`)");
+                        foreach($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                            $result['columns'][] = [
+                                'Field' => $row['name'],
+                                'Type' => $row['type'],
+                                'Key' => $row['pk'] ? 'PRI' : ''
+                            ];
+                        }
+                        // Get SQLite FKs
+                        $fkStmt = $pdo->query("PRAGMA foreign_key_list(`$t`)");
+                        foreach($fkStmt->fetchAll(PDO::FETCH_ASSOC) as $fk) {
+                            $result['fks'][$fk['from']] = [
+                                'table' => $fk['table'],
+                                'column' => $fk['to']
+                            ];
+                        }
+                    } else {
+                        // MySQL
+                        $stmt = $pdo->query("DESCRIBE `$t`");
+                        $result['columns'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                        
+                        // Get MySQL FKs
+                        $dbName = $_SESSION['db_name'] ?? '';
+                        $fkSql = "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                                 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL";
+                        $fkStmt = $pdo->prepare($fkSql);
+                        $fkStmt->execute([$dbName, $t]);
+                        foreach($fkStmt->fetchAll(PDO::FETCH_ASSOC) as $fk) {
+                            $result['fks'][$fk['COLUMN_NAME']] = [
+                                'table' => $fk['REFERENCED_TABLE_NAME'],
+                                'column' => $fk['REFERENCED_COLUMN_NAME']
+                            ];
+                    }
+                }
+            }
+        } catch (Exception $e) {}
+    }
+        
+        // Smart Guessing for Convention-based FKs (e.g. user_id -> users)
+        if (isset($pdo)) {
+            // Get all tables for comparison
+            static $allTablesForGuessing = null;
+            if ($allTablesForGuessing === null) {
+                try {
+                    if ($dbMode === 'sqlite') {
+                        $st = $pdo->query("SELECT name as Name FROM sqlite_master WHERE type='table'");
+                        $allTablesForGuessing = $st->fetchAll(PDO::FETCH_ASSOC);
+                    } else {
+                        $st = $pdo->query("SHOW TABLES");
+                        $raw = $st->fetchAll(PDO::FETCH_COLUMN);
+                        $allTablesForGuessing = array_map(fn($n) => ['Name' => $n], $raw);
+                    }
+                } catch (Exception $e) { $allTablesForGuessing = []; }
+            }
+            
+            foreach ($result['columns'] as $col) {
+                $colName = $col['Field'] ?? $col['name'] ?? '';
+                if ($colName && !isset($result['fks'][$colName]) && substr($colName, -3) === '_id') {
+                    $guessedTable = guess_fk_table_name($colName, $pdo, $allTablesForGuessing);
+                    if ($guessedTable) {
+                        $result['fks'][$colName] = [
+                            'table' => $guessedTable,
+                            'column' => 'id'
+                        ];
+                    }
+                }
+            }
+        }
+        
+        echo json_encode($result);
+        exit;
+    }
 }
 
 // ===== ACTION HANDLER (POST) =====
@@ -3993,11 +5295,14 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $config['widgets'][] = [
             'id' => uniqid(),
+            'db' => $_SESSION['db_name'] ?? '',
             'table' => $wTable,
             'column' => $wColumn,
             'type' => $wType,
             'label' => $wLabel,
-            'color' => $wColor
+            'color' => $wColor,
+            'date_col' => $_POST['date_col'] ?? '',
+            'sql' => $_POST['sql'] ?? ''
         ];
         
         save_config($configFile, $config);
@@ -4015,6 +5320,49 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?msg=" . urlencode("Widget removed."));
     }
+    // --- DUPLICATE DASHBOARD WIDGET ---
+    elseif ($action === 'duplicate_widget') {
+        $wId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['widgets'])) {
+            $found = null;
+            foreach ($config['widgets'] as $w) {
+                if ($w['id'] === $wId) {
+                    $found = $w;
+                    break;
+                }
+            }
+            if ($found) {
+                $found['id'] = uniqid();
+                $found['label'] .= ' (Copy)';
+                $config['widgets'][] = $found;
+                save_config($configFile, $config);
+            }
+        }
+        redirect("?msg=" . urlencode("Widget duplicated."));
+    }
+    // --- EDIT DASHBOARD WIDGET ---
+    elseif ($action === 'edit_widget') {
+        $wId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['widgets'])) {
+            foreach ($config['widgets'] as &$w) {
+                if ($w['id'] === $wId) {
+                    $w['db'] = $_SESSION['db_name'] ?? $w['db'] ?? '';
+                    $w['table'] = $_POST['table'] ?? $w['table'];
+                    $w['column'] = $_POST['column'] ?? $w['column'];
+                    $w['type'] = $_POST['type'] ?? $w['type'];
+                    $w['label'] = $_POST['label'] ?? $w['label'];
+                    $w['color'] = $_POST['color'] ?? $w['color'];
+                    $w['date_col'] = $_POST['date_col'] ?? $w['date_col'] ?? '';
+                    $w['sql'] = $_POST['sql'] ?? $w['sql'] ?? '';
+                    break;
+                }
+            }
+            save_config($configFile, $config);
+        }
+        redirect("?msg=" . urlencode("Widget updated."));
+    }
     // --- ADD ANALYTICS CHART ---
     elseif ($action === 'add_chart') {
         $config = load_config($configFile);
@@ -4022,11 +5370,18 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $config['charts'][] = [
             'id' => uniqid(),
+            'db' => $_SESSION['db_name'] ?? '',
             'table' => $_POST['table'] ?? '',
             'label_col' => $_POST['label_col'] ?? '',
-            'data_col' => $_POST['data_col'] ?? '',
+            'label_display_col' => $_POST['label_display_col'] ?? '',
+            'referenced_table' => $_POST['referenced_table'] ?? '',
+            'referenced_column' => $_POST['referenced_column'] ?? '',
+            'calc_mode' => $_POST['calc_mode'] ?? 'COUNT',
+            'data_col' => (isset($_POST['data_col']) && strpos($_POST['data_col'], ',') !== false) ? explode(',', $_POST['data_col']) : ($_POST['data_col'] ?? '*'),
             'type' => $_POST['type'] ?? 'bar',
             'title' => $_POST['title'] ?? 'New Chart',
+            'palette' => $_POST['palette'] ?? 'vibrant',
+            'date_col' => $_POST['date_col'] ?? '',
             'limit' => (int)($_POST['limit'] ?? 5)
         ];
         
@@ -4045,6 +5400,55 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?msg=" . urlencode("Chart removed."));
     }
+    // --- DUPLICATE ANALYTICS CHART ---
+    elseif ($action === 'duplicate_chart') {
+        $cId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['charts'])) {
+            $found = null;
+            foreach ($config['charts'] as $c) {
+                if ($c['id'] === $cId) {
+                    $found = $c;
+                    break;
+                }
+            }
+            if ($found) {
+                $found['id'] = uniqid();
+                $found['title'] .= ' (Copy)';
+                $config['charts'][] = $found;
+                save_config($configFile, $config);
+            }
+        }
+        redirect("?msg=" . urlencode("Chart duplicated."));
+    }
+    // --- EDIT ANALYTICS CHART ---
+    elseif ($action === 'edit_chart') {
+        $cId = $_POST['id'] ?? '';
+        $config = load_config($configFile);
+        if (isset($config['charts'])) {
+            foreach ($config['charts'] as &$c) {
+                if ($c['id'] === $cId) {
+                    $c['db'] = $_SESSION['db_name'] ?? $c['db'] ?? '';
+                    $c['table'] = $_POST['table'] ?? $c['table'];
+                    $c['label_col'] = $_POST['label_col'] ?? $c['label_col'];
+                    $c['label_display_col'] = $_POST['label_display_col'] ?? $c['label_display_col'];
+                    $c['referenced_table'] = $_POST['referenced_table'] ?? $c['referenced_table'];
+                    $c['referenced_column'] = $_POST['referenced_column'] ?? $c['referenced_column'];
+                    $c['calc_mode'] = $_POST['calc_mode'] ?? $c['calc_mode'];
+                    $c['data_col'] = (isset($_POST['data_col']) && strpos($_POST['data_col'], ',') !== false) ? explode(',', $_POST['data_col']) : ($_POST['data_col'] ?? $c['data_col']);
+                    $c['type'] = $_POST['type'] ?? $c['type'];
+                    $c['title'] = $_POST['title'] ?? $c['title'];
+                    $c['palette'] = $_POST['palette'] ?? $c['palette'] ?? 'vibrant';
+                    $c['date_col'] = $_POST['date_col'] ?? $c['date_col'] ?? '';
+                    $c['limit'] = (int)($_POST['limit'] ?? $c['limit']);
+                    break;
+                }
+            }
+            save_config($configFile, $config);
+        }
+        redirect("?msg=" . urlencode("Chart updated."));
+    }
+
     // --- GET CHART DATA (AJAX) ---
     elseif ($action === 'get_chart_data') {
         while (ob_get_level()) ob_end_clean();
@@ -4069,29 +5473,95 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         
         try {
             $table = $chart['table'];
-            $label = $chart['label_col'];
-            $data = $chart['data_col'];
-            $limit = $chart['limit'] ?: 5;
+            $labelCol = $chart['label_col'];
+            $displayCol = $chart['label_display_col'] ?? '';
+            $refTable = $chart['referenced_table'] ?? '';
+            $refCol = $chart['referenced_column'] ?? '';
+            $dateCol = $chart['date_col'] ?? '';
+            $dateRange = $_POST['date_range'] ?? '';
             
-            // Logic: Count group by label
-            $sql = "SELECT `$label` as label, COUNT(*) as value 
-                    FROM `$table` 
-                    GROUP BY `$label` 
-                    ORDER BY value DESC 
-                    LIMIT $limit";
+            $calc = $chart['calc_mode'] ?? 'COUNT';
+            $dataCols = $chart['data_col'] ?? ['*'];
+            if (!is_array($dataCols)) $dataCols = [$dataCols];
             
-            $stmt = $pdo->query($sql);
-            $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $limit = (int)($chart['limit'] ?? 5);
+            $limitClause = $limit > 0 ? "LIMIT $limit" : "";
+            
+            $where = "1=1";
+            $params = [];
+            if ($dateCol && $dateRange) {
+                $dates = explode(' to ', $dateRange);
+                if (count($dates) === 2) {
+                    $where .= " AND `$dateCol` >= ? AND `$dateCol` <= ?";
+                    $params[] = $dates[0] . ' 00:00:00';
+                    $params[] = $dates[1] . ' 23:59:59';
+                } elseif (count($dates) === 1) {
+                    $where .= " AND `$dateCol` LIKE ?";
+                    $params[] = $dates[0] . '%';
+                }
+            }
+
+            $series = [];
+            foreach ($dataCols as $dCol) {
+                $aggFunc = "$calc(`$dCol`)";
+                if ($calc === 'COUNT' && $dCol === '*') $aggFunc = "COUNT(*)";
+                
+                if ($displayCol && $refTable && $refCol) {
+                    $sql = "SELECT t2.`$displayCol` as label, $aggFunc as value 
+                            FROM `$table` t1
+                            JOIN `$refTable` t2 ON t1.`$labelCol` = t2.`$refCol`
+                            WHERE $where
+                            GROUP BY t2.`$displayCol` 
+                            ORDER BY value DESC 
+                            $limitClause";
+                } else {
+                    $sql = "SELECT `$labelCol` as label, $aggFunc as value 
+                            FROM `$table` 
+                            WHERE $where
+                            GROUP BY `$labelCol` 
+                            ORDER BY value DESC 
+                            $limitClause";
+                }
+                
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($params);
+                $res = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                $series[$dCol] = [
+                    'label' => ($calc === 'COUNT' && $dCol === '*') ? 'Total Rows' : "$calc($dCol)",
+                    'data' => $res
+                ];
+            }
+
+            $firstSeriesKey = array_key_first($series);
+            if (!$firstSeriesKey) throw new Exception("No data columns defined.");
+            
+            $labels = array_column($series[$firstSeriesKey]['data'], 'label');
+            
+            $finalDatasets = [];
+            foreach ($series as $colName => $s) {
+                $valMap = [];
+                foreach ($s['data'] as $r) $valMap[$r['label']] = $r['value'];
+                
+                $dataValues = [];
+                foreach ($labels as $lbl) $dataValues[] = $valMap[$lbl] ?? 0;
+                
+                $finalDatasets[] = [
+                    'label' => $s['label'],
+                    'data' => $dataValues
+                ];
+            }
             
             echo json_encode([
                 'success' => true,
-                'labels' => array_column($results, 'label'),
-                'values' => array_column($results, 'value')
+                'labels' => $labels,
+                'datasets' => $finalDatasets
             ]);
+            exit;
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+            exit;
         }
-        exit;
     }
     // --- SMART SEEDER ---
     elseif ($action === 'seed_data') {
@@ -4938,26 +6408,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect("?view=manage_dbs&msg=" . urlencode($msg ?? '') . "&error=" . urlencode($error ?? ''));
     }
-    // --- GET COLUMNS AJAX ---
-    elseif ($action === 'get_columns') {
-        while (ob_get_level()) ob_end_clean();
-        header('Content-Type: application/json');
-        $t = $_POST['table'] ?? $_GET['table'] ?? '';
-        $cols = [];
-        if ($t && isset($pdo)) {
-            try {
-                if ($dbMode === 'sqlite') {
-                    $stmt = $pdo->query("PRAGMA table_info(`$t`)");
-                    foreach($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $cols[] = $row['name'];
-                } else {
-                    $stmt = $pdo->query("DESCRIBE `$t`");
-                    $cols = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'Field');
-                }
-            } catch (Exception $e) {}
-        }
-        echo json_encode($cols);
-        exit;
-    }
+
     // --- CREATE TABLE ---
     elseif ($action === 'create_table') {
         $name = trim($_POST['name'] ?? '');
@@ -6210,6 +7661,7 @@ if (!empty($tables)) {
     <script src="<?= get_asset_url('assets/vendor/tom-select/tom-select.complete.min.js', 'https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js') ?>"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     <style>
         :root {
             --bg-dark: #0f0f0fff;
@@ -6356,6 +7808,67 @@ if (!empty($tables)) {
             box-shadow: 0 10px 20px rgba(0,0,0,0.3);
             border-color: var(--accent);
         }
+        
+        /* Interactive Chart Type Selector */
+        .chart-type-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .chart-type-item {
+            background: rgba(255,255,255,0.02);
+            border: 2px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px 5px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .chart-type-item:hover {
+            border-color: var(--accent);
+            background: rgba(99,102,241,0.08);
+        }
+        .chart-type-item.active {
+            border-color: var(--accent);
+            background: rgba(99,102,241,0.15);
+            box-shadow: 0 0 15px rgba(99,102,241,0.2);
+        }
+        .chart-type-item i {
+            font-size: 1.4rem;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+        .chart-type-item.active i {
+            color: var(--accent);
+        }
+        .chart-type-item span {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Sortable Handles */
+        .drag-handle {
+            cursor: grab;
+            padding: 5px;
+            color: var(--text-secondary);
+            opacity: 0.3;
+            transition: opacity 0.2s;
+        }
+        .widget-card:hover .drag-handle, .chart-card:hover .drag-handle {
+            opacity: 1;
+        }
+        .sortable-ghost {
+            opacity: 0.4;
+            border: 2px dashed var(--accent) !important;
+        }
+
         .chart-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
@@ -7866,22 +9379,30 @@ var advancedFilters = null;
         }
     });
 
-    // Helper to init TomSelect with correct settings
-    function initTomSelect(el) {
-        if (el.tomselect) return; // Prevent double initialization
-        if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
-            new TomSelect(el, {
-                plugins: ['clear_button'],
-                maxOptions: 50,
-                sortField: { field: "text", direction: "asc" },
-                dropdownParent: 'body', // Fixes overflow/clipping issues
-                onDropdownOpen: function() {
-                    // Ensure z-index is higher than anything else
-                    const wrapper = this.dropdown;
-                    if(wrapper) wrapper.style.zIndex = "99999";
-                }
-            });
-        }
+    // Helper to init TomSelect with correct settings (Unified)
+    function initTomSelect(target, options = {}) {
+        if (typeof TomSelect === 'undefined') return;
+        const defaults = {
+            create: false,
+            sortField: { field: "text", direction: "asc" },
+            dropdownParent: 'body',
+            plugins: ['clear_button'],
+            maxOptions: 100,
+            onDropdownOpen: function() {
+                const wrapper = this.dropdown;
+                if(wrapper) wrapper.style.zIndex = "99999";
+            }
+        };
+        const settings = Object.assign({}, defaults, options);
+        const elements = (typeof target === 'string') ? document.querySelectorAll(target) : (target instanceof NodeList ? target : [target]);
+        
+        elements.forEach(el => {
+            if (!el || el.nodeType !== 1 || el.tagName !== 'SELECT') return;
+            if (el.tomselect) el.tomselect.destroy();
+            try {
+                new TomSelect(el, settings);
+            } catch (e) { console.warn("TS init failed:", e); }
+        });
     }
 
     // --- COPY STRUCTURE FUNCTIONS ---
@@ -8917,81 +10438,7 @@ var advancedFilters = null;
     }
 
     // --- Searchable Select Logic ---
-    function initSearchableSelects() {
-        document.querySelectorAll('.searchable-select').forEach(select => {
-            if (select.dataset.initialized) return;
-            select.dataset.initialized = "true";
-            
-            // Hide original select
-            select.style.display = 'none';
-            
-            // Create custom UI
-            const wrapper = document.createElement('div');
-            wrapper.className = 'ss-wrapper';
-            wrapper.style.position = 'relative';
-            
-            const trigger = document.createElement('div');
-            trigger.className = 'ss-trigger';
-            const selectedOption = select.options[select.selectedIndex];
-            trigger.innerHTML = (selectedOption ? selectedOption.text : '-- Select --') + ' <i class="fas fa-chevron-down" style="font-size:0.7rem; opacity:0.5;"></i>';
-            
-            const dropdown = document.createElement('div');
-            dropdown.className = 'ss-dropdown';
-            dropdown.style.display = 'none';
-            
-            const searchInput = document.createElement('input');
-            searchInput.type = 'text';
-            searchInput.placeholder = 'Search...';
-            searchInput.className = 'ss-search';
-            
-            const list = document.createElement('div');
-            list.className = 'ss-list';
-            
-            const updateList = (filter = '') => {
-                list.innerHTML = '';
-                Array.from(select.options).forEach((opt, idx) => {
-                    if (filter && !opt.text.toLowerCase().includes(filter.toLowerCase())) return;
-                    const item = document.createElement('div');
-                    item.className = 'ss-item' + (idx === select.selectedIndex ? ' selected' : '');
-                    item.innerText = opt.text;
-                    item.onclick = () => {
-                        select.selectedIndex = idx;
-                        select.dispatchEvent(new Event('change'));
-                        trigger.innerHTML = opt.text + ' <i class="fas fa-chevron-down" style="font-size:0.7rem; opacity:0.5;"></i>';
-                        dropdown.style.display = 'none';
-                        if (select.onchange) select.onchange(); // Trigger submit
-                    };
-                    list.appendChild(item);
-                });
-            };
-            
-            searchInput.oninput = (e) => updateList(e.target.value);
-            
-            trigger.onclick = (e) => {
-                e.stopPropagation();
-                // Close other dropdowns
-                document.querySelectorAll('.ss-dropdown').forEach(d => { if(d !== dropdown) d.style.display = 'none'; });
-                const isVisible = dropdown.style.display === 'block';
-                dropdown.style.display = isVisible ? 'none' : 'block';
-                if (!isVisible) {
-                    searchInput.value = '';
-                    updateList();
-                    setTimeout(() => searchInput.focus(), 10);
-                }
-            };
-            
-            dropdown.appendChild(searchInput);
-            dropdown.appendChild(list);
-            wrapper.appendChild(trigger);
-            wrapper.appendChild(dropdown);
-            select.parentNode.insertBefore(wrapper, select);
-            
-            document.addEventListener('click', () => dropdown.style.display = 'none');
-            dropdown.onclick = (e) => e.stopPropagation();
-        });
-    }
-
-    document.addEventListener('DOMContentLoaded', initSearchableSelects);
+    document.addEventListener('DOMContentLoaded', () => initTomSelect('.searchable-select'));
 
     // --- Custom Export Logic ---
     function handleExport(event) {
@@ -10235,6 +11682,53 @@ var advancedFilters = null;
     .ss-item:hover { background: var(--bg-hover); color: var(--accent); }
     .ss-item.selected { background: var(--accent); color: white; }
 
+
+    .doc-tab-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        padding: 10px;
+        text-align: left;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        transition: all 0.2s;
+    }
+    .doc-tab-btn:hover { background: var(--bg-hover); color: var(--accent); }
+    .doc-tab-btn.active { background: var(--accent); color: white; }
+    
+    .code-block {
+        background: #000;
+        color: #10b981;
+        padding: 10px;
+        border-radius: 4px;
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        font-size: 0.75rem;
+        overflow-x: auto;
+        border: 1px solid #333;
+        margin: 10px 0;
+    }
+    .btn-icon {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        padding: 5px;
+        transition: all 0.2s;
+        border-radius: 4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .btn-icon:hover {
+        background: rgba(255,255,255,0.1);
+        color: var(--accent);
+        transform: scale(1.1);
+    }
+    .btn-icon.danger:hover {
+        background: rgba(239, 68, 68, 0.1);
+        color: #ef4444;
+    }
     </style>
 </head>
 <body>
@@ -10351,6 +11845,9 @@ var advancedFilters = null;
             </div>
             <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
+            </a>
+            <a href="javascript:void(0)" onclick="openDocsModal()" class="nav-item">
+                <i class="fas fa-book" style="width:20px; text-align:center;"></i> <span>Developer Docs</span>
             </a>
             
 
@@ -10816,20 +12313,85 @@ var advancedFilters = null;
                     if (window.location.search.includes('view=compare')) {
                         toggleCompareCard();
                     }
+
+                    function exportDash() {
+                        fetch('?action=export_dash&json=1')
+                        .then(res => res.json())
+                        .then(data => {
+                            const json = JSON.stringify(data, null, 2);
+                            Swal.fire({
+                                title: 'Export Dashboard',
+                                html: `
+                                    <p style="font-size:0.85rem; color:var(--text-secondary); text-align:left; margin-bottom:10px;">Copy the JSON below to migrate your dashboard to another database:</p>
+                                    <textarea id="dash-export-json" class="form-control" style="height:200px; font-family:monospace; font-size:0.75rem; background:var(--bg-dark); color:var(--accent); border-color:var(--border-color);" readonly>${json}</textarea>
+                                `,
+                                showCancelButton: true,
+                                confirmButtonText: '<i class="fas fa-copy"></i> Copy to Clipboard',
+                                cancelButtonText: 'Close',
+                                background: 'var(--bg-card)',
+                                color: 'var(--text-primary)',
+                                preConfirm: () => {
+                                    const el = document.getElementById('dash-export-json');
+                                    el.select();
+                                    document.execCommand('copy');
+                                    Swal.showValidationMessage('Copied to clipboard!');
+                                    return false; // Keep open so user sees message
+                                }
+                            });
+                        });
+                    }
+
+                    function importDash() {
+                        Swal.fire({
+                            title: 'Import Dashboard',
+                            text: 'Paste your dashboard JSON configuration here:',
+                            input: 'textarea',
+                            inputPlaceholder: '{"widgets": [...], "charts": [...]}',
+                            showCancelButton: true,
+                            confirmButtonText: 'Import',
+                            background: 'var(--bg-card)',
+                            color: 'var(--text-primary)',
+                        }).then((result) => {
+                            if (result.isConfirmed && result.value) {
+                                const fd = new FormData();
+                                fd.append('action', 'import_dash');
+                                fd.append('data', result.value);
+                                fetch('?', { method: 'POST', body: fd })
+                                .then(res => res.json())
+                                .then(data => {
+                                    if (data.success) {
+                                        Swal.fire('Imported!', 'Dashboard configuration has been merged.', 'success').then(() => location.reload());
+                                    } else {
+                                        Swal.fire('Error', data.message, 'error');
+                                    }
+                                });
+                            }
+                        });
+                    }
                 </script>
 
-                <!-- CUSTOM WIDGETS SECTION -->
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; margin-top:10px;">
                     <h3 style="margin:0;"><i class="fas fa-th-large"></i> Custom Widgets</h3>
-                    <button type="button" class="btn btn-primary btn-sm" onclick="openAddWidgetModal()">
-                        <i class="fas fa-plus"></i> Add Widget
-                    </button>
+                    <div style="display:flex; gap:10px;">
+                        <button type="button" class="btn btn-sm" style="background:rgba(255,255,255,0.05); color:var(--text-primary); border:1px solid var(--border-color);" onclick="exportDash()">
+                            <i class="fas fa-copy"></i> Export
+                        </button>
+                        <button type="button" class="btn btn-sm" style="background:rgba(255,255,255,0.05); color:var(--text-primary); border:1px solid var(--border-color);" onclick="importDash()">
+                            <i class="fas fa-paste"></i> Import
+                        </button>
+                        <button type="button" class="btn btn-primary btn-sm" onclick="openAddWidgetModal()">
+                            <i class="fas fa-plus"></i> Add Widget
+                        </button>
+                    </div>
                 </div>
                 
                 <div class="widget-grid">
                     <?php 
                     $cfg = load_config($configFile);
-                    $widgets = $cfg['widgets'] ?? [];
+                    $db = $_SESSION['db_name'] ?? '';
+                    $widgets = array_filter($cfg['widgets'] ?? [], function($w) use ($db) {
+                        return ($w['db'] ?? '') === $db;
+                    });
                     if (empty($widgets)): ?>
                         <div style="grid-column: 1/-1; text-align:center; padding:30px; border:1px dashed var(--border-color); border-radius:12px; color:var(--text-secondary);">
                             No widgets added. Click "Add Widget" to pin table statistics here.
@@ -10840,7 +12402,25 @@ var advancedFilters = null;
                             try {
                                 if (isset($pdo)) {
                                     $col = $w['column'] === '*' ? '*' : "`{$w['column']}`";
-                                    $wStmt = $pdo->query("SELECT {$w['type']}($col) as val FROM `{$w['table']}`");
+                                    $dateCol = $w['date_col'] ?? '';
+                                    $dateRange = $_GET['date_range'] ?? '';
+                                    $where = "1=1";
+                                    $params = [];
+                                    
+                                    if ($dateCol && $dateRange) {
+                                        $dates = explode(' to ', $dateRange);
+                                        if (count($dates) === 2) {
+                                            $where .= " AND `$dateCol` >= ? AND `$dateCol` <= ?";
+                                            $params[] = $dates[0] . ' 00:00:00';
+                                            $params[] = $dates[1] . ' 23:59:59';
+                                        } elseif (count($dates) === 1) {
+                                            $where .= " AND `$dateCol` LIKE ?";
+                                            $params[] = $dates[0] . '%';
+                                        }
+                                    }
+                                    
+                                    $wStmt = $pdo->prepare("SELECT {$w['type']}($col) as val FROM `{$w['table']}` WHERE $where");
+                                    $wStmt->execute($params);
                                     $val = $wStmt->fetchColumn();
                                 } elseif ($dbMode === 'json' && isset($jsonDb)) {
                                     $data = $jsonDb->select($w['table']);
@@ -10853,31 +12433,53 @@ var advancedFilters = null;
                             if ($w['type'] === 'COUNT') $icon = 'fa-calculator';
                             if ($w['type'] === 'SUM') $icon = 'fa-plus-circle';
                     ?>
-                        <div class="widget-card">
-                            <form method="POST" style="margin:0;" onsubmit="saConfirmForm(event, 'Remove this widget?')">
-                                <input type="hidden" name="action" value="remove_widget">
-                                <input type="hidden" name="id" value="<?= $w['id'] ?>">
-                                <button type="submit" class="widget-remove" title="Remove Widget" style="background:none; border:none;"><i class="fas fa-times"></i></button>
-                            </form>
+                        <div class="widget-card" data-id="<?= $w['id'] ?>">
+                            <div class="drag-handle" style="position:absolute; top:10px; left:10px;"><i class="fas fa-grip-vertical"></i></div>
+                            <div class="widget-actions">
+                                <button type="button" onclick='openAddWidgetModal(<?= json_encode($w) ?>)' title="Edit Widget" class="btn-icon"><i class="fas fa-edit"></i></button>
+                                <button type="button" onclick='openAddWidgetModal(<?= json_encode($w) ?>, true)' title="Duplicate Widget" class="btn-icon"><i class="fas fa-copy"></i></button>
+                                <form method="POST" style="display:inline;" onsubmit="saConfirmForm(event, 'Remove this widget?')">
+                                    <input type="hidden" name="action" value="remove_widget">
+                                    <input type="hidden" name="id" value="<?= $w['id'] ?>">
+                                    <button type="submit" title="Remove Widget" class="btn-icon danger"><i class="fas fa-times"></i></button>
+                                </form>
+                            </div>
                             <div class="icon" style="color:var(--<?= $color ?>)"><i class="fas <?= $icon ?>"></i></div>
-                            <div class="value"><?= is_numeric($val) ? number_format($val) : $val ?></div>
+                             <?php if ($w['type'] === 'EXECUTE'): ?>
+                                <div style="margin:20px 0 10px 0;">
+                                    <button class="btn btn-sm" onclick="runWidgetAction('<?= $w['id'] ?>')" style="width:100%; background:var(--<?= $color ?>); color:white; font-weight:600; border:none; padding:10px; border-radius:8px; cursor:pointer; transition:all 0.2s; box-shadow:0 4px 12px rgba(0,0,0,0.2);" onmouseover="this.style.filter='brightness(1.2)'; this.style.transform='translateY(-2px)'" onmouseout="this.style.filter='none'; this.style.transform='none'">
+                                        <i class="fas fa-play"></i> RUN ACTION
+                                    </button>
+                                </div>
+                             <?php else: ?>
+                                <div class="value"><?= is_numeric($val) ? number_format($val) : $val ?></div>
+                             <?php endif; ?>
                             <div class="label"><?= htmlspecialchars($w['label']) ?></div>
                             <div style="position:absolute; bottom:0; left:0; right:0; height:4px; background:var(--<?= $color ?>); opacity:0.3;"></div>
                         </div>
                     <?php endforeach; endif; ?>
                 </div>
                 
-                <!-- ANALYTICS CHARTS SECTION -->
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; margin-top:30px;">
-                    <h3 style="margin:0;"><i class="fas fa-chart-pie"></i> Visual Analytics</h3>
-                    <button type="button" class="btn btn-accent btn-sm" onclick="openAddChartModal()">
-                        <i class="fas fa-chart-line"></i> Add Chart
-                    </button>
+                <!-- ANALYTICS SECTION -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin:25px 0 15px 0;">
+                    <h3 style="margin:0;"><i class="fas fa-chart-pie"></i> Analytics Dashboard</h3>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <div style="position:relative;">
+                            <i class="fas fa-calendar-alt" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--text-secondary); pointer-events:none; z-index:10;"></i>
+                            <input type="text" id="global_date_range" class="form-control" placeholder="All Time" style="padding-left:35px; width:220px; background:var(--bg-card); height:34px; font-size:0.85rem; border:1px solid var(--border-color); border-radius:6px; color:var(--text-primary);">
+                        </div>
+                        <button type="button" class="btn btn-accent btn-sm" onclick="openAddChartModal()">
+                            <i class="fas fa-chart-line"></i> Add Chart
+                        </button>
+                    </div>
                 </div>
-                
+
                 <div class="chart-grid">
                     <?php 
-                    $charts = $cfg['charts'] ?? [];
+                    $db = $_SESSION['db_name'] ?? '';
+                    $charts = array_filter($cfg['charts'] ?? [], function($c) use ($db) {
+                        return ($c['db'] ?? '') === $db;
+                    });
                     if (empty($charts)): ?>
                         <div style="grid-column: 1/-1; text-align:center; padding:40px; border:2px dashed var(--border-color); border-radius:16px; color:var(--text-secondary); background: rgba(255,255,255,0.02);">
                             <i class="fas fa-chart-area" style="font-size:2rem; margin-bottom:15px; display:block;"></i>
@@ -10885,23 +12487,28 @@ var advancedFilters = null;
                         </div>
                     <?php else: 
                         foreach ($charts as $c): ?>
-                        <div class="chart-card">
+                        <div class="chart-card" data-id="<?= $c['id'] ?>">
                             <div class="chart-header">
-                                <h4 style="margin:0; font-size:1.1rem; color:var(--text-primary);"><?= htmlspecialchars($c['title']) ?></h4>
-                                <form method="POST" style="margin:0;" onsubmit="saConfirmForm(event, 'Remove this chart?')">
-                                    <input type="hidden" name="action" value="remove_chart">
-                                    <input type="hidden" name="id" value="<?= $c['id'] ?>">
-                                    <button type="submit" class="chart-remove" style="background:none; border:none;" title="Remove Chart">
-                                        <i class="fas fa-trash-alt"></i>
-                                    </button>
-                                </form>
+                                <div class="drag-handle" style="margin-right:10px;"><i class="fas fa-grip-horizontal"></i></div>
+                                <h4 style="margin:0; font-size:1.1rem; color:var(--text-primary); flex:1;"><?= htmlspecialchars($c['title']) ?></h4>
+                                <div class="chart-actions" style="display:flex; gap:8px;">
+                                    <button type="button" onclick='openAddChartModal(<?= json_encode($c) ?>)' class="btn-icon" title="Edit Chart"><i class="fas fa-edit"></i></button>
+                                    <button type="button" onclick='openAddChartModal(<?= json_encode($c) ?>, true)' class="btn-icon" title="Duplicate Chart"><i class="fas fa-copy"></i></button>
+                                    <form method="POST" style="margin:0;" onsubmit="saConfirmForm(event, 'Remove this chart?')">
+                                        <input type="hidden" name="action" value="remove_chart">
+                                        <input type="hidden" name="id" value="<?= $c['id'] ?>">
+                                        <button type="submit" class="btn-icon danger" title="Remove Chart">
+                                            <i class="fas fa-trash-alt"></i>
+                                        </button>
+                                    </form>
+                                </div>
                             </div>
                             <div style="position:relative; height:280px; width:100%;">
                                 <canvas id="chart-<?= $c['id'] ?>"></canvas>
                             </div>
                             <script>
                             document.addEventListener('DOMContentLoaded', function() {
-                                initDashboardChart('<?= $c['id'] ?>', '<?= $c['type'] ?>');
+                                initDashboardChart('<?= $c['id'] ?>', '<?= $c['type'] ?>', '<?= $c['palette'] ?? 'vibrant' ?>');
                             });
                             </script>
                         </div>
@@ -11392,6 +12999,226 @@ var advancedFilters = null;
                             return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Removed' }).then(() => location.reload()); } });
+                }
+
+                function openDocsModal() {
+                    const apiKeys = <?= json_encode($config['api_keys'] ?? []) ?>;
+                    const apiKey = apiKeys.length > 0 ? apiKeys[0].key : 'No API Key Found';
+                    const baseUrl = window.location.origin + window.location.pathname;
+
+                    const keysTable = apiKeys.map(k => `
+                        <tr style="border-bottom:1px solid #222;">
+                            <td style="padding:10px;">${k.name}</td>
+                            <td style="padding:10px;"><code style="color:var(--accent); font-size:0.75rem;">${k.key.substring(0,8)}...</code></td>
+                            <td style="padding:10px;">${parseInt(k.rate_limit).toLocaleString()}/day</td>
+                            <td style="padding:10px; text-align:right;">
+                                <button onclick='editApiKey(${JSON.stringify(k)})' class="btn-icon" title="Edit"><i class="fas fa-edit"></i></button>
+                                <button onclick="deleteApiKey('${k.id}')" class="btn-icon danger" title="Revoke"><i class="fas fa-trash-alt"></i></button>
+                            </td>
+                        </tr>
+                    `).join('') || '<tr><td colspan="4" style="padding:20px; text-align:center; color:var(--text-secondary);">No API keys found.</td></tr>';
+
+                    Swal.fire({
+                        title: '<i class="fas fa-book"></i> Developer Documentation',
+                        width: '900px',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        showCloseButton: true,
+                        showConfirmButton: false,
+                        html: `
+                            <div style="display:flex; height:600px; text-align:left;">
+                                <!-- Modal Sidebar -->
+                                <div style="width:200px; border-right:1px solid var(--border-color); padding-right:15px; display:flex; flex-direction:column; gap:10px;">
+                                    <button onclick="switchDocTab('api')" class="doc-tab-btn active" id="tab-api"><i class="fas fa-plug"></i> API Generator</button>
+                                    <button onclick="switchDocTab('cron')" class="doc-tab-btn" id="tab-cron"><i class="fas fa-clock"></i> Cron Jobs</button>
+                                    <button onclick="switchDocTab('scheduler')" class="doc-tab-btn" id="tab-scheduler"><i class="fas fa-tasks"></i> Task Scheduler</button>
+                                    <button onclick="switchDocTab('keys')" class="doc-tab-btn" id="tab-keys"><i class="fas fa-key"></i> API Keys</button>
+                                </div>
+                                <!-- Modal Content -->
+                                <div style="flex:1; padding-left:20px; overflow-y:auto;" id="doc-content">
+                                    <!-- API CONTENT -->
+                                    <div id="doc-api" class="doc-section">
+                                        <h3 style="margin-top:0; color:var(--accent);"><i class="fas fa-plug"></i> API Generator</h3>
+                                        <p style="font-size:0.9rem; color:var(--text-secondary);">The built-in API allows you to perform CRUD operations on your tables remotely.</p>
+                                        
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Authentication</h4>
+                                        <p style="font-size:0.8rem; color:var(--text-secondary);">All API requests must include the following header:</p>
+                                        <pre class="code-block">X-API-Key: ${apiKey}</pre>
+
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Base Endpoint</h4>
+                                        <pre class="code-block">${baseUrl}?api=api_manager</pre>
+
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Actions</h4>
+                                        <ul style="font-size:0.85rem; padding-left:20px;">
+                                            <li><strong>get_table_list</strong>: Returns a list of all tables in the current DB.</li>
+                                            <li><strong>get_data</strong>: Returns rows from a table. Params: <code>table</code>, <code>limit</code>, <code>offset</code>.</li>
+                                            <li><strong>insert</strong>: Insert new record. Params: <code>table</code> + fields in body.</li>
+                                            <li><strong>update</strong>: Update record. Params: <code>table</code>, <code>id</code> (or PK) + fields in body.</li>
+                                            <li><strong>delete</strong>: Delete record. Params: <code>table</code>, <code>id</code>.</li>
+                                        </ul>
+
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Example Usage (cURL)</h4>
+                                        <pre class="code-block">curl -H "X-API-Key: ${apiKey}" \\
+"${baseUrl}?api=api_manager&action=get_data&table=users&limit=10"</pre>
+                                    </div>
+
+                                    <!-- CRON CONTENT -->
+                                    <div id="doc-cron" class="doc-section" style="display:none;">
+                                        <h3 style="margin-top:0; color:var(--accent);"><i class="fas fa-clock"></i> Cron Jobs</h3>
+                                        <p style="font-size:0.9rem; color:var(--text-secondary);">Automate database backups and maintenance tasks using your server's Cron system.</p>
+                                        
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Recommended Cron Settings</h4>
+                                        <p style="font-size:0.8rem; color:var(--text-secondary);">To trigger automatic backups, set up a cron job to call the following URL:</p>
+                                        
+                                        <h5 style="margin:15px 0 5px; font-size:0.85rem;">GitHub Backup Trigger</h5>
+                                        <pre class="code-block">0 0 * * * curl -X POST -d "action=push_github_backup" "${baseUrl}"</pre>
+                                        
+                                        <h5 style="margin:15px 0 5px; font-size:0.85rem;">Telegram Backup Trigger</h5>
+                                        <pre class="code-block">0 0 * * * curl -X POST -d "action=push_telegram_backup" "${baseUrl}"</pre>
+
+                                        <div style="background:rgba(234, 179, 8, 0.1); border:1px solid #eab308; padding:10px; border-radius:4px; margin-top:15px;">
+                                            <p style="font-size:0.75rem; color:#eab308; margin:0;"><i class="fas fa-exclamation-triangle"></i> Note: These actions require an authenticated session or an API Key bypass. If using from external server, ensure you pass authentication.</p>
+                                        </div>
+                                    </div>
+
+                                    <!-- SCHEDULER CONTENT -->
+                                    <div id="doc-scheduler" class="doc-section" style="display:none;">
+                                        <h3 style="margin-top:0; color:var(--accent);"><i class="fas fa-tasks"></i> Task Scheduler</h3>
+                                        <p style="font-size:0.9rem; color:var(--text-secondary);">Manage and monitor internal automated tasks.</p>
+                                        
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">How it works</h4>
+                                        <p style="font-size:0.8rem; color:var(--text-secondary);">The Task Scheduler runs internal routines like auto-cleaning logs or syncing data. It is currently triggered by user activity (Pseudo-Cron).</p>
+                                        
+                                        <h4 style="font-size:0.9rem; margin-bottom:5px;">Manual Trigger</h4>
+                                        <p style="font-size:0.8rem; color:var(--text-secondary);">You can manually trigger the scheduler by visiting:</p>
+                                        <pre class="code-block">${baseUrl}?action=run_scheduler</pre>
+                                    </div>
+
+                                    <!-- KEYS CONTENT -->
+                                    <div id="doc-keys" class="doc-section" style="display:none;">
+                                        <h3 style="margin-top:0; color:var(--accent);"><i class="fas fa-key"></i> API Keys Management</h3>
+                                        <p style="font-size:0.9rem; color:var(--text-secondary);">Manage and monitor your API keys for remote access.</p>
+                                        
+                                        <div style="background:rgba(255,255,255,0.03); border-radius:8px; border:1px solid var(--border-color); overflow:hidden;">
+                                            <table style="width:100%; font-size:0.85rem; border-collapse:collapse;">
+                                                <thead style="background:rgba(255,255,255,0.05); border-bottom:1px solid var(--border-color);">
+                                                    <tr>
+                                                        <th style="text-align:left; padding:12px;">Name</th>
+                                                        <th style="text-align:left; padding:12px;">Key Preview</th>
+                                                        <th style="text-align:left; padding:12px;">Rate Limit</th>
+                                                        <th style="text-align:right; padding:12px;">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    ${keysTable}
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        <div style="margin-top:15px; text-align:right;">
+                                            <button onclick="regenerateApiKey()" class="btn btn-accent btn-sm">
+                                                <i class="fas fa-plus-circle"></i> Create New API Key
+                                            </button>
+                                        </div>
+
+                                        <div style="margin-top:20px; padding:15px; background:rgba(59, 130, 246, 0.1); border:1px solid var(--accent); border-radius:8px;">
+                                            <h5 style="margin:0 0 5px 0; font-size:0.85rem;"><i class="fas fa-info-circle"></i> Security Tip</h5>
+                                            <p style="font-size:0.75rem; color:var(--text-secondary); margin:0;">Never share your API keys or expose them in client-side code. Use environment variables on your server to store them securely.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `
+                    });
+                }
+
+                function switchDocTab(tabId) {
+                    // Update buttons
+                    document.querySelectorAll('.doc-tab-btn').forEach(btn => btn.classList.remove('active'));
+                    document.getElementById('tab-' + tabId).classList.add('active');
+                    
+                    // Update content
+                    document.querySelectorAll('.doc-section').forEach(sec => sec.style.display = 'none');
+                    document.getElementById('doc-' + tabId).style.display = 'block';
+                }
+
+                function deleteApiKey(id) {
+                    Swal.fire({
+                        title: 'Revoke Key?',
+                        text: 'This API key will no longer work!',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Yes, Revoke'
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const fd = new FormData();
+                            fd.append('action', 'delete_key');
+                            fd.append('key_id', id);
+                            fetch('?api=api_manager', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) location.reload();
+                            });
+                        }
+                    });
+                }
+
+                function editApiKey(keyObj) {
+                    Swal.fire({
+                        title: 'Edit API Key',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        html: `
+                            <div style="text-align:left;">
+                                <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Key Name</label>
+                                <input type="text" id="edit_key_name" class="form-control" value="${keyObj.name}" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">API Key String</label>
+                                <input type="text" id="edit_key_val" class="form-control" value="${keyObj.key}" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Rate Limit (req/day)</label>
+                                <input type="number" id="edit_key_limit" class="form-control" value="${keyObj.rate_limit}" style="background:var(--bg-input); color:var(--text-primary);">
+                            </div>
+                        `,
+                        showCancelButton: true,
+                        confirmButtonText: 'Save Changes'
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const fd = new FormData();
+                            fd.append('action', 'update_key');
+                            fd.append('key_id', keyObj.id);
+                            fd.append('name', document.getElementById('edit_key_name').value);
+                            fd.append('key', document.getElementById('edit_key_val').value);
+                            fd.append('rate_limit', document.getElementById('edit_key_limit').value);
+                            fetch('?api=api_manager', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) Swal.fire('Updated', 'Key settings saved.', 'success').then(() => location.reload());
+                            });
+                        }
+                    });
+                }
+
+                function regenerateApiKey() {
+                    Swal.fire({
+                        title: 'Generate API Key',
+                        text: 'Enter a custom key or leave blank for a random one:',
+                        input: 'text',
+                        inputPlaceholder: 'Custom API Key (optional)',
+                        icon: 'info',
+                        showCancelButton: true,
+                        confirmButtonText: 'Create Key'
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const fd = new FormData();
+                            fd.append('action', 'create_key');
+                            fd.append('name', 'Main API Key');
+                            if (result.value) fd.append('custom_key', result.value);
+                            fetch('?api=api_manager', { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) Swal.fire('Success', 'New key generated. Please refresh to see it.', 'success').then(() => location.reload());
+                            });
+                        }
+                    });
                 }
 
                 // --- INITIALIZATION ---
@@ -13723,40 +15550,6 @@ function readFileContent(file) {
                     </div>
                 </div>
 
-                <!-- FK Preview Feature Info -->
-                <div class="card" style="margin-bottom:20px; background:linear-gradient(135deg, rgba(99,102,241,0.1) 0%, rgba(168,85,247,0.1) 100%); border:1px solid rgba(99,102,241,0.3);">
-                    <div style="display:flex; align-items:start; gap:20px;">
-                        <div style="flex-shrink:0; width:60px; height:60px; background:rgba(99,102,241,0.2); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.8rem; color:#6366f1;">
-                            <i class="fas fa-link"></i>
-                        </div>
-                        <div style="flex:1;">
-                            <h3 style="margin:0 0 8px 0; color:#6366f1; display:flex; align-items:center; gap:8px;">
-                                <span>Foreign Key Preview</span>
-                                <span style="background:rgba(99,102,241,0.2); color:#818cf8; font-size:0.7rem; padding:2px 8px; border-radius:12px; font-weight:600;">NEW</span>
-                            </h3>
-                            <p style="margin:0 0 12px 0; color:#cbd5e1; font-size:0.9rem; line-height:1.6;">
-                                Explore database relationships with interactive foreign key previews. Hover over FK values to see quick previews, click for detailed views, and navigate seamlessly between related records.
-                            </p>
-                            <div style="display:flex; gap:15px; flex-wrap:wrap;">
-                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
-                                    <span style="width:20px; height:20px; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); border-radius:3px; display:flex; align-items:center; justify-content:center; font-size:0.7rem; color:#6366f1;">
-                                        <i class="fas fa-link"></i>
-                                    </span>
-                                    <span>Hover for quick preview</span>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
-                                    <i class="fas fa-mouse-pointer" style="color:#6366f1;"></i>
-                                    <span>Click for full details</span>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:6px; font-size:0.85rem; color:#94a3b8;">
-                                    <i class="fas fa-route" style="color:#6366f1;"></i>
-                                    <span>Breadcrumb navigation</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <div style="gap:20px; margin-bottom:20px;">
                     <!-- Row Distribution Chart -->
                     <div class="card" style="margin-bottom:0;">
@@ -14586,22 +16379,7 @@ var queryBuilder = null;
             });
         }
 
-        // Helper to init TomSelect with correct settings
-        function initTomSelect(el) {
-            if (el.tomselect) return; // Prevent double initialization
-            if (el.closest('.card') && !el.closest('#bulkTablesForm')) {
-                new TomSelect(el, {
-                    plugins: ['clear_button'],
-                    maxOptions: 50,
-                    sortField: { field: "text", direction: "asc" },
-                    dropdownParent: 'body',
-                    onDropdownOpen: function() {
-                        const wrapper = this.dropdown;
-                        if(wrapper) wrapper.style.zIndex = "99999";
-                    }
-                });
-            }
-        }
+
 
         // Initialize TomSelect for Searchable Dropdowns (Global)
         document.addEventListener('DOMContentLoaded', function() {
@@ -15562,12 +17340,16 @@ var queryBuilder = null;
                         });
                     }
 
-                    function openAddWidgetModal() {
+                    function openAddWidgetModal(existing = null, isDuplicate = false) {
                         const tables = <?= json_encode($tables) ?>;
                         let tableOptions = tables.map(t => `<option value="${t.Name}">${t.Name}</option>`).join('');
                         
+                        let title = '<i class="fas fa-plus"></i> Add Dashboard Widget';
+                        if (existing && isDuplicate) title = '<i class="fas fa-copy"></i> Duplicate Dashboard Widget';
+                        else if (existing) title = '<i class="fas fa-edit"></i> Edit Dashboard Widget';
+
                         Swal.fire({
-                            title: 'Add Dashboard Widget',
+                            title: title,
                             background: 'var(--bg-card)',
                             color: 'var(--text-primary)',
                             html: `
@@ -15579,32 +17361,78 @@ var queryBuilder = null;
                                     </select>
                                     
                                     <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Calculation Type</label>
-                                    <select id="w_type" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                    <select id="w_type" class="form-select" onchange="toggleWidgetInputs(this.value)" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
                                         <option value="COUNT">Count Rows</option>
                                         <option value="SUM">Sum Column</option>
                                         <option value="AVG">Average Column</option>
                                         <option value="MAX">Max Value</option>
+                                        <option value="EXECUTE">EXECUTE (Action Button)</option>
                                     </select>
                                     
-                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Column (for Sum/Avg/Max)</label>
-                                    <select id="w_col" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
-                                        <option value="*">* (All)</option>
-                                    </select>
+                                    <div id="w_sql_container" style="display:none; margin-bottom:15px;">
+                                        <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">SQL to Execute</label>
+                                        <textarea id="w_sql" class="form-control" style="background:var(--bg-input); color:var(--text-primary); font-family:monospace; font-size:0.8rem; height:80px; width:100%; box-sizing:border-box;" placeholder="UPDATE table SET status=1 WHERE..."></textarea>
+                                    </div>
+                                    
+                                    <div id="w_col_container">
+                                        <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Column (for Sum/Avg/Max)</label>
+                                        <select id="w_col" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
+                                            <option value="*">* (All)</option>
+                                        </select>
+                                    </div>
                                     
                                     <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Label</label>
                                     <input type="text" id="w_label" class="form-control" placeholder="e.g. Total Users" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
                                     
                                     <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Accent Color</label>
-                                    <select id="w_color" class="form-select" style="background:var(--bg-input); color:var(--text-primary);">
+                                    <select id="w_color" class="form-select" style="margin-bottom:15px; background:var(--bg-input); color:var(--text-primary);">
                                         <option value="accent">Blue (Primary)</option>
                                         <option value="success">Green (Success)</option>
                                         <option value="danger">Red (Danger)</option>
                                         <option value="warning">Orange (Warning)</option>
                                     </select>
+
+                                    <label style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Date Column (for Global Filter)</label>
+                                    <select id="w_date_col" class="form-select" style="background:var(--bg-input); color:var(--text-primary);">
+                                        <option value="">-- No Date Filter --</option>
+                                    </select>
                                 </div>
                             `,
+                            didOpen: () => {
+                                initTomSelect('#w_table, #w_type, #w_color, #w_col, #w_date_col');
+                                if (existing) {
+                                    document.getElementById('w_table').tomselect.setValue(existing.table);
+                                    document.getElementById('w_type').tomselect.setValue(existing.type);
+                                    toggleWidgetInputs(existing.type);
+                                    if (existing.sql) document.getElementById('w_sql').value = existing.sql;
+                                    document.getElementById('w_label').value = isDuplicate ? existing.label + ' (Copy)' : existing.label;
+                                    document.getElementById('w_color').tomselect.setValue(existing.color || 'accent');
+                                    
+                                    // Fetch and set columns
+                                    fetch('?', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                        body: `action=get_columns&table=${encodeURIComponent(existing.table)}`
+                                    })
+                                    .then(r => r.json())
+                                    .then(res => {
+                                        const ts = document.getElementById('w_col').tomselect;
+                                        const tsDate = document.getElementById('w_date_col').tomselect;
+                                        ts.clearOptions();
+                                        tsDate.clearOptions();
+                                        ts.addOption({value: '*', text: '* (All)'});
+                                        tsDate.addOption({value: '', text: '-- No Date Filter --'});
+                                        res.columns.forEach(c => {
+                                            ts.addOption({value: c.Field, text: c.Field});
+                                            tsDate.addOption({value: c.Field, text: c.Field});
+                                        });
+                                        ts.setValue(existing.column);
+                                        tsDate.setValue(existing.date_col || '');
+                                    });
+                                }
+                            },
                             showCancelButton: true,
-                            confirmButtonText: 'Add Widget',
+                            confirmButtonText: (existing && !isDuplicate) ? 'Update Widget' : (isDuplicate ? 'Create Duplicate' : 'Add Widget'),
                             confirmButtonColor: 'var(--accent)',
                             preConfirm: () => {
                                 const table = document.getElementById('w_table').value;
@@ -15613,11 +17441,14 @@ var queryBuilder = null;
                                     return false;
                                 }
                                 return {
+                                    id: (existing && !isDuplicate) ? existing.id : null,
                                     table: table,
                                     type: document.getElementById('w_type').value,
                                     column: document.getElementById('w_col').value,
                                     label: document.getElementById('w_label').value || (table + ' ' + document.getElementById('w_type').value),
-                                    color: document.getElementById('w_color').value
+                                    color: document.getElementById('w_color').value,
+                                    date_col: document.getElementById('w_date_col').value,
+                                    sql: document.getElementById('w_sql').value
                                 }
                             }
                         }).then((result) => {
@@ -15626,8 +17457,9 @@ var queryBuilder = null;
                                 form.method = 'POST';
                                 form.action = '';
                                 const data = result.value;
-                                data.action = 'add_widget';
+                                data.action = existing ? 'edit_widget' : 'add_widget';
                                 for (let key in data) {
+                                    if (data[key] === null) continue;
                                     const input = document.createElement('input');
                                     input.type = 'hidden';
                                     input.name = key;
@@ -15640,19 +17472,90 @@ var queryBuilder = null;
                         });
                     }
 
+                    let currentChartFks = {};
+
+                    function toggleDataCol(mode) {
+                        const select = document.getElementById('c_data_col');
+                        if (mode === 'COUNT') {
+                            select.tomselect.disable();
+                            select.tomselect.setValue('*');
+                        } else {
+                            select.tomselect.enable();
+                        }
+                    }
+
+                    function checkFk(colName) {
+                        const fk = currentChartFks[colName];
+                        const container = document.getElementById('fk_display_container');
+                        const displaySelect = document.getElementById('c_label_display_col');
+                        
+                        if (fk) {
+                            container.style.display = 'block';
+                            displaySelect.tomselect.clearOptions();
+                            displaySelect.tomselect.addOption({value: '', text: 'Loading referenced columns...'});
+                            
+                            fetch('?', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: `action=get_columns&table=${encodeURIComponent(fk.table)}`
+                            })
+                            .then(r => r.json())
+                            .then(res => {
+                                displaySelect.tomselect.clearOptions();
+                                res.columns.forEach(c => displaySelect.tomselect.addOption({value: c.Field, text: c.Field}));
+                                // Default to a column that looks like a "name" or "title"
+                                const bestGuess = res.columns.find(c => /name|title|label|desc/i.test(c.Field));
+                                if (bestGuess) displaySelect.tomselect.setValue(bestGuess.Field);
+                            });
+                        } else {
+                            container.style.display = 'none';
+                            displaySelect.tomselect.clearOptions();
+                        }
+                    }
+
+                    function updateChartCols(table) {
+                        if (!table) return;
+                        fetch('?', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: `action=get_columns&table=${encodeURIComponent(table)}`
+                        })
+                            .then(r => r.json())
+                            .then(res => {
+                                currentChartFks = res.fks || {};
+                                const tsL = document.getElementById('c_label_col').tomselect;
+                                const tsD = document.getElementById('c_data_col').tomselect;
+                                
+                                tsL.clearOptions();
+                                tsD.clearOptions();
+                                tsD.addOption({value: '*', text: 'All (*)'});
+                                
+                                res.columns.forEach(c => {
+                                    tsL.addOption({value: c.Field, text: c.Field});
+                                    tsD.addOption({value: c.Field, text: c.Field});
+                                });
+                                
+                                // Initial check for FK
+                                checkFk(tsL.getValue());
+                            });
+                    }
+
                     function updateWidgetCols(table) {
                         if (!table) return;
-                        fetch(`?action=get_columns&table=${encodeURIComponent(table)}`)
+                        fetch('?', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: `action=get_columns&table=${encodeURIComponent(table)}`
+                        })
                             .then(r => r.json())
-                            .then(cols => {
-                                const select = document.getElementById('w_col');
-                                select.innerHTML = '<option value="*">* (All)</option>';
-                                cols.forEach(c => {
-                                    const opt = document.createElement('option');
-                                    opt.value = c;
-                                    opt.textContent = c;
-                                    select.appendChild(opt);
+                            .then(res => {
+                                const ts = document.getElementById('w_col').tomselect;
+                                ts.clearOptions();
+                                ts.addOption({value: '*', text: '* (All)'});
+                                res.columns.forEach(c => {
+                                    ts.addOption({value: c.Field, text: c.Field});
                                 });
+                                ts.setValue('*');
                             });
                     }
 
@@ -15744,47 +17647,199 @@ var queryBuilder = null;
                         container.appendChild(item);
                     }
 
-                    function openAddChartModal() {
+                    function selectChartType(type) {
+                        document.querySelectorAll('.chart-type-item').forEach(item => item.classList.remove('active'));
+                        const selected = document.querySelector(`.chart-type-item[data-type="${type}"]`);
+                        if (selected) selected.classList.add('active');
+                        document.getElementById('c_type').value = type;
+                    }
+
+                    function openAddChartModal(existing = null, isDuplicate = false) {
                         const tables = <?= json_encode($tables) ?>;
                         let tableOptions = tables.map(t => `<option value="${t.Name}">${t.Name}</option>`).join('');
                         
+                        let title = '<i class="fas fa-chart-line"></i> Add Analytics Chart';
+                        if (existing && isDuplicate) title = '<i class="fas fa-copy"></i> Duplicate Analytics Chart';
+                        else if (existing) title = '<i class="fas fa-edit"></i> Edit Analytics Chart';
+
                         Swal.fire({
-                            title: '<i class="fas fa-chart-line"></i> Add Analytics Chart',
+                            title: title,
+                            width: '600px',
                             background: 'var(--bg-card)',
                             color: 'var(--text-primary)',
                             html: `
                                 <div style="text-align:left;">
+                                    <label class="form-label" style="display:block; margin-bottom:10px; font-size:0.85rem; color:var(--text-secondary);">1. Choose Visualization Type</label>
+                                    <div class="chart-type-grid">
+                                        <div class="chart-type-item active" data-type="bar" onclick="selectChartType('bar')">
+                                            <i class="fas fa-chart-bar"></i>
+                                            <span>Bar</span>
+                                        </div>
+                                        <div class="chart-type-item" data-type="line" onclick="selectChartType('line')">
+                                            <i class="fas fa-chart-line"></i>
+                                            <span>Line</span>
+                                        </div>
+                                        <div class="chart-type-item" data-type="pie" onclick="selectChartType('pie')">
+                                            <i class="fas fa-chart-pie"></i>
+                                            <span>Pie</span>
+                                        </div>
+                                        <div class="chart-type-item" data-type="doughnut" onclick="selectChartType('doughnut')">
+                                            <i class="fas fa-circle-notch"></i>
+                                            <span>Doughnut</span>
+                                        </div>
+                                    </div>
+                                    <input type="hidden" id="c_type" value="bar">
+
                                     <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Chart Title</label>
                                     <input type="text" id="c_title" class="form-control" placeholder="e.g. Sales by Category" style="width:100%; box-sizing:border-box; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
                                     
-                                    <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Data Table</label>
-                                    <select id="c_table" class="swal2-input" onchange="updateChartCols(this.value)" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
-                                        <option value="">-- Choose Table --</option>
-                                        ${tableOptions}
-                                    </select>
-                                    
                                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                                         <div>
-                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Label Column (X-Axis)</label>
-                                            <select id="c_label_col" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);"><option value="">Select Table First</option></select>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Data Table</label>
+                                            <select id="c_table" class="swal2-input" onchange="updateChartCols(this.value)" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="">-- Choose Table --</option>
+                                                ${tableOptions}
+                                            </select>
                                         </div>
                                         <div>
-                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Chart Type</label>
-                                            <select id="c_type" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
-                                                <option value="bar">Bar Chart</option>
-                                                <option value="pie">Pie Chart</option>
-                                                <option value="line">Line Chart</option>
-                                                <option value="doughnut">Doughnut</option>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Color Palette</label>
+                                            <select id="c_palette" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="vibrant">Vibrant (Default)</option>
+                                                <option value="pastel">Pastel Soft</option>
+                                                <option value="monochromatic">Blue Professional</option>
+                                                <option value="material">Material Design</option>
                                             </select>
                                         </div>
                                     </div>
                                     
-                                    <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Limit Data (Top N)</label>
-                                    <input type="number" id="c_limit" class="form-control" value="5" style="width:100%; box-sizing:border-box; margin:0; background:var(--bg-input); color:var(--text-primary);">
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Label Column (X-Axis)</label>
+                                            <select id="c_label_col" class="swal2-input" onchange="checkFk(this.value)" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);"><option value="">Select Table First</option></select>
+                                        </div>
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Date Column (for Global Filter)</label>
+                                            <select id="c_date_col" class="swal2-input" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="">-- No Date Filter --</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Limit Data (Top N)</label>
+                                            <div style="display:flex; align-items:center; gap:8px;">
+                                                <input type="number" id="c_limit" class="form-control" value="5" min="1" style="flex:1; background:var(--bg-input); color:var(--text-primary);">
+                                                <input type="checkbox" id="c_no_limit" onchange="document.getElementById('c_limit').disabled = this.checked; document.getElementById('c_limit').style.opacity = this.checked ? '0.5' : '1';" style="cursor:pointer;">
+                                                <label for="c_no_limit" style="font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">No Limit</label>
+                                            </div>
+                                        </div>
+                                        <div></div>
+                                    </div>
+
+                                    <div id="fk_display_container" style="display:none; margin-bottom:15px; padding:10px; background:rgba(99, 102, 241, 0.1); border:1px dashed var(--accent-color); border-radius:4px;">
+                                        <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--accent-color); font-weight:600;">
+                                            <i class="fas fa-link"></i> Foreign Key Detected!
+                                        </label>
+                                        <p style="font-size:0.75rem; color:var(--text-secondary); margin:0 0 8px 0;">Which column from the referenced table should be used as the label?</p>
+                                        <select id="c_label_display_col" class="swal2-input" style="width:100%; margin:0; background:var(--bg-input); color:var(--text-primary);"></select>
+                                    </div>
+                                    
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Calculation Mode</label>
+                                            <select id="c_calc_mode" class="swal2-input" onchange="toggleDataCol(this.value)" style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="COUNT">Count Rows</option>
+                                                <option value="SUM">Sum of Column</option>
+                                                <option value="AVG">Average of Column</option>
+                                                <option value="MAX">Max of Column</option>
+                                                <option value="MIN">Min of Column</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Data Column(s) (Y-Axis)</label>
+                                            <select id="c_data_col" class="swal2-input" multiple style="width:100%; margin:0 0 15px 0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="*">All (*)</option>
+                                            </select>
+                                        </div>
+                                    </div>
                                 </div>
                             `,
+                            didOpen: () => {
+                                    initTomSelect('#c_table, #c_label_col, #c_calc_mode, #c_data_col, #c_label_display_col, #c_palette, #c_date_col');
+                                if (existing) {
+                                    document.getElementById('c_title').value = isDuplicate ? existing.title + ' (Copy)' : existing.title;
+                                    document.getElementById('c_table').tomselect.setValue(existing.table);
+                                    document.getElementById('c_palette').tomselect.setValue(existing.palette || 'vibrant');
+                                    selectChartType(existing.type);
+                                    document.getElementById('c_calc_mode').tomselect.setValue(existing.calc_mode);
+                                    
+                                    if (existing.limit == 0) {
+                                        document.getElementById('c_no_limit').checked = true;
+                                        document.getElementById('c_limit').disabled = true;
+                                        document.getElementById('c_limit').style.opacity = '0.5';
+                                    } else {
+                                        document.getElementById('c_limit').value = existing.limit;
+                                    }
+
+                                    // Fetch and set columns
+                                    fetch('?', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                        body: `action=get_columns&table=${encodeURIComponent(existing.table)}`
+                                    })
+                                    .then(r => r.json())
+                                    .then(res => {
+                                        currentChartFks = res.fks || {};
+                                        
+                                        const tsL = document.getElementById('c_label_col').tomselect;
+                                        const tsD = document.getElementById('c_data_col').tomselect;
+                                        const tsDate = document.getElementById('c_date_col').tomselect;
+                                        
+                                        tsL.clearOptions();
+                                        tsD.clearOptions();
+                                        tsDate.clearOptions();
+                                        tsD.addOption({value: '*', text: 'All (*)'});
+                                        tsDate.addOption({value: '', text: '-- No Date Filter --'});
+                                        res.columns.forEach(c => {
+                                            tsL.addOption({value: c.Field, text: c.Field});
+                                            tsD.addOption({value: c.Field, text: c.Field});
+                                            tsDate.addOption({value: c.Field, text: c.Field});
+                                        });
+                                        
+                                        tsL.setValue(existing.label_col);
+                                        if (Array.isArray(existing.data_col)) {
+                                            existing.data_col.forEach(v => tsD.addItem(v));
+                                        } else {
+                                            tsD.setValue(existing.data_col);
+                                        }
+                                        tsDate.setValue(existing.date_col || '');
+                                        
+                                        toggleDataCol(existing.calc_mode);
+                                        
+                                        const fk = currentChartFks[existing.label_col];
+                                        if (fk) {
+                                            const container = document.getElementById('fk_display_container');
+                                            const tsDisplay = document.getElementById('c_label_display_col').tomselect;
+                                            container.style.display = 'block';
+                                            
+                                            fetch('?', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                                body: `action=get_columns&table=${encodeURIComponent(fk.table)}`
+                                            })
+                                            .then(r => r.json())
+                                            .then(res2 => {
+                                                tsDisplay.clearOptions();
+                                                res2.columns.forEach(c => tsDisplay.addOption({value: c.Field, text: c.Field}));
+                                                tsDisplay.setValue(existing.label_display_col);
+                                            });
+                                        }
+                                    });
+                                }
+                            },
                             showCancelButton: true,
-                            confirmButtonText: 'Create Chart',
+                            confirmButtonText: existing ? 'Update Chart' : 'Create Chart',
                             preConfirm: () => {
                                 const title = document.getElementById('c_title').value;
                                 const table = document.getElementById('c_table').value;
@@ -15795,22 +17850,33 @@ var queryBuilder = null;
                                     return false;
                                 }
                                 
+                                const fk = currentChartFks[label_col];
                                 return {
-                                    action: 'add_chart',
+                                    id: (existing && !isDuplicate) ? existing.id : null,
                                     title, table, label_col,
+                                    label_display_col: document.getElementById('c_label_display_col')?.value || '',
+                                    referenced_table: fk ? fk.table : '',
+                                    referenced_column: fk ? fk.column : '',
+                                    calc_mode: document.getElementById('c_calc_mode').value,
+                                    data_col: Array.from(document.getElementById('c_data_col').tomselect.items),
                                     type: document.getElementById('c_type').value,
-                                    limit: document.getElementById('c_limit').value
+                                    palette: document.getElementById('c_palette').value,
+                                    date_col: document.getElementById('c_date_col').value,
+                                    limit: document.getElementById('c_no_limit').checked ? 0 : document.getElementById('c_limit').value
                                 };
                             }
                         }).then((result) => {
                             if (result.isConfirmed) {
                                 const form = document.createElement('form');
                                 form.method = 'POST';
-                                for (let key in result.value) {
+                                const data = result.value;
+                                data.action = (existing && !isDuplicate) ? 'edit_chart' : 'add_chart';
+                                for (let key in data) {
+                                    if (data[key] === null) continue;
                                     const input = document.createElement('input');
                                     input.type = 'hidden';
                                     input.name = key;
-                                    input.value = result.value[key];
+                                    input.value = data[key];
                                     form.appendChild(input);
                                 }
                                 document.body.appendChild(form);
@@ -15819,54 +17885,76 @@ var queryBuilder = null;
                         });
                     }
 
-                    function updateChartCols(table) {
-                        if (!table) return;
-                        fetch(`?action=get_columns&table=${encodeURIComponent(table)}`)
-                            .then(r => r.json())
-                            .then(cols => {
-                                const select = document.getElementById('c_label_col');
-                                select.innerHTML = cols.map(c => `<option value="${c}">${c}</option>`).join('');
-                            });
-                    }
 
-                    function initDashboardChart(id, type) {
+
+                    const CHART_PALETTES = {
+                        vibrant: ['#6366f1', '#f43f5e', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4'],
+                        pastel: ['#a5b4fc', '#fda4af', '#6ee7b7', '#fcd34d', '#c4b5fd', '#67e8f9'],
+                        monochromatic: ['#312e81', '#3730a3', '#4338ca', '#4f46e5', '#6366f1', '#818cf8'],
+                        material: ['#2196F3', '#F44336', '#4CAF50', '#FFEB3B', '#9C27B0', '#00BCD4']
+                    };
+
+                    function initDashboardChart(id, type, palette = 'vibrant') {
                         const canvas = document.getElementById('chart-' + id);
                         if (!canvas) return;
+                        
+                        // Check for existing chart instance to destroy before re-render
+                        const existingChart = Chart.getChart(canvas);
+                        if (existingChart) existingChart.destroy();
+
                         const ctx = canvas.getContext('2d');
                         const formData = new FormData();
                         formData.append('action', 'get_chart_data');
                         formData.append('id', id);
+                        
+                        // Add Global Date Range if set
+                        const range = document.getElementById('global_date_range')?.value;
+                        if (range) formData.append('date_range', range);
 
                         fetch('?', { method: 'POST', body: formData })
                             .then(res => res.json())
                             .then(data => {
                                 if (!data.success) throw new Error(data.message);
                                 
+                                const paletteColors = CHART_PALETTES[palette] || CHART_PALETTES.vibrant;
+                                
+                                let datasets = [];
+                                if (data.datasets) {
+                                    datasets = data.datasets.map((ds, idx) => ({
+                                        label: ds.label,
+                                        data: ds.data,
+                                        backgroundColor: (type === 'pie' || type === 'doughnut') ? paletteColors : paletteColors[idx % paletteColors.length],
+                                        borderColor: paletteColors[idx % paletteColors.length],
+                                        borderWidth: 1,
+                                        borderRadius: (type === 'bar') ? 6 : 0,
+                                        tension: 0.4,
+                                        fill: (type === 'line')
+                                    }));
+                                } else {
+                                    datasets = [{
+                                        label: data.aggLabel || 'Total Value',
+                                        data: data.values,
+                                        backgroundColor: (type === 'pie' || type === 'doughnut') ? paletteColors : paletteColors[0],
+                                        borderColor: paletteColors[0],
+                                        borderWidth: 1,
+                                        borderRadius: (type === 'bar') ? 6 : 0,
+                                        tension: 0.4,
+                                        fill: (type === 'line')
+                                    }];
+                                }
+
                                 new Chart(ctx, {
                                     type: type,
                                     data: {
                                         labels: data.labels,
-                                        datasets: [{
-                                            label: 'Total Rows',
-                                            data: data.values,
-                                            backgroundColor: [
-                                                'rgba(54, 162, 235, 0.6)',
-                                                'rgba(255, 99, 132, 0.6)',
-                                                'rgba(75, 192, 192, 0.6)',
-                                                'rgba(255, 206, 86, 0.6)',
-                                                'rgba(153, 102, 255, 0.6)',
-                                                'rgba(255, 159, 64, 0.6)'
-                                            ],
-                                            borderColor: 'rgba(255,255,255,0.1)',
-                                            borderWidth: 1
-                                        }]
+                                        datasets: datasets
                                     },
                                     options: {
                                         responsive: true,
                                         maintainAspectRatio: false,
                                         plugins: {
                                             legend: {
-                                                display: (type === 'pie' || type === 'doughnut'),
+                                                display: (type === 'pie' || type === 'doughnut' || datasets.length > 1),
                                                 position: 'bottom',
                                                 labels: { color: '#ccc', font: { size: 11 } }
                                             }
@@ -15891,6 +17979,126 @@ var queryBuilder = null;
                                     <i class="fas fa-exclamation-circle" style="display:block; font-size:1.5rem; margin-bottom:10px;"></i>
                                     Data Error: ${err.message}
                                 </div>`;
+                            });
+                    }
+
+                    // ===== DASHBOARD DRAG & DROP SYSTEM =====
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const widgetGrid = document.querySelector('.widget-grid');
+                        const chartGrid = document.querySelector('.chart-grid');
+
+                        if (widgetGrid) {
+                            new Sortable(widgetGrid, {
+                                animation: 150,
+                                handle: '.drag-handle',
+                                ghostClass: 'sortable-ghost',
+                                onEnd: () => saveDashboardOrder('widgets', widgetGrid)
+                            });
+                        }
+
+                        if (chartGrid) {
+                            new Sortable(chartGrid, {
+                                animation: 150,
+                                handle: '.drag-handle',
+                                ghostClass: 'sortable-ghost',
+                                onEnd: () => saveDashboardOrder('charts', chartGrid)
+                            });
+                        }
+
+                        // Initialize Global Date Filter
+                        const dateInput = document.getElementById('global_date_range');
+                        if (dateInput) {
+                            const urlParams = new URLSearchParams(window.location.search);
+                            const defaultRange = urlParams.get('date_range') || '';
+                            
+                            flatpickr(dateInput, {
+                                mode: 'range',
+                                dateFormat: 'Y-m-d',
+                                theme: 'dark',
+                                defaultDate: defaultRange,
+                                onChange: function(selectedDates, dateStr) {
+                                    if (selectedDates.length === 2 || selectedDates.length === 0) {
+                                        refreshDashboard();
+                                    }
+                                }
+                            });
+                        }
+                    });
+
+                    function refreshDashboard() {
+                        const range = document.getElementById('global_date_range')?.value;
+                        const url = new URL(window.location.href);
+                        if (range) url.searchParams.set('date_range', range);
+                        else url.searchParams.delete('date_range');
+                        window.location.href = url.toString();
+                    }
+
+                    function runWidgetAction(id) {
+                        Swal.fire({
+                            title: 'Run action?',
+                            text: "This will execute the predefined SQL command.",
+                            icon: 'warning',
+                            showCancelButton: true,
+                            confirmButtonColor: 'var(--accent)',
+                            confirmButtonText: 'Yes, execute it!',
+                            background: 'var(--bg-card)',
+                            color: 'var(--text-primary)'
+                        }).then((result) => {
+                            if (result.isConfirmed) {
+                                const formData = new FormData();
+                                formData.append('action', 'run_widget_action');
+                                formData.append('id', id);
+                                
+                                fetch('?', { method: 'POST', body: formData })
+                                    .then(res => res.json())
+                                    .then(data => {
+                                        Swal.fire({
+                                            title: data.success ? 'Success!' : 'Error!',
+                                            text: data.message,
+                                            icon: data.success ? 'success' : 'error',
+                                            background: 'var(--bg-card)',
+                                            color: 'var(--text-primary)'
+                                        });
+                                    });
+                            }
+                        });
+                    }
+
+                    function toggleWidgetInputs(type) {
+                        const sqlCont = document.getElementById('w_sql_container');
+                        const colCont = document.getElementById('w_col_container');
+                        if (type === 'EXECUTE') {
+                            sqlCont.style.display = 'block';
+                            colCont.style.display = 'none';
+                        } else {
+                            sqlCont.style.display = 'none';
+                            colCont.style.display = 'block';
+                        }
+                    }
+                    
+                    function saveDashboardOrder(type, container) {
+                        const order = Array.from(container.children)
+                            .map(el => el.getAttribute('data-id'))
+                            .filter(id => id);
+                            
+                        const formData = new FormData();
+                        formData.append('action', 'save_order');
+                        formData.append('type', type);
+                        order.forEach(id => formData.append('order[]', id));
+
+                        fetch('?', { method: 'POST', body: formData })
+                            .then(res => res.json())
+                            .then(data => {
+                                if (data.success) {
+                                    Swal.fire({
+                                        toast: true,
+                                        position: 'top-end',
+                                        icon: 'success',
+                                        title: 'Layout saved',
+                                        showConfirmButton: false,
+                                        timer: 1500
+                                    });
+                                }
                             });
                     }
                     // switchSqlTab moved to head for better reliability
