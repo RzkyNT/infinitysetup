@@ -11729,6 +11729,10 @@ var advancedFilters = null;
         background: rgba(239, 68, 68, 0.1);
         color: #ef4444;
     }
+    .widget-actions{
+    display: flex;
+    justify-content: end;
+    }
     </style>
 </head>
 <body>
