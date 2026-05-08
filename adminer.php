@@ -5554,6 +5554,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             
             echo json_encode([
                 'success' => true,
+                'table' => $table,
+                'label_col' => $labelCol,
                 'labels' => $labels,
                 'datasets' => $finalDatasets
             ]);
@@ -17953,28 +17955,50 @@ var queryBuilder = null;
                                         labels: data.labels,
                                         datasets: datasets
                                     },
-                                    options: {
-                                        responsive: true,
-                                        maintainAspectRatio: false,
-                                        plugins: {
-                                            legend: {
-                                                display: (type === 'pie' || type === 'doughnut' || datasets.length > 1),
-                                                position: 'bottom',
-                                                labels: { color: '#ccc', font: { size: 11 } }
-                                            }
-                                        },
-                                        scales: (type === 'pie' || type === 'doughnut') ? {} : {
-                                            y: {
-                                                beginAtZero: true,
-                                                grid: { color: 'rgba(255,255,255,0.05)' },
-                                                ticks: { color: '#888' }
+                                        options: {
+                                            responsive: true,
+                                            maintainAspectRatio: false,
+                                            onClick: (e, elements) => {
+                                                if (elements.length > 0) {
+                                                    const index = elements[0].index;
+                                                    const label = data.labels[index];
+                                                    const table = data.table;
+                                                    const col = data.label_col;
+                                                    
+                                                    // Build Adminer Filter URL (Optimized for Adminer Lite)
+                                                    const url = new URL(window.location.href);
+                                                    url.searchParams.delete('action'); // Remove dashboard action
+                                                    url.searchParams.set('table', table);
+                                                    url.searchParams.set('view', 'data');
+                                                    url.searchParams.set('search_col', col);
+                                                    url.searchParams.set('search_op', '=');
+                                                    url.searchParams.set('search_val', label);
+                                                    
+                                                    window.location.href = url.toString();
+                                                }
                                             },
-                                            x: {
-                                                grid: { display: false },
-                                                ticks: { color: '#888' }
+                                            onHover: (e, elements) => {
+                                                e.native.target.style.cursor = (elements && elements.length > 0) ? 'pointer' : 'default';
+                                            },
+                                            plugins: {
+                                                legend: {
+                                                    display: (type === 'pie' || type === 'doughnut' || datasets.length > 1),
+                                                    position: 'bottom',
+                                                    labels: { color: '#ccc', font: { size: 11 } }
+                                                }
+                                            },
+                                            scales: (type === 'pie' || type === 'doughnut') ? {} : {
+                                                y: {
+                                                    beginAtZero: true,
+                                                    grid: { color: 'rgba(255,255,255,0.05)' },
+                                                    ticks: { color: '#888' }
+                                                },
+                                                x: {
+                                                    grid: { display: false },
+                                                    ticks: { color: '#888' }
+                                                }
                                             }
                                         }
-                                    }
                                 });
                             })
                             .catch(err => {
