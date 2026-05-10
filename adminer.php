@@ -3773,9 +3773,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 header('Content-Type: text/csv');
                 header("Content-Disposition: attachment; filename=\"$filename.csv\"");
                 $out = fopen('php://output', 'w');
-                fputcsv($out, array_keys($rows[0]));
+                fputcsv($out, array_keys($rows[0]), ',', '"', "\\");
                 foreach ($rows as $row) {
-                    fputcsv($out, $row);
+                    fputcsv($out, $row, ',', '"', "\\");
                 }
                 fclose($out);
             } elseif ($format === 'json') {
@@ -4440,11 +4440,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $data = $jsonDb->select($exportTable);
                 if (!empty($data)) {
                     $keys = $selCols && is_array($selCols) ? $selCols : array_keys($data[0]);
-                    fputcsv($csvOut, $keys);
+                    fputcsv($csvOut, $keys, ',', '"', "\\");
                     foreach ($data as $row) {
                         $csvRow = [];
                         foreach ($keys as $k) $csvRow[] = $row[$k] ?? '';
-                        fputcsv($csvOut, $csvRow);
+                        fputcsv($csvOut, $csvRow, ',', '"', "\\");
                     }
                 }
             } elseif ($exportTable) {
@@ -4459,12 +4459,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                     if ($first) {
                         $keys = $selCols && is_array($selCols) ? $selCols : array_keys($row);
-                        fputcsv($csvOut, $keys);
+                        fputcsv($csvOut, $keys, ',', '"', "\\");
                         $first = false;
                     }
                     $csvRow = [];
                     foreach ($keys as $k) $csvRow[] = $row[$k] ?? '';
-                    fputcsv($csvOut, $csvRow);
+                    fputcsv($csvOut, $csvRow, ',', '"', "\\");
                 }
             }
             
@@ -4818,8 +4818,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $content = json_encode($row, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
             } elseif ($format === 'csv') {
                 $fp = fopen('php://temp', 'r+');
-                fputcsv($fp, array_keys($row));
-                fputcsv($fp, array_values($row));
+                fputcsv($fp, array_keys($row), ',', '"', "\\");
+                fputcsv($fp, array_values($row), ',', '"', "\\");
                 rewind($fp);
                 $content = stream_get_contents($fp);
                 fclose($fp);
@@ -4829,6 +4829,73 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     return $v === null ? "NULL" : $pdo->quote($v);
                 }, array_values($row));
                 $content = "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");";
+            }
+
+            echo json_encode(['success' => true, 'content' => $content]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- BULK EXPORT TO CLIPBOARD ---
+    elseif ($action === 'bulk_export_clipboard') {
+        header('Content-Type: application/json');
+        $table = $_POST['table'] ?? '';
+        $ids = json_decode($_POST['ids'] ?? '[]', true);
+        $format = $_POST['format'] ?? 'json';
+
+        if (!$table || empty($ids)) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+
+        try {
+            $rows = [];
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                // JSON Mode
+                $pk = 'id'; // Default for our JSON DB
+                foreach ($ids as $id) {
+                    $item = $jsonDb->select($table, [$pk => ['operator' => '=', 'value' => $id]]);
+                    if (!empty($item)) $rows[] = $item[0];
+                }
+            } else {
+                // SQL Mode
+                $pk = getPrimaryKey($pdo, $table);
+                if (!$pk) {
+                    echo json_encode(['success' => false, 'message' => 'No Primary Key found']);
+                    exit;
+                }
+                $in  = str_repeat('?,', count($ids) - 1) . '?';
+                $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` IN ($in)");
+                $stmt->execute($ids);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            }
+
+            if (empty($rows)) {
+                echo json_encode(['success' => false, 'message' => 'No data found']);
+                exit;
+            }
+
+            $content = '';
+            if ($format === 'json') {
+                $content = json_encode($rows, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            } elseif ($format === 'csv') {
+                $fp = fopen('php://temp', 'r+');
+                fputcsv($fp, array_keys($rows[0]), ',', '"', "\\");
+                foreach ($rows as $r) {
+                    fputcsv($fp, array_values($r), ',', '"', "\\");
+                }
+                rewind($fp);
+                $content = stream_get_contents($fp);
+                fclose($fp);
+            } elseif ($format === 'sql') {
+                foreach ($rows as $row) {
+                    $keys = array_keys($row);
+                    $vals = array_map(function($v) use ($pdo) {
+                        return $v === null ? "NULL" : $pdo->quote($v);
+                    }, array_values($row));
+                    $content .= "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");\n";
+                }
             }
 
             echo json_encode(['success' => true, 'content' => $content]);
@@ -5309,8 +5376,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     header("Content-disposition: attachment; filename=\"$filename.csv\"");
                     $out = fopen('php://output', 'w');
                     if ($rows) {
-                        fputcsv($out, array_keys($rows[0]));
-                        foreach ($rows as $r) fputcsv($out, $r);
+                        fputcsv($out, array_keys($rows[0]), ',', '"', "\\");
+                        foreach ($rows as $r) fputcsv($out, $r, ',', '"', "\\");
                     }
                     fclose($out);
                 } elseif ($action === 'export_sql') {
@@ -14318,9 +14385,9 @@ var advancedFilters = null;
                                     <option value="">With Selected:</option>
                                     <option value="delete">Delete</option>
                                     <option value="bulk_edit">Bulk Edit</option>
-                                    <option value="export_sql">Export SQL</option>
-                                    <option value="export_csv">Export CSV</option>
-                                    <option value="export_json">Export JSON</option>
+                                    <option value="export_sql">Copy to SQL</option>
+                                    <option value="export_csv">Copy to CSV</option>
+                                    <option value="export_json">Copy to JSON</option>
                                 </select>
                                 <button type="button" onclick="submitBulkAction()" class="btn btn-primary" id="bulkApplyBtn" style="display:none;">Apply</button>
                                 <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
@@ -17001,6 +17068,46 @@ var queryBuilder = null;
                     confirmButtonText: 'Yes, delete!'
                 }).then((result) => {
                     if (result.isConfirmed) form.submit();
+                });
+            } else if (['export_sql', 'export_csv', 'export_json'].includes(action)) {
+                // Bulk Export to Clipboard
+                const checkedIds = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
+                if (checkedIds.length === 0) return;
+
+                const format = action.replace('export_', '');
+                const table = new URLSearchParams(window.location.search).get('table');
+                
+                Swal.fire({
+                    title: 'Exporting...',
+                    text: `Processing ${checkedIds.length} rows to clipboard as ${format.toUpperCase()}`,
+                    allowOutsideClick: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                        const formData = new FormData();
+                        formData.append('action', 'bulk_export_clipboard');
+                        formData.append('table', table);
+                        formData.append('ids', JSON.stringify(checkedIds));
+                        formData.append('format', format);
+
+                        fetch('?', { method: 'POST', body: formData })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                navigator.clipboard.writeText(data.content).then(() => {
+                                    Swal.fire({
+                                        icon: 'success',
+                                        title: 'Copied!',
+                                        text: `${checkedIds.length} rows copied to clipboard.`,
+                                        timer: 2000,
+                                        showConfirmButton: false
+                                    });
+                                });
+                            } else {
+                                Swal.fire('Error', data.message || 'Export failed', 'error');
+                            }
+                        })
+                        .catch(err => Swal.fire('Error', err.message, 'error'));
+                    }
                 });
             } else if (action === 'bulk_edit') {
                 if (!window._currentTableStructure) return;
