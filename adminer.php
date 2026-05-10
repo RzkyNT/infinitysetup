@@ -4784,6 +4784,59 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- SMART EXPORT SINGLE ROW ---
+    elseif ($action === 'export_single_row') {
+        header('Content-Type: application/json');
+        $table = $_POST['table'] ?? '';
+        $pk = $_POST['pk'] ?? '';
+        $val = $_POST['val'] ?? '';
+        $format = $_POST['format'] ?? 'json';
+
+        if (!$table || !$pk || !$val) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+
+        try {
+            $row = null;
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                $tableData = $jsonDb->select($table, [$pk => ['operator' => '=', 'value' => $val]]);
+                $row = $tableData[0] ?? null;
+            } else {
+                $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ?");
+                $stmt->execute([$val]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            }
+
+            if (!$row) {
+                echo json_encode(['success' => false, 'message' => 'Row not found']);
+                exit;
+            }
+
+            $content = '';
+            if ($format === 'json') {
+                $content = json_encode($row, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            } elseif ($format === 'csv') {
+                $fp = fopen('php://temp', 'r+');
+                fputcsv($fp, array_keys($row));
+                fputcsv($fp, array_values($row));
+                rewind($fp);
+                $content = stream_get_contents($fp);
+                fclose($fp);
+            } elseif ($format === 'sql') {
+                $keys = array_keys($row);
+                $vals = array_map(function($v) use ($pdo) {
+                    return $v === null ? "NULL" : $pdo->quote($v);
+                }, array_values($row));
+                $content = "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");";
+            }
+
+            echo json_encode(['success' => true, 'content' => $content]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- GET COLUMN SUGGESTIONS ---
     elseif ($action === 'get_column_suggestions') {
         header('Content-Type: application/json');
@@ -5277,53 +5330,6 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
              $error = "No rows selected or primary key missing.";
         }
-    }
-    // --- SMART EXPORT SINGLE ROW ---
-    elseif ($action === 'export_single_row') {
-        header('Content-Type: application/json');
-        $table = $_POST['table'] ?? '';
-        $pk = $_POST['pk'] ?? '';
-        $val = $_POST['val'] ?? '';
-        $format = $_POST['format'] ?? 'json';
-
-        if (!$table || !$pk || !$val) {
-            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
-            exit;
-        }
-
-        try {
-            $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ?");
-            $stmt->execute([$val]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$row) {
-                echo json_encode(['success' => false, 'message' => 'Row not found']);
-                exit;
-            }
-
-            $content = '';
-            if ($format === 'json') {
-                $content = json_encode($row, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-            } elseif ($format === 'csv') {
-                $fp = fopen('php://temp', 'r+');
-                fputcsv($fp, array_keys($row));
-                fputcsv($fp, array_values($row));
-                rewind($fp);
-                $content = stream_get_contents($fp);
-                fclose($fp);
-            } elseif ($format === 'sql') {
-                $keys = array_keys($row);
-                $vals = array_map(function($v) use ($pdo) {
-                    return $v === null ? "NULL" : $pdo->quote($v);
-                }, array_values($row));
-                $content = "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");";
-            }
-
-            echo json_encode(['success' => true, 'content' => $content]);
-        } catch (Exception $e) {
-            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        }
-        exit;
     }
     // --- MANAGE DATABASE LIST (JSON) ---
     elseif ($action === 'add_database_list') {
@@ -7130,7 +7136,14 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
                 ?><button type="button" class="btn-quick-duplicate" data-table="<?=htmlspecialchars($currentTable)?>" data-pk="<?=htmlspecialchars($primaryKey)?>" data-val="<?=htmlspecialchars($row[$primaryKey])?>" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0; margin-right:5px;" title="Quick Duplicate"><i class="fas fa-clone"></i></button><?php
-                ?><button type="button" class="btn-smart-export" onclick="showExportRowOptions('<?=addslashes($currentTable)?>', '<?=addslashes($primaryKey)?>', '<?=addslashes($row[$primaryKey])?>', event)" style="background:none; border:none; cursor:pointer; color:#10b981; padding:0; margin-right:5px;" title="Smart Export Row"><i class="fas fa-file-export"></i></button><?php
+                
+                $exportOnClick = sprintf(
+                    "showExportRowOptions(%s, %s, %s, event)",
+                    json_encode($currentTable),
+                    json_encode($primaryKey),
+                    json_encode($row[$primaryKey])
+                );
+                ?><button type="button" class="btn-smart-export" onclick="<?=htmlspecialchars($exportOnClick, ENT_QUOTES)?>" style="background:none; border:none; cursor:pointer; color:#10b981; padding:0; margin-right:5px;" title="Smart Export Row"><i class="fas fa-file-export"></i></button><?php
                 ?><a href="?table=<?=urlencode($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
             else:
                 ?><span style="opacity:0.3">-</span><?php 
@@ -8342,6 +8355,80 @@ if (!empty($tables)) {
 
         // --- KEYBOARD NAVIGATION & HIGHLIGHTING ---
         let currentRowIndex = -1;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            applySearchHighlighting();
+            initKeyboardNavigation();
+        });
+
+        function applySearchHighlighting() {
+            const params = new URLSearchParams(window.location.search);
+            const term = params.get('search_val');
+            if (!term || term.length < 2) return;
+
+            const regex = new RegExp(`(${term.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi');
+            document.querySelectorAll('.adminer-data-cell .cell-value-wrapper').forEach(cell => {
+                if (cell.querySelector('.toggle-container, .color-preview-wrapper, .row-media-preview, video')) return;
+                highlightTextNodes(cell, regex);
+            });
+        }
+
+        function highlightTextNodes(node, regex) {
+            if (node.nodeType === 3) {
+                const matches = node.data.match(regex);
+                if (matches) {
+                    const span = document.createElement('span');
+                    span.innerHTML = node.data.replace(regex, '<mark class="search-highlight">$1</mark>');
+                    node.parentNode.replaceChild(span, node);
+                }
+            } else if (node.nodeType === 1 && node.childNodes && !/(script|style|button|i)/i.test(node.tagName)) {
+                Array.from(node.childNodes).forEach(child => highlightTextNodes(child, regex));
+            }
+        }
+
+        function initKeyboardNavigation() {
+            document.addEventListener('keydown', (e) => {
+                if (document.body.classList.contains('swal2-shown')) return;
+                
+                if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) {
+                    if (e.key === 'Escape') document.activeElement.blur();
+                    return;
+                }
+
+                const rows = document.querySelectorAll('#adminer-table-data tbody tr');
+                if (rows.length === 0) return;
+
+                switch (e.key.toLowerCase()) {
+                    case '/':
+                        e.preventDefault();
+                        const sInput = document.querySelector('input[name="search_val"]');
+                        if (sInput) { sInput.focus(); sInput.select(); }
+                        break;
+                    case 'n':
+                        const table = new URLSearchParams(window.location.search).get('table');
+                        if (table) window.location.href = `?table=${table}&view=form`;
+                        break;
+                    case 'j':
+                        if (currentRowIndex < rows.length - 1) {
+                            currentRowIndex++;
+                            updateActiveRow(rows);
+                        }
+                        break;
+                    case 'k':
+                        if (currentRowIndex > 0) {
+                            currentRowIndex--;
+                            updateActiveRow(rows);
+                        }
+                        break;
+                    case 'e':
+                        if (currentRowIndex >= 0) {
+                            const editLink = rows[currentRowIndex].querySelector('a[title="Edit Row"]');
+                            if (editLink) editLink.click();
+                        }
+                        break;
+                }
+            });
+        }
 
         function updateActiveRow(rows) {
             rows.forEach(r => r.classList.remove('active-row-nav'));
@@ -11632,6 +11719,23 @@ var advancedFilters = null;
         .swal2-toast .swal2-icon {
             border-width: 2px !important;
         }
+
+        /* Navigation & Highlighting */
+        .active-row-nav {
+            background: rgba(99, 102, 241, 0.1) !important;
+            box-shadow: inset 4px 0 0 #6366f1;
+        }
+        .search-highlight {
+            background: #6366f1 !important;
+            color: #fff !important;
+            padding: 0 2px;
+            border-radius: 2px;
+            font-weight: bold;
+        }
+        mark.search-highlight {
+            background: #6366f1;
+            color: white;
+        }
         /* SweetAlert2 Validation Message */
         .swal2-validation-message {
             background: var(--bg-hover) !important;
@@ -14901,12 +15005,12 @@ async function generatePhpHash() {
                                                 <input type="hidden" name="col" value="<?=htmlspecialchars($col['Field'])?>">
                                                 <button type="submit" style="background:none; border:none; cursor:pointer; color:var(--danger); padding:0;"><i class="fas fa-trash-alt"></i></button>
                                             </form>
+                                            <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure_edit&col=<?=urlencode($col['Field'])?>&mode=copy" title="Copy Column" style="margin-left:5px; color:#fbbf24;">
+                                                <i class="fas fa-copy"></i>
+                                            </a>
                                         </td>
                                         <td style="font-weight:bold; color:var(--accent); display:flex; align-items:center; gap:8px;">
                                             <?=htmlspecialchars($col['Field'])?>
-                                            <a href="?table=<?=htmlspecialchars($currentTable)?>&view=structure_edit&col=<?=urlencode($col['Field'])?>&mode=copy" title="Copy Column" style="color:#fbbf24;">
-                                                <i class="fas fa-copy"></i>
-                                            </a>
                                         </td>
                                         <td><?=htmlspecialchars($col['Type'])?></td>
                                         <td><?=htmlspecialchars($col['Null'])?></td>
