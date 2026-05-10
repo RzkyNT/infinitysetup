@@ -5278,6 +5278,53 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
              $error = "No rows selected or primary key missing.";
         }
     }
+    // --- SMART EXPORT SINGLE ROW ---
+    elseif ($action === 'export_single_row') {
+        header('Content-Type: application/json');
+        $table = $_POST['table'] ?? '';
+        $pk = $_POST['pk'] ?? '';
+        $val = $_POST['val'] ?? '';
+        $format = $_POST['format'] ?? 'json';
+
+        if (!$table || !$pk || !$val) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ?");
+            $stmt->execute([$val]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$row) {
+                echo json_encode(['success' => false, 'message' => 'Row not found']);
+                exit;
+            }
+
+            $content = '';
+            if ($format === 'json') {
+                $content = json_encode($row, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+            } elseif ($format === 'csv') {
+                $fp = fopen('php://temp', 'r+');
+                fputcsv($fp, array_keys($row));
+                fputcsv($fp, array_values($row));
+                rewind($fp);
+                $content = stream_get_contents($fp);
+                fclose($fp);
+            } elseif ($format === 'sql') {
+                $keys = array_keys($row);
+                $vals = array_map(function($v) use ($pdo) {
+                    return $v === null ? "NULL" : $pdo->quote($v);
+                }, array_values($row));
+                $content = "INSERT INTO `$table` (`" . implode('`, `', $keys) . "`) VALUES (" . implode(', ', $vals) . ");";
+            }
+
+            echo json_encode(['success' => true, 'content' => $content]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
     // --- MANAGE DATABASE LIST (JSON) ---
     elseif ($action === 'add_database_list') {
         $dbName = trim($_POST['name'] ?? '');
@@ -7083,6 +7130,7 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" style="margin-right:5px; color:var(--accent);" title="Edit Row"><i class="fas fa-edit"></i></a><?php 
                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=form&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>&mode=copy" style="margin-right:5px; color:#fbbf24;" title="Copy to Form"><i class="fas fa-copy"></i></a><?php 
                 ?><button type="button" class="btn-quick-duplicate" data-table="<?=htmlspecialchars($currentTable)?>" data-pk="<?=htmlspecialchars($primaryKey)?>" data-val="<?=htmlspecialchars($row[$primaryKey])?>" style="background:none; border:none; cursor:pointer; color:#8b5cf6; padding:0; margin-right:5px;" title="Quick Duplicate"><i class="fas fa-clone"></i></button><?php
+                ?><button type="button" class="btn-smart-export" onclick="showExportRowOptions('<?=addslashes($currentTable)?>', '<?=addslashes($primaryKey)?>', '<?=addslashes($row[$primaryKey])?>', event)" style="background:none; border:none; cursor:pointer; color:#10b981; padding:0; margin-right:5px;" title="Smart Export Row"><i class="fas fa-file-export"></i></button><?php
                 ?><a href="?table=<?=urlencode($currentTable)?>&action=delete_row&pk=<?=urlencode($primaryKey)?>&val=<?=urlencode($row[$primaryKey])?>" onclick="saConfirmLink(event, 'Delete this row permanently?')" style="color:var(--danger);" title="Delete Row"><i class="fas fa-trash"></i></a><?php 
             else:
                 ?><span style="opacity:0.3">-</span><?php 
@@ -8292,6 +8340,69 @@ if (!empty($tables)) {
             });
         }
 
+        // --- KEYBOARD NAVIGATION & HIGHLIGHTING ---
+        let currentRowIndex = -1;
+
+        function updateActiveRow(rows) {
+            rows.forEach(r => r.classList.remove('active-row-nav'));
+            const row = rows[currentRowIndex];
+            if (row) {
+                row.classList.add('active-row-nav');
+                row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        }
+
+        function showExportRowOptions(table, pk, val, event) {
+            event.stopPropagation();
+            Swal.fire({
+                title: 'Smart Export Row',
+                text: 'Select format to export this single row:',
+                icon: 'info',
+                showCancelButton: true,
+                confirmButtonText: '<i class="fas fa-code"></i> JSON',
+                cancelButtonText: '<i class="fas fa-file-csv"></i> CSV',
+                showDenyButton: true,
+                denyButtonText: '<i class="fas fa-database"></i> SQL INSERT',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                customClass: {
+                    confirmButton: 'btn btn-primary',
+                    cancelButton: 'btn btn-secondary',
+                    denyButton: 'btn btn-warning'
+                }
+            }).then((result) => {
+                let format = '';
+                if (result.isConfirmed) format = 'json';
+                else if (result.isDenied) format = 'sql';
+                else if (result.dismiss === Swal.DismissReason.cancel) format = 'csv';
+                else return;
+
+                const formData = new FormData();
+                formData.append('action', 'export_single_row');
+                formData.append('table', table);
+                formData.append('pk', pk);
+                formData.append('val', val);
+                formData.append('format', format);
+
+                fetch('?', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        navigator.clipboard.writeText(data.content).then(() => {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Exported!',
+                                text: `Row data copied to clipboard as ${format.toUpperCase()}`,
+                                timer: 2000,
+                                showConfirmButton: false
+                            });
+                        });
+                    } else {
+                        Swal.fire('Error', data.message || 'Export failed', 'error');
+                    }
+                });
+            });
+        }
         function switchSqlTab(tabId) {
             console.log('Switching SQL Tab:', tabId);
             const target = document.getElementById(tabId);
