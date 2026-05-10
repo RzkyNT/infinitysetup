@@ -4784,6 +4784,34 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         exit;
     }
+    // --- GET COLUMN SUGGESTIONS ---
+    elseif ($action === 'get_column_suggestions') {
+        header('Content-Type: application/json');
+        $tableName = $_POST['table'] ?? '';
+        $col = $_POST['column'] ?? '';
+        
+        if (!$tableName || !$col) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+        
+        try {
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                $tableData = $jsonDb->select($tableName);
+                $suggestions = array_unique(array_filter(array_column($tableData, $col)));
+                $suggestions = array_slice($suggestions, 0, 50);
+            } else {
+                $stmt = $pdo->prepare("SELECT DISTINCT `$col` FROM `$tableName` WHERE `$col` IS NOT NULL AND `$col` != '' LIMIT 50");
+                $stmt->execute();
+                $suggestions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+            }
+            echo json_encode(['success' => true, 'suggestions' => array_values($suggestions)]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+
     // --- GET TABLE STRUCTURE ---
     elseif ($action === 'get_table_structure') {
         header('Content-Type: application/json');
@@ -7041,7 +7069,7 @@ $totalDataCount = 0;
 /**
  * Reusable function to render a single data row
  */
-function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [], $pdo = null, $tables = []) {
+function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [], $pdo = null, $tables = [], $dualConditionCols = []) {
     ob_start();
     ?>
     <tr>
@@ -7234,8 +7262,63 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
                 }
             }
             ?>
-            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?>>
-                <?=$displayVal?>
+            <?php
+            // 4. Dynamic Boolean Toggle Logic (Exactly 2 unique values)
+            $isBoolean = false;
+            $type = strtolower($colTypes[$key] ?? '');
+            $uniqueVals = $dualConditionCols[$key] ?? null;
+
+            if ($uniqueVals && count($uniqueVals) == 2) {
+                $isBoolean = true;
+            }
+
+            if ($isBoolean && !$isMediaColumn && $primaryKey && !isset($fkMap[$key])) {
+                $v1 = (string)$uniqueVals[0];
+                $v2 = (string)$uniqueVals[1];
+                
+                // Fallback to identify "on" state if possible
+                $positiveIndicators = ['1', 'true', 'on', 'yes', 'active', 'enabled', 'y'];
+                $onValue = $v2; 
+                $offValue = $v1;
+                
+                if (in_array(strtolower($v1), $positiveIndicators)) {
+                    $onValue = $v1; $offValue = $v2;
+                } elseif (in_array(strtolower($v2), $positiveIndicators)) {
+                    $onValue = $v2; $offValue = $v1;
+                }
+                
+                $checked = ((string)$val === $onValue) ? 'checked' : '';
+                $displayVal = '
+                <div class="toggle-container" style="display:inline-flex; align-items:center; gap:8px;" title="Toggle between: ' . htmlspecialchars($offValue) . ' and ' . htmlspecialchars($onValue) . '">
+                    <label class="custom-toggle" onclick="event.stopPropagation();">
+                        <input type="checkbox" ' . $checked . ' data-on="' . htmlspecialchars($onValue) . '" data-off="' . htmlspecialchars($offValue) . '" onchange="toggleBoolean(this)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-label" style="font-size: 10px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase;">' . htmlspecialchars($valStr) . '</span>
+                </div>';
+            }
+            ?>
+            <?php
+            // 5. Color Picker Logic
+            if (!$isBoolean && !$isMediaColumn && $primaryKey && preg_match('/^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$/', trim($valStr))) {
+                $jsTable = addslashes($currentTable);
+                $jsCol = addslashes($key);
+                $jsPk = addslashes($row[$primaryKey]);
+                $displayVal = '
+                <div class="color-preview-wrapper" style="display:inline-flex; align-items:center; gap:8px;">
+                    <div class="color-preview-box" style="width:16px; height:16px; border-radius:4px; background:'.htmlspecialchars(trim($valStr)).'; border:1px solid rgba(255,255,255,0.2); cursor:pointer;" onclick="this.nextElementSibling.click(); event.stopPropagation();" title="Click to change color"></div>
+                    <input type="color" value="'.htmlspecialchars(trim($valStr)).'" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="updateColorValue(this, \''.$jsTable.'\', \''.$jsCol.'\', \''.$jsPk.'\')">
+                    <span style="font-family:monospace; font-size:0.85rem;">'.htmlspecialchars($valStr).'</span>
+                </div>';
+            }
+            ?>
+            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?> style="position:relative;" class="adminer-data-cell">
+                <div class="cell-value-wrapper" style="padding-right:25px;">
+                    <?=$displayVal?>
+                </div>
+                <button type="button" class="quick-copy-btn" onclick="copyCellContent(this, event)" title="Copy raw value" style="position:absolute; right:4px; top:50%; transform:translateY(-50%); opacity:0; transition:opacity 0.2s; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:3px; color:var(--text-secondary); width:20px; height:20px; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; z-index:5;">
+                    <i class="far fa-copy" style="font-size:0.75rem;"></i>
+                </button>
             </td>
         <?php endforeach; ?>
     </tr>
@@ -7616,7 +7699,7 @@ if ($action === 'fetch_data') {
     
     $html = '';
     foreach ($tableData as $row) {
-        $html .= render_data_row($row, $currentTable, $primaryKey, $colTypesMap ?? [], $fkMap, $pdo ?? null, $tables ?? []);
+        $html .= render_data_row($row, $currentTable, $primaryKey, $colTypesMap ?? [], $fkMap, $pdo ?? null, $tables ?? [], $dualConditionCols ?? []);
     }
 
     echo json_encode([
@@ -8049,8 +8132,166 @@ if (!empty($tables)) {
         .jsoneditor-popover, .jsoneditor-schema-error, div.jsoneditor td, div.jsoneditor textarea, div.jsoneditor th, div.jsoneditor-field, div.jsoneditor-value, pre.jsoneditor-preview {
             color: var(--text-main);
         }
+        /* Custom Toggle Switch */
+        .custom-toggle {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 20px;
+        }
+        .custom-toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #444;
+            transition: .3s;
+            border-radius: 20px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        .custom-toggle input:checked + .toggle-slider {
+            background-color: var(--accent);
+        }
+        .custom-toggle input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+        }
+        
+        /* Inline Edit Suggestion Styles */
+        .inline-edit-input {
+            background: var(--bg-card) !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--accent) !important;
+            border-radius: 4px;
+            padding: 2px 8px;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+        }
+        .toggle-container {
+            padding: 2px 4px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+        .toggle-container:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        .toggle-label {
+            min-width: 40px;
+            pointer-events: none;
+            user-select: none;
+        }
     </style>
     <script>
+        function toggleBoolean(checkbox) {
+            const td = checkbox.closest('td');
+            const table = td.getAttribute('data-table') || new URLSearchParams(window.location.search).get('table');
+            const column = td.getAttribute('data-col');
+            const pk = td.getAttribute('data-pk');
+            
+            const onVal = checkbox.getAttribute('data-on');
+            const offVal = checkbox.getAttribute('data-off');
+            const value = checkbox.checked ? onVal : offVal;
+
+            const formData = new FormData();
+            formData.append('action', 'update_cell');
+            formData.append('table', table);
+            formData.append('column', column);
+            formData.append('id', pk);
+            formData.append('value', value);
+
+            fetch('?', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1000});
+                    toast.fire({ icon: 'success', title: 'Updated to ' + value });
+                    // Update label if exists
+                    const label = checkbox.closest('.toggle-container')?.querySelector('.toggle-label');
+                    if (label) label.innerText = value;
+                } else {
+                    checkbox.checked = !checkbox.checked;
+                    Swal.fire('Error', data.message || 'Failed to update', 'error');
+                }
+            })
+            .catch(err => {
+                checkbox.checked = !checkbox.checked;
+                Swal.fire('Error', 'Network error', 'error');
+            });
+        }
+
+        function updateColorValue(input, table, col, pk) {
+            const newVal = input.value;
+            const wrapper = input.closest('.color-preview-wrapper');
+            const preview = wrapper.querySelector('.color-preview-box');
+            const text = wrapper.querySelector('span');
+
+            const formData = new FormData();
+            formData.append('action', 'update_cell');
+            formData.append('table', table);
+            formData.append('column', col);
+            formData.append('id', pk);
+            formData.append('value', newVal);
+
+            fetch('?', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    preview.style.background = newVal;
+                    if (text) text.innerText = newVal;
+                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1000});
+                    toast.fire({ icon: 'success', title: 'Color updated to ' + newVal });
+                } else {
+                    Swal.fire('Error', data.message || 'Update failed', 'error');
+                }
+            });
+        }
+
+        function copyCellContent(btn, event) {
+            event.stopPropagation();
+            const td = btn.closest('td');
+            // Try to find the raw value. If it's a special field, we might need a specific way to get it.
+            // But usually the innerText of the td minus the button is good enough.
+            
+            // Temporary clone to get text without the button
+            const clone = td.cloneNode(true);
+            const btnInClone = clone.querySelector('.quick-copy-btn');
+            if (btnInClone) btnInClone.remove();
+            
+            // If it's a toggle or color picker, it might have extra text.
+            // Let's try to get data-value if available (we can add it)
+            const rawValue = td.querySelector('.cell-value-wrapper').innerText.trim();
+
+            navigator.clipboard.writeText(rawValue).then(() => {
+                const icon = btn.querySelector('i');
+                icon.className = 'fas fa-check';
+                icon.style.color = '#10b981';
+                
+                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1000});
+                toast.fire({ icon: 'success', title: 'Copied to clipboard' });
+
+                setTimeout(() => {
+                    icon.className = 'far fa-copy';
+                    icon.style.color = '';
+                }, 1500);
+            });
+        }
+
         function switchSqlTab(tabId) {
             console.log('Switching SQL Tab:', tabId);
             const target = document.getElementById(tabId);
@@ -9184,16 +9425,30 @@ var advancedFilters = null;
             
             const storageKey = 'adminer_hidecols_' + tableName;
             let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
+
+            // --- CONTROLS (Search + Bulk) ---
+            const controls = document.createElement('div');
+            controls.style.cssText = 'margin: 5px 0 10px 0; display:flex; flex-direction:column; gap:8px; border-bottom:1px solid #333; padding-bottom:10px;';
+            controls.innerHTML = `
+                <input type="text" id="colSearchInput" class="form-control" placeholder="Search columns..." style="font-size:0.8rem; height:30px; background:var(--bg-hover);">
+                <div style="display:flex; gap:8px;">
+                    <button type="button" id="btnSelectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">All</button>
+                    <button type="button" id="btnUnselectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">None</button>
+                </div>
+            `;
+            dropdown.appendChild(controls);
+
+            const listContainer = document.createElement('div');
+            listContainer.id = 'colToggleList';
+            dropdown.appendChild(listContainer);
     
-            // Get all headers that have data-col attribute
             const headers = document.querySelectorAll('th[data-col]');
-            
             headers.forEach(th => {
                 const colName = th.getAttribute('data-col');
                 const isHidden = hiddenCols.includes(colName);
                 
-                // Create Checkbox UI
                 const div = document.createElement('div');
+                div.className = 'col-toggle-item';
                 div.style.padding = '4px 0';
                 div.innerHTML = `
                     <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
@@ -9201,17 +9456,50 @@ var advancedFilters = null;
                         <span style="font-size:0.9rem;">${colName}</span>
                     </label>
                 `;
-                dropdown.appendChild(div);
+                listContainer.appendChild(div);
                 
                 const checkbox = div.querySelector('input');
                 checkbox.addEventListener('change', (e) => {
                     toggleColumn(colName, e.target.checked);
                 });
     
-                // Apply initial state
                 if (isHidden) {
                     toggleColumn(colName, false);
                 }
+            });
+
+            // Search Logic
+            document.getElementById('colSearchInput').addEventListener('input', (e) => {
+                const q = e.target.value.toLowerCase();
+                document.querySelectorAll('.col-toggle-item').forEach(item => {
+                    const text = item.innerText.toLowerCase();
+                    item.style.display = text.includes(q) ? 'block' : 'none';
+                });
+            });
+
+            // Bulk Actions
+            document.getElementById('btnSelectAllCols').addEventListener('click', () => {
+                document.querySelectorAll('.col-toggle-item').forEach(item => {
+                    if (item.style.display !== 'none') {
+                        const cb = item.querySelector('input');
+                        if (!cb.checked) {
+                            cb.checked = true;
+                            cb.dispatchEvent(new Event('change'));
+                        }
+                    }
+                });
+            });
+
+            document.getElementById('btnUnselectAllCols').addEventListener('click', () => {
+                document.querySelectorAll('.col-toggle-item').forEach(item => {
+                    if (item.style.display !== 'none') {
+                        const cb = item.querySelector('input');
+                        if (cb.checked) {
+                            cb.checked = false;
+                            cb.dispatchEvent(new Event('change'));
+                        }
+                    }
+                });
             });
     
             function toggleColumn(colName, show) {
@@ -9479,9 +9767,9 @@ var advancedFilters = null;
         flatpickr(el, config);
     }
 
-    // --- INLINE EDITING ---
+    // --- INLINE EDITING (TomSelect Edition) ---
     function makeCellEditable(td) {
-        if (td.querySelector('input')) return; // Already editing
+        if (td.querySelector('.editing') || td.querySelector('select')) return; 
         
         const originalContent = td.innerText.trim();
         const pk = td.getAttribute('data-pk');
@@ -9491,43 +9779,92 @@ var advancedFilters = null;
         
         if(!pk || !col) return;
 
-        td.classList.add('editing');
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'form-control';
-        input.style.cssText = 'min-width:100px; padding:2px 5px; height:auto;';
-        input.value = originalContent === 'NULL' ? '' : originalContent;
+        // Preserve scroll position and cell dimensions
+        const rect = td.getBoundingClientRect();
+        const computedStyle = window.getComputedStyle(td);
+        const originalWidth = td.offsetWidth;
+        const originalHeight = td.offsetHeight;
         
-        td.innerHTML = '';
-        td.appendChild(input);
-        input.focus();
+        td.style.width = originalWidth + 'px';
+        td.style.minWidth = originalWidth + 'px';
+        td.style.height = originalHeight + 'px';
 
-        const onSave = () => {
-            saveCellData(input, table, col, pk, originalContent);
-        };
-
-        if (type.includes('date') || type.includes('timestamp')) {
-            flatpickr(input, {
-                enableTime: type.includes('datetime') || type.includes('timestamp'),
-                enableSeconds: type.includes('datetime') || type.includes('timestamp'),
-                dateFormat: type.includes('datetime') || type.includes('timestamp') ? "Y-m-d H:i:S" : "Y-m-d",
-                defaultDate: originalContent === 'NULL' ? null : originalContent,
-                theme: 'dark',
-                onClose: () => {
-                    setTimeout(onSave, 100);
-                }
-            }).open();
-        } else {
-            input.onblur = onSave;
-            input.onkeydown = (e) => { 
-                if(e.key === 'Enter') {
-                    input.blur();
-                } else if (e.key === 'Escape') {
-                    td.innerHTML = originalContent;
-                    td.classList.remove('editing');
-                }
-            };
+        td.classList.add('editing');
+        const select = document.createElement('select');
+        select.className = 'inline-edit-select';
+        select.style.width = '100%';
+        
+        // Add current value as an option if it's not NULL
+        if (originalContent !== 'NULL' && originalContent !== '') {
+            const opt = new Option(originalContent, originalContent, true, true);
+            select.add(opt);
         }
+
+        td.innerHTML = '';
+        td.style.overflow = 'hidden';
+        td.appendChild(select);
+
+        // Initialize TomSelect with Create option
+        const ts = new TomSelect(select, {
+            valueField: 'value',
+            labelField: 'text',
+            searchField: 'text',
+            create: true, 
+            placeholder: 'Select or type new...',
+            maxItems: 1,
+            dropdownParent: 'body',
+            load: function(query, callback) {
+                const sugFormData = new FormData();
+                sugFormData.append('action', 'get_column_suggestions');
+                sugFormData.append('table', table);
+                sugFormData.append('column', col);
+
+                fetch('?', { method: 'POST', body: sugFormData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.suggestions) {
+                        callback(data.suggestions.map(s => ({ value: s, text: s })));
+                    } else {
+                        callback();
+                    }
+                })
+                .catch(() => callback());
+            },
+            onBlur: () => {
+                const newVal = ts.getValue();
+                if (newVal === originalContent) {
+                    td.innerText = originalContent;
+                    td.classList.remove('editing');
+                } else {
+                    saveCellData({value: newVal, parentElement: td}, table, col, pk, originalContent);
+                }
+                ts.destroy();
+            },
+            onDropdownClose: () => {
+                // Focus out to trigger blur if necessary
+            }
+        });
+        
+        // Prevent scroll reset on focus and form submission on Enter
+        setTimeout(() => {
+            if (ts.control_input) {
+                ts.control_input.focus({ preventScroll: true });
+                // Prevent Enter key from submitting the parent form
+                ts.control_input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        ts.blur();
+                    } else if (e.key === 'Escape') {
+                        td.innerText = originalContent;
+                        td.classList.remove('editing');
+                        ts.destroy();
+                    }
+                });
+            } else {
+                ts.focus();
+            }
+        }, 10);
     }
 
     function saveCellData(input, table, col, pk, original) {
@@ -10001,12 +10338,22 @@ var advancedFilters = null;
                             const isMediaField = mediaFields.some(mf => mf.column === field.column);
                             
                             if (!isMediaField) {
-                                const displayValue = field.value === null ? '<span style="color:#666;">NULL</span>' : 
+                                const isColor = /^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$/.test(value.trim());
+                                let fieldDisplay = field.value === null ? '<span style="color:#666;">NULL</span>' : 
                                                      (value.length > 50 ? value.substring(0, 50) + '...' : value);
+                                
+                                if (isColor) {
+                                    fieldDisplay = `
+                                    <div class="color-preview-wrapper" style="display:inline-flex; align-items:center; gap:6px;">
+                                        <div class="color-preview-box" style="width:12px; height:12px; border-radius:2px; background:${value}; border:1px solid rgba(255,255,255,0.2);"></div>
+                                        <span style="font-family:monospace;">${value}</span>
+                                    </div>`;
+                                }
+
                                 html += `
                                     <div style="display:flex; justify-content:space-between; gap:12px;">
                                         <span style="color:#94a3b8; font-weight:500;">${field.column}:</span>
-                                        <span style="color:#e2e8f0; text-align:right; word-break:break-word;">${displayValue}</span>
+                                        <span style="color:#e2e8f0; text-align:right; word-break:break-word;">${fieldDisplay}</span>
                                     </div>
                                 `;
                             }
@@ -10117,13 +10464,27 @@ var advancedFilters = null;
                         const isVideo = /\.(mp4|webm|ogg|mov|avi)$/i.test(value) ||
                                       /(video|movie|media)/i.test(colName);
                         
+                        // Detect Color
+                        const isColor = /^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$/.test(value.trim());
+                        
                         let displayValue = field.value === null ? '<span style="color:#666; font-style:italic;">NULL</span>' : value;
+                        
+                        if (isColor) {
+                            const escTable = table.replace(/'/g, "\\'");
+                            const escCol = field.column.replace(/'/g, "\\'");
+                            const escVal = String(val).replace(/'/g, "\\'");
+                            displayValue = `
+                            <div class="color-preview-wrapper" style="display:inline-flex; align-items:center; gap:8px;">
+                                <div class="color-preview-box" style="width:18px; height:18px; border-radius:4px; background:${value}; border:1px solid rgba(255,255,255,0.2); cursor:pointer;" onclick="this.nextElementSibling.click(); event.stopPropagation();" title="Click to change color"></div>
+                                <input type="color" value="${value}" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="updateColorValue(this, '${escTable}', '${escCol}', '${escVal}')">
+                                <span style="font-family:monospace; font-size:0.9rem;">${value}</span>
+                            </div>`;
+                        }
                         
                         // Determine if field is editable (not primary key, not media)
                         const isPrimaryKey = field.column === col;
                         const isEditable = !isPrimaryKey && !isImage && !isVideo;
                         
-                        // Create media preview if applicable
                         if (field.value && (isImage || isVideo)) {
                             if (isVideo) {
                                 // Video preview
@@ -10209,7 +10570,7 @@ var advancedFilters = null;
                                      onmouseover="this.style.background='rgba(99,102,241,0.1)'; this.style.outline='1px dashed rgba(99,102,241,0.3)'"
                                      onmouseout="this.style.background='transparent'; this.style.outline='none'"
                                      title="Double-click to edit">
-                                    ${displayText}
+                                    ${isColor ? displayValue : displayText}
                                 </div>
                             `;
                         } else if (typeof field.value === 'string' && field.value.length > 100) {
@@ -11131,12 +11492,30 @@ var advancedFilters = null;
             color: var(--accent) !important;
         }
         /* SweetAlert2 Toast */
-        .swal2-toast {
-            background: var(--bg-card) !important;
-            border: 1px solid var(--border-color) !important;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
-        }
         .swal2-toast .swal2-title {
+            color: var(--text-primary) !important;
+        }
+
+        /* Interactive Data Cells */
+        .adminer-data-cell:hover {
+            background: rgba(59, 130, 246, 0.05) !important;
+            transition: background 0.1s;
+        }
+        .adminer-data-cell:hover .quick-copy-btn {
+            opacity: 1 !important;
+        }
+        .quick-copy-btn {
+            background: #000 !important;
+            color: #fff !important;
+            border-color: #535353ff !important;
+        }
+        .quick-copy-btn:hover {
+            background: #fff !important;
+            color: #000 !important;
+            border-color: #535353ff !important;
+        }
+        .quick-copy-btn:active {
+            transform: translateY(-50%) scale(0.9) !important;
             color: var(--text-primary) !important;
         }
         .swal2-toast .swal2-icon {
@@ -13764,8 +14143,33 @@ var advancedFilters = null;
                                 </tr>
                             </thead>
                             <tbody>
+                    <?php
+                    // Pre-calculate dual-condition columns for toggles (columns with EXACTLY 2 unique values)
+                    $dualConditionCols = [];
+                    if (!empty($tableData)) {
+                        if ($pdo) {
+                            foreach ($tableColumns as $col) {
+                                try {
+                                    $stmt = $pdo->prepare("SELECT DISTINCT `$col` FROM `$currentTable` WHERE `$col` IS NOT NULL AND TRIM(`$col`) != '' LIMIT 3");
+                                    $stmt->execute();
+                                    $vals = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                                    if (count($vals) == 2) {
+                                        $dualConditionCols[$col] = $vals;
+                                    }
+                                } catch (Exception $e) {}
+                            }
+                        } elseif (($_SESSION['db_mode'] ?? 'sql') === 'json') {
+                            foreach ($tableColumns as $col) {
+                                $uniqueValues = array_values(array_unique(array_filter(array_map('trim', array_column($tableData, $col)), function($v){ return $v !== null && $v !== ''; })));
+                                if (count($uniqueValues) == 2) {
+                                    $dualConditionCols[$col] = $uniqueValues;
+                                }
+                            }
+                        }
+                    }
+                    ?>
                                 <?php foreach ($tableData as $row):
-                                    echo render_data_row($row, $currentTable, $primaryKey, $colTypes ?? [], $fkMap, $pdo ?? null, $tables ?? []);
+                                    echo render_data_row($row, $currentTable, $primaryKey, $colTypes ?? [], $fkMap, $pdo ?? null, $tables ?? [], $dualConditionCols);
                                 endforeach; ?>
                                 <?php if(empty($tableData)):
                                     ?><td colspan="<?=count($tableColumns)+1?>" style="text-align:center; padding:30px; color:var(--text-secondary);">No data found</td><?php 
@@ -16325,65 +16729,7 @@ var queryBuilder = null;
             });
         }
 
-        // --- INLINE EDITING ---
-        function makeCellEditable(td) {
-            if (td.querySelector('input')) return; // Already editing
-            
-            const originalContent = td.innerText;
-            const originalHtml = td.innerHTML;
-            const pk = td.getAttribute('data-pk');
-            const col = td.getAttribute('data-col');
-            const table = td.closest('table').getAttribute('data-table');
-            
-            if(!pk || !col) return;
-
-            td.classList.add('editing');
-            td.innerHTML = `<input type="text" class="form-control" style="min-width:100px; padding:2px 5px; height:auto;" value="${originalContent.replace(/"/g, '&quot;')}" onblur="saveCellData(this, '${table}', '${col}', '${pk}', '${originalContent.replace(/'/g, "\\'")}')" onkeydown="if(event.key === 'Enter') this.blur()">`;
-            td.querySelector('input').focus();
-        }
-
-        function saveCellData(input, table, col, pk, original) {
-            const newVal = input.value;
-            const td = input.parentElement;
-            
-            if (newVal === original) {
-                td.innerText = original;
-                td.classList.remove('editing');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'update_cell');
-            formData.append('table', table);
-            formData.append('column', col);
-            formData.append('id', pk);
-            formData.append('value', newVal);
-
-            fetch('?', {
-                method: 'POST',
-                body: formData
-            })
-            .then(res => res.json())
-            .then(data => {
-                if(data.success) {
-                    td.innerText = newVal;
-                    td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
-                    setTimeout(() => td.style.backgroundColor = '', 1000);
-                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-                    toast.fire({ icon: 'success', title: 'Saved' });
-                } else {
-                    td.innerHTML = original;
-                    Swal.fire('Error', data.message || 'Update failed', 'error');
-                }
-            })
-            .catch(err => {
-                td.innerHTML = original;
-                Swal.fire('Error', 'Network error', 'error');
-            })
-            .finally(() => {
-                td.classList.remove('editing');
-            });
-        }
+        // Inline editing functions moved to main script block to avoid duplicates
 
 
 
