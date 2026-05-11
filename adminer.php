@@ -2010,7 +2010,9 @@ function splitByComma($str) {
 }
 
 function normalizeType($type) {
+    // Remove (N) from integer types
     $type = preg_replace('/\b(int|tinyint|smallint|mediumint|bigint)\(\d+\)/i', '$1', $type);
+    // Remove (N,M) from float types
     $type = preg_replace('/\b(float|double)\(\d+,\d+\)/i', '$1', $type);
     return strtolower(trim($type));
 }
@@ -2019,11 +2021,21 @@ function normalizeDefault($default, $type) {
     if ($default === null) return null;
     $default = trim($default);
     if (strtoupper($default) === 'NULL') return null;
-    if (preg_match('/^current_timestamp\s*\(\s*\)$/i', $default)) return 'CURRENT_TIMESTAMP';
+    
+    // Normalize current_timestamp, current_timestamp(), and CURRENT_TIMESTAMP
+    if (preg_match('/^current_timestamp(?:\s*\(\s*\))?$/i', $default)) return 'CURRENT_TIMESTAMP';
+    
+    // Normalize numeric defaults (remove quotes if numeric)
     if (preg_match('/^(int|tinyint|smallint|mediumint|bigint|float|double|decimal)/i', $type)) {
         $unquoted = trim($default, "'");
         if (is_numeric($unquoted)) return $unquoted;
     }
+    
+    // Decode entities if any
+    if (strpos($default, '&#') !== false || strpos($default, '&') !== false) {
+        $default = html_entity_decode($default, ENT_QUOTES, 'UTF-8');
+    }
+    
     return $default;
 }
 
@@ -2170,6 +2182,8 @@ function parseIndexOrConstraint($def) {
 }
 
 function parseSqlDump($sql) {
+    // Decode entities that might come from copy-pasting from web views
+    $sql = html_entity_decode($sql, ENT_QUOTES, 'UTF-8');
     $tables = [];
     if (!preg_match_all('/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\(/is', $sql, $matches, PREG_OFFSET_CAPTURE)) {
         return $tables;
@@ -3709,6 +3723,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($sqlResult === '__NONE__') {
                 $sqlResult = '-- No structural differences detected.';
             }
+
+            // Ensure the result is clean of entities and normalized
+            $sqlResult = html_entity_decode($sqlResult, ENT_QUOTES, 'UTF-8');
 
             echo json_encode([
                 'success' => true,
@@ -13068,6 +13085,7 @@ var advancedFilters = null;
                     .v-green { color:#2ecc71 !important; }
                     .compare-toggle { cursor:pointer; display:flex; align-items:center; gap:10px; transition:color 0.2s; }
                     .compare-toggle:hover { color:var(--accent); }
+                    .badge-local { background:var(--accent); color:#000; padding:2px 8px; border-radius:4px; font-size:0.65rem; font-weight:900; display:inline-flex; align-items:center; gap:4px; box-shadow:0 2px 8px rgba(0,0,0,0.2); }
                 </style>
 <?php 
                 $uniSearch = $_GET['uni_search'] ?? '';
@@ -13307,14 +13325,28 @@ var advancedFilters = null;
                             Compare your local database structure with another source (production/staging) to generate migration SQL.
                         </p>
                         
-                        <div class="compare-grid">
+                        <div class="compare-grid" style="position:relative;">
                             <div class="compare-panel">
-                                <div class="compare-header"><span>SOURCE (LOCAL)</span></div>
-                                <textarea id="compare_source" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Source structure..."></textarea>
+                                <div class="compare-header">
+                                    <span id="label_source_role">SOURCE</span>
+                                    <span id="label_source_identity" style="font-size:0.7rem; opacity:0.6; margin-left:5px;">(LOCAL)</span>
+                                </div>
+                                <textarea id="compare_source" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Source structure..." oninput="detectSourceIdentities()"></textarea>
                             </div>
+                            
+                            <!-- Swap Button -->
+                            <div style="position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); z-index:10;">
+                                <button onclick="swapCompareInputs()" class="btn btn-sm" style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:50%; width:36px; height:36px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 12px rgba(0,0,0,0.3); color:var(--accent);" title="Swap Source and Target">
+                                    <i class="fas fa-right-left"></i>
+                                </button>
+                            </div>
+
                             <div class="compare-panel">
-                                <div class="compare-header"><span>TARGET (REMOTE)</span></div>
-                                <textarea id="compare_target" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Paste output of SHOW CREATE TABLE here..."></textarea>
+                                <div class="compare-header">
+                                    <span id="label_target_role">TARGET</span>
+                                    <span id="label_target_identity" style="font-size:0.7rem; opacity:0.6; margin-left:5px;">(REMOTE)</span>
+                                </div>
+                                <textarea id="compare_target" class="form-control" rows="10" style="font-family:monospace; font-size:11px; background:#000; color:#ccc;" placeholder="Paste output of SHOW CREATE TABLE here..." oninput="detectSourceIdentities()"></textarea>
                             </div>
                         </div>
 
@@ -13351,6 +13383,55 @@ var advancedFilters = null;
                         }
                     }
 
+                    let localStructureCache = '';
+
+                    function detectSourceIdentities() {
+                        const src = document.getElementById('compare_source').value.trim();
+                        const tgt = document.getElementById('compare_target').value.trim();
+                        const idSrc = document.getElementById('label_source_identity');
+                        const idTgt = document.getElementById('label_target_identity');
+                        
+                        const cache = localStructureCache.trim();
+                        
+                        if (cache && src === cache) {
+                            idSrc.innerHTML = '<span class="badge-local"><i class="fas fa-house"></i> LOCAL</span>';
+                            idSrc.style.opacity = '1';
+                        } else if (src) {
+                            idSrc.innerHTML = '(REMOTE/MODIFIED)';
+                            idSrc.style.opacity = '0.6';
+                        } else {
+                            idSrc.innerHTML = '(EMPTY)';
+                        }
+
+                        if (cache && tgt === cache) {
+                            idTgt.innerHTML = '<span class="badge-local"><i class="fas fa-house"></i> LOCAL</span>';
+                            idTgt.style.opacity = '1';
+                        } else if (tgt) {
+                            idTgt.innerHTML = '(REMOTE/MODIFIED)';
+                            idTgt.style.opacity = '0.6';
+                        } else {
+                            idTgt.innerHTML = '(EMPTY)';
+                        }
+                    }
+
+                    function swapCompareInputs() {
+                        const src = document.getElementById('compare_source');
+                        const tgt = document.getElementById('compare_target');
+                        const tmp = src.value;
+                        src.value = tgt.value;
+                        tgt.value = tmp;
+                        
+                        // Flash effect to show swap happened
+                        [src, tgt].forEach(el => {
+                            el.style.transition = 'background 0.2s';
+                            el.style.background = 'rgba(99, 102, 241, 0.1)';
+                            setTimeout(() => el.style.background = '#000', 300);
+                        });
+                        
+                        detectSourceIdentities();
+                        Swal.fire({ toast:true, position:'top-end', timer:1000, showConfirmButton:false, icon:'info', title:'Sources swapped' });
+                    }
+
                     async function fillCurrentStructure(ev) {
                         const btn = ev ? ev.currentTarget : null;
                         if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Fetching...'; }
@@ -13359,7 +13440,9 @@ var advancedFilters = null;
                             const res = await fetch('?', { method:'POST', body:fd });
                             const data = await res.json();
                             if (data.success) {
+                                localStructureCache = data.sql;
                                 document.getElementById('compare_source').value = data.sql;
+                                if (typeof detectSourceIdentities === 'function') detectSourceIdentities();
                                 if (ev) Swal.fire({ toast:true, position:'top-end', timer:1500, showConfirmButton:false, icon:'success', title:'Local structure updated' });
                             }
                         } catch (e) {
