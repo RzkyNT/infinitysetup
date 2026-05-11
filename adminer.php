@@ -5578,6 +5578,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'title' => $_POST['title'] ?? 'New Chart',
             'palette' => $_POST['palette'] ?? 'vibrant',
             'date_col' => $_POST['date_col'] ?? '',
+            'filter_col' => $_POST['filter_col'] ?? '',
+            'filter_keyword' => $_POST['filter_keyword'] ?? '',
             'limit' => (int)($_POST['limit'] ?? 5)
         ];
         
@@ -5636,6 +5638,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $c['title'] = $_POST['title'] ?? $c['title'];
                     $c['palette'] = $_POST['palette'] ?? $c['palette'] ?? 'vibrant';
                     $c['date_col'] = $_POST['date_col'] ?? $c['date_col'] ?? '';
+                    $c['filter_col'] = $_POST['filter_col'] ?? $c['filter_col'] ?? '';
+                    $c['filter_keyword'] = $_POST['filter_keyword'] ?? $c['filter_keyword'] ?? '';
                     $c['limit'] = (int)($_POST['limit'] ?? $c['limit']);
                     break;
                 }
@@ -5678,13 +5682,23 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             
             $calc = $chart['calc_mode'] ?? 'COUNT';
             $dataCols = $chart['data_col'] ?? ['*'];
-            if (!is_array($dataCols)) $dataCols = [$dataCols];
+            if (empty($dataCols)) $dataCols = ['*'];
+            if (!is_array($dataCols)) $dataCols = explode(',', (string)$dataCols);
+            $dataCols = array_filter(array_map('trim', $dataCols));
+            if (empty($dataCols)) $dataCols = ['*'];
             
             $limit = (int)($chart['limit'] ?? 5);
             $limitClause = $limit > 0 ? "LIMIT $limit" : "";
             
             $where = "1=1";
             $params = [];
+            
+            $filterCol = $chart['filter_col'] ?? $labelCol; // Default to labelCol if not specified
+            $filterKeyword = $chart['filter_keyword'] ?? '';
+            if ($filterCol && $filterKeyword) {
+                $where .= " AND `$filterCol` LIKE ?";
+                $params[] = '%' . $filterKeyword . '%';
+            }
             if ($dateCol && $dateRange) {
                 $dates = explode(' to ', $dateRange);
                 if (count($dates) === 2) {
@@ -5699,8 +5713,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $series = [];
             foreach ($dataCols as $dCol) {
-                $aggFunc = "$calc(`$dCol`)";
-                if ($calc === 'COUNT' && $dCol === '*') $aggFunc = "COUNT(*)";
+                if ($dCol === '*' || empty($dCol)) {
+                    $aggFunc = "COUNT(*)";
+                    if ($calc !== 'COUNT') $aggFunc = "$calc(1)"; // Fallback for SUM(*) etc
+                } else {
+                    $aggFunc = "$calc(`$dCol`)";
+                }
                 
                 if ($displayCol && $refTable && $refCol) {
                     $sql = "SELECT t2.`$displayCol` as label, $aggFunc as value 
@@ -18829,6 +18847,10 @@ var queryBuilder = null;
                                             <i class="fas fa-chart-line"></i>
                                             <span>Line</span>
                                         </div>
+                                        <div class="chart-type-item" data-type="horizontalBar" onclick="selectChartType('horizontalBar')">
+                                            <i class="fas fa-align-left"></i>
+                                            <span>H-Bar</span>
+                                        </div>
                                         <div class="chart-type-item" data-type="pie" onclick="selectChartType('pie')">
                                             <i class="fas fa-chart-pie"></i>
                                             <span>Pie</span>
@@ -18884,7 +18906,16 @@ var queryBuilder = null;
                                                 <label for="c_no_limit" style="font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">No Limit</label>
                                             </div>
                                         </div>
-                                        <div></div>
+                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                                            <div>
+                                                <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Filter Column</label>
+                                                <select id="c_filter_col" class="swal2-input" style="width:100%; margin:0; background:var(--bg-input); color:var(--text-primary);"><option value="">Default</option></select>
+                                            </div>
+                                            <div>
+                                                <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Keyword</label>
+                                                <input type="text" id="c_filter_keyword" class="form-control" placeholder="e.g. login" style="width:100%; box-sizing:border-box; background:var(--bg-input); color:var(--text-primary);">
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <div id="fk_display_container" style="display:none; margin-bottom:15px; padding:10px; background:rgba(99, 102, 241, 0.1); border:1px dashed var(--accent-color); border-radius:4px;">
@@ -18916,7 +18947,11 @@ var queryBuilder = null;
                                 </div>
                             `,
                             didOpen: () => {
-                                    initTomSelect('#c_table, #c_label_col, #c_calc_mode, #c_data_col, #c_label_display_col, #c_palette, #c_date_col');
+                                    initTomSelect('#c_table, #c_label_col, #c_filter_col, #c_calc_mode, #c_data_col, #c_label_display_col, #c_palette, #c_date_col');
+                                if (!existing) {
+                                    const tsD = document.getElementById('c_data_col').tomselect;
+                                    if (tsD) tsD.setValue('*');
+                                }
                                 if (existing) {
                                     document.getElementById('c_title').value = isDuplicate ? existing.title + ' (Copy)' : existing.title;
                                     document.getElementById('c_table').tomselect.setValue(existing.table);
@@ -18931,6 +18966,10 @@ var queryBuilder = null;
                                     } else {
                                         document.getElementById('c_limit').value = existing.limit;
                                     }
+                                    
+                                     document.getElementById('c_filter_keyword').value = existing.filter_keyword || '';
+                                     
+                                     // Initial column fetch for selects happens below...
 
                                     // Fetch and set columns
                                     fetch('?', {
@@ -18943,21 +18982,26 @@ var queryBuilder = null;
                                         currentChartFks = res.fks || {};
                                         
                                         const tsL = document.getElementById('c_label_col').tomselect;
+                                        const tsF = document.getElementById('c_filter_col').tomselect;
                                         const tsD = document.getElementById('c_data_col').tomselect;
                                         const tsDate = document.getElementById('c_date_col').tomselect;
                                         
                                         tsL.clearOptions();
+                                        tsF.clearOptions();
                                         tsD.clearOptions();
                                         tsDate.clearOptions();
                                         tsD.addOption({value: '*', text: 'All (*)'});
                                         tsDate.addOption({value: '', text: '-- No Date Filter --'});
+                                        tsF.addOption({value: '', text: 'Default (Label Col)'});
                                         res.columns.forEach(c => {
                                             tsL.addOption({value: c.Field, text: c.Field});
+                                            tsF.addOption({value: c.Field, text: c.Field});
                                             tsD.addOption({value: c.Field, text: c.Field});
                                             tsDate.addOption({value: c.Field, text: c.Field});
                                         });
                                         
                                         tsL.setValue(existing.label_col);
+                                        tsF.setValue(existing.filter_col || '');
                                         if (Array.isArray(existing.data_col)) {
                                             existing.data_col.forEach(v => tsD.addItem(v));
                                         } else {
@@ -19008,10 +19052,12 @@ var queryBuilder = null;
                                     referenced_table: fk ? fk.table : '',
                                     referenced_column: fk ? fk.column : '',
                                     calc_mode: document.getElementById('c_calc_mode').value,
-                                    data_col: Array.from(document.getElementById('c_data_col').tomselect.items),
+                                    data_col: Array.from(document.getElementById('c_data_col').tomselect.items).filter(i => i !== '').length > 0 ? Array.from(document.getElementById('c_data_col').tomselect.items) : ['*'],
                                     type: document.getElementById('c_type').value,
                                     palette: document.getElementById('c_palette').value,
                                     date_col: document.getElementById('c_date_col').value,
+                                    filter_col: document.getElementById('c_filter_col').value,
+                                    filter_keyword: document.getElementById('c_filter_keyword').value,
                                     limit: document.getElementById('c_no_limit').checked ? 0 : document.getElementById('c_limit').value
                                 };
                             }
@@ -19094,12 +19140,33 @@ var queryBuilder = null;
                                 }
 
                                 new Chart(ctx, {
-                                    type: type,
+                                    type: (type === 'horizontalBar') ? 'bar' : type,
                                     data: {
-                                        labels: data.labels,
+                                        labels: data.labels.map(l => (l && l.length > 25) ? l.substring(0, 22) + '...' : l),
                                         datasets: datasets
                                     },
-                                        options: {
+                                    options: {
+                                        indexAxis: (type === 'horizontalBar') ? 'y' : 'x',
+                                        plugins: {
+                                            tooltip: {
+                                                backgroundColor: 'rgba(0,0,0,0.95)',
+                                                padding: 14,
+                                                titleFont: { size: 14 },
+                                                bodyFont: { size: 12, family: 'monospace' },
+                                                displayColors: false,
+                                                callbacks: {
+                                                    label: (ctx) => {
+                                                        const fullLabel = data.labels[ctx.dataIndex];
+                                                        const val = ctx.dataset.data[ctx.dataIndex];
+                                                        return [
+                                                            ctx.dataset.label + ': ' + val,
+                                                            '--------------------------------',
+                                                            fullLabel
+                                                        ];
+                                                    }
+                                                }
+                                            }
+                                        },
                                             responsive: true,
                                             maintainAspectRatio: false,
                                             onClick: (e, elements) => {
