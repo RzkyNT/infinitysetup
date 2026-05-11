@@ -2373,10 +2373,13 @@ function generateMigration($local, $prod, &$summary) {
 }
 
 function highlightSql($text) {
-    $text = htmlspecialchars($text);
+    // Use ENT_COMPAT to avoid encoding single quotes, so the string regex can match them
+    $text = htmlspecialchars($text, ENT_COMPAT, 'UTF-8');
+    
     $text = preg_replace('/(#[^\n]*|--[^\n]*)/', '<span class="sql-cmt">$1</span>', $text);
     $text = preg_replace('/(`[^`]+`)/', '<span class="sql-str">$1</span>', $text);
     $text = preg_replace("/('[^']*')/", '<span class="sql-str">$1</span>', $text);
+    
     $keywords = '/\b(ALTER|TABLE|ADD|COLUMN|DROP|MODIFY|CREATE|IF|NOT|EXISTS|INDEX|UNIQUE|KEY|PRIMARY|FOREIGN|REFERENCES|CONSTRAINT|AFTER|FIRST|NULL|DEFAULT|AUTO_INCREMENT|ENGINE|CHARSET|COLLATE|CONVERT|CHARACTER|TO|INT|VARCHAR|TEXT|TIMESTAMP|DATETIME|DECIMAL|FLOAT)\b/i';
     $text = preg_replace($keywords, '<span class="sql-kw">$1</span>', $text);
     return $text;
