@@ -3418,6 +3418,34 @@ if ($is_logged_in && (isset($_GET['action']) || isset($_POST['action']))) {
         exit;
     }
     
+    elseif ($action === 'save_visualizer_pos') {
+        @error_reporting(0);
+        $tableName = $_POST['table'] ?? '';
+        $left = $_POST['left'] ?? 0;
+        $top = $_POST['top'] ?? 0;
+        if ($tableName) {
+            $cfg = load_config($configFile);
+            $cfg['visualizer_pos'][$tableName] = ['left' => (int)$left, 'top' => (int)$top];
+            save_config($configFile, $cfg);
+            echo json_encode(['success' => true]);
+        }
+        exit;
+    }
+    
+    elseif ($action === 'save_all_visualizer_pos') {
+        @error_reporting(0);
+        $positions = $_POST['positions'] ?? [];
+        if (is_array($positions)) {
+            $cfg = load_config($configFile);
+            foreach ($positions as $tbl => $pos) {
+                $cfg['visualizer_pos'][$tbl] = ['left' => (int)($pos['left'] ?? 0), 'top' => (int)($pos['top'] ?? 0)];
+            }
+            save_config($configFile, $cfg);
+            echo json_encode(['success' => true]);
+        }
+        exit;
+    }
+    
     // --- GET COLUMNS AJAX ---
     elseif ($action === 'get_columns') {
         @error_reporting(0);
@@ -11862,6 +11890,7 @@ var advancedFilters = null;
         .sidebar.collapsed .db-info small span, 
         .sidebar.collapsed .nav-header span, 
         .sidebar.collapsed .nav-item span,
+        .sidebar.collapsed .sidebar-none,
         .sidebar.collapsed #tableSearch { /* Hide search input as well */
             display: none; 
         }
@@ -11901,7 +11930,7 @@ var advancedFilters = null;
             border: 1px solid var(--border-color); 
             border-left: none; 
             border-radius: 0 4px 4px 0; 
-            z-index: 10; 
+            z-index: 99999; 
             display: flex; /* Ensure it's always displayed */
             align-items: center;
             justify-content: center;
@@ -12407,7 +12436,7 @@ var advancedFilters = null;
         </div>
         <div class="db-info">
             <!-- Database Mode Toggle -->
-            <div style="margin-bottom: 10px; padding: 8px; background: var(--bg-hover); border-radius: 4px; border: 1px solid #444;">
+            <div style="margin-bottom: 10px; padding: 8px; background: var(--bg-hover); border-radius: 4px; border: 1px solid #444;" class="sidebar-none"">
                 <div style="display: flex;gap: 5px;margin-bottom: 5px;justify-content: center;align-items: center;">
                     <button type="button" onclick="switchDbMode('sql')" class="btn" style="flex: 1; padding: 4px 8px; font-size: 0.75rem; <?= ($_SESSION['db_mode'] ?? 'sql') === 'sql' ? 'background: var(--accent); color: white;' : '' ?>">
                         <i class="fas fa-database"></i> SQL
@@ -12425,7 +12454,7 @@ var advancedFilters = null;
             </div>
             
             <?php if (($_SESSION['db_mode'] ?? 'sql') === 'sql'): ?>
-                <form method="GET" style="margin-bottom: 5px;">
+                <form method="GET" style="margin-bottom: 5px;" class="sidebar-none">
                     <select name="select_db" onchange="this.form.submit()" class="form-select searchable-select" style="width: 100%;">
                         <option value="">-- Pilih Database --</option>
                         <?php foreach ($databases as $db): ?>
@@ -12510,11 +12539,14 @@ var advancedFilters = null;
             <div style="padding: 0 20px 10px;">
                 <input type="text" id="tableSearch" class="form-control" placeholder="Search tables..." style="width: 100%;">
             </div>
-            <a href="?" class="nav-item <?=!$currentTable ? 'active' : ''?>">
+            <a href="?" class="nav-item <?= (!$currentTable && ($_GET['view'] ?? 'structure') === 'structure') ? 'active' : '' ?>">
                 <i class="fas fa-tachometer-alt" style="width:20px; text-align:center;"></i> <span>Dashboard</span>
             </a>
             <a href="javascript:void(0)" onclick="openDocsModal()" class="nav-item">
                 <i class="fas fa-book" style="width:20px; text-align:center;"></i> <span>Developer Docs</span>
+            </a>
+            <a href="?view=visualizer" class="nav-item <?= ($_GET['view'] ?? '') === 'visualizer' ? 'active' : '' ?>">
+                <i class="fas fa-project-diagram" style="width:20px; text-align:center;"></i> <span>Schema Visualizer</span>
             </a>
             
 
@@ -12528,7 +12560,7 @@ var advancedFilters = null;
             <div id="sidebar-tables-list">
                 <?php foreach ($tables as $t): ?>
                     <div class="nav-item-wrapper" data-table="<?=htmlspecialchars($t['Name'])?>" style="display:flex; align-items:center;">
-                        <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=$currentTable === $t['Name'] ? 'active' : ''?>" style="flex:1;">
+                        <a href="?table=<?=htmlspecialchars($t['Name'])?>" class="nav-item <?=($currentTable === $t['Name'] && ($_GET['view'] ?? '') !== 'visualizer') ? 'active' : ''?>" style="flex:1;">
                             <i class="fas fa-table" style="width:20px; text-align:center;"></i> 
                             <span><?=htmlspecialchars($t['Name'])?> <small>(<?=formatSize($t['Data_length'] + $t['Index_length'])?>)</small></span>
                         </a>
@@ -12553,8 +12585,17 @@ var advancedFilters = null;
         <div class="top-bar">
             <!-- BREADCRUMB WITH FK TRAIL -->
             <div class="breadcrumb" style="min-width: 150px; max-width: 400px; overflow-x: auto; white-space: nowrap;">
-                <a href="?" style="text-decoration:none;"><i class="fas fa-home"></i> <span>Dashboard</span></a>
-                <?php if ($currentTable): ?>
+                <a href="?" style="text-decoration:none; color:var(--text-secondary); display:inline-flex; align-items:center; gap:6px;">
+                    <i class="fas fa-home" style="font-size:0.9em;"></i>
+                    <span>Dashboard</span>
+                </a>
+                <?php if (($_GET['view'] ?? '') === 'visualizer'): ?>
+                    <span style="color:var(--text-secondary);">/</span>
+                    <span style="display:inline-flex; align-items:center; gap:4px; color:var(--accent);">
+                        <i class="fas fa-project-diagram" style="font-size:0.8em;"></i>
+                        Schema Visualizer
+                    </span>
+                <?php elseif ($currentTable): ?>
                     <span style="color:var(--text-secondary);">/</span>
                     <span style="display:inline-flex; align-items:center; gap:4px;">
                         <i class="fas fa-table" style="font-size:0.8em; color:var(--accent);"></i>
@@ -12608,7 +12649,398 @@ var advancedFilters = null;
                 </div>
             </div>
         </div>
+        
+        <?php 
+        $dbMode = $_SESSION['db_mode'] ?? 'sql'; 
+        $cfg = load_config($configFile);
+        ?>
+                <?php if ($view === 'visualizer'): ?>
+                    <?php
+                    // Collect all schema data
+                    $schema = [];
+                    foreach ($tables as $t) {
+                        $tableName = $t['Name'];
+                        $cols = [];
+                        $fks = [];
+                        
+                        if ($dbMode === 'sql' && isset($pdo)) {
+                            // Columns
+                            $stmt = $pdo->query("SHOW FULL COLUMNS FROM `$tableName` ");
+                            while ($c = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                                $cols[] = [
+                                    'name' => $c['Field'],
+                                    'type' => preg_replace('/\s.*/', '', $c['Type']),
+                                    'pk' => ($c['Key'] === 'PRI'),
+                                    'fk' => false // Will be updated
+                                ];
+                            }
+                            // FKs
+                            $fkStmt = $pdo->prepare("
+                                SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+                                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+                            ");
+                            $fkStmt->execute([$DB_NAME, $tableName]);
+                            while ($fk = $fkStmt->fetch(PDO::FETCH_ASSOC)) {
+                                $fks[] = [
+                                    'col' => $fk['COLUMN_NAME'],
+                                    'ref_table' => $fk['REFERENCED_TABLE_NAME'],
+                                    'ref_col' => $fk['REFERENCED_COLUMN_NAME']
+                                ];
+                                // Mark column as FK
+                                foreach ($cols as &$col) {
+                                    if ($col['name'] === $fk['COLUMN_NAME']) $col['fk'] = true;
+                                }
+                            }
+                        } elseif ($dbMode === 'sqlite' && isset($pdo)) {
+                            // Columns
+                            $stmt = $pdo->query("PRAGMA table_info(`$tableName`)");
+                            while ($c = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                                $cols[] = [
+                                    'name' => $c['name'],
+                                    'type' => $c['type'],
+                                    'pk' => ($c['pk'] == 1),
+                                    'fk' => false
+                                ];
+                            }
+                            // FKs
+                            $stmt = $pdo->query("PRAGMA foreign_key_list(`$tableName`)");
+                            while ($fk = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                                $fks[] = [
+                                    'col' => $fk['from'],
+                                    'ref_table' => $fk['table'],
+                                    'ref_col' => $fk['to']
+                                ];
+                                foreach ($cols as &$col) {
+                                    if ($col['name'] === $fk['from']) $col['fk'] = true;
+                                }
+                            }
+                        } else {
+                            // Mock for JSON
+                            $cols[] = ['name' => 'id', 'type' => 'int', 'pk' => true, 'fk' => false];
+                            $cols[] = ['name' => 'data', 'type' => 'json', 'pk' => false, 'fk' => false];
+                        }
+                        
+                        $schema[] = [
+                            'name' => $tableName,
+                            'columns' => $cols,
+                            'fks' => $fks,
+                            'pos' => $cfg['visualizer_pos'][$tableName] ?? null
+                        ];
+                    }
+                    ?>
+                    <div class="card" id="erd-container" style="padding:0; overflow:hidden; position:relative; height:calc(100vh - 120px); background:#191919;">
+                        <div style="position:absolute; top:20px; left:20px; z-index:100; display:flex; gap:10px;">
+                            <div style="background:var(--bg-hover); padding:10px 15px; border-radius:8px; border:1px solid #ffffffff; backdrop-filter:blur(8px);">
+                                <h3 style="margin:0; font-size:1rem; color:#f8fafc;"><i class="fas fa-project-diagram"></i> Interactive ERD</h3>
+                                <small style="color:#94a3b8;">Drag tables to organize. Double click to view data.</small>
+                            </div>
+                            <button onclick="autoLayout()" class="btn btn-secondary" title="Auto Layout"><i class="fas fa-magic"></i></button>
+                            <button onclick="zoomERD(1.2)" class="btn btn-secondary" title="Zoom In"><i class="fas fa-search-plus"></i></button>
+                            <button onclick="zoomERD(0.8)" class="btn btn-secondary" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
+                            <button onclick="resetZoom()" class="btn btn-secondary" title="Reset View"><i class="fas fa-home"></i></button>
+                            <button onclick="toggleFullscreen()" class="btn btn-secondary" title="Toggle Fullscreen"><i class="fas fa-expand"></i></button>
+                        </div>
 
+                        <div id="erd-workspace" style="width:100%; height:100%; cursor:grab; overflow:hidden; position:relative;">
+                            <svg id="erd-svg" style="position:absolute; top:0; left:0; width:10000px; height:10000px; pointer-events:none; transform-origin: 0 0;">
+                                <defs>
+                                    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                                        <path d="M0,0 L0,6 L9,3 z" fill="#6366f1" />
+                                    </marker>
+                                </defs>
+                            </svg>
+                            <div id="erd-nodes" style="position:absolute; top:0; left:0; width:10000px; height:10000px; transform-origin: 0 0;">
+                                <?php foreach ($schema as $i => $tbl): 
+                                    $left = $tbl['pos']['left'] ?? (($i % 4) * 300 + 50);
+                                    $top = $tbl['pos']['top'] ?? (floor($i / 4) * 400 + 50);
+                                ?>
+                                    <div class="erd-node" id="node-<?=htmlspecialchars($tbl['name'])?>" 
+                                         style="left:<?=$left?>px; top:<?=$top?>px;"
+                                         data-table="<?=htmlspecialchars($tbl['name'])?>">
+                                        <div class="erd-node-header">
+                                            <i class="fas fa-table"></i> <?=htmlspecialchars($tbl['name'])?>
+                                            <div class="erd-node-actions">
+                                                <a href="?table=<?=urlencode($tbl['name'])?>&view=data" title="View Data"><i class="fas fa-eye"></i></a>
+                                            </div>
+                                        </div>
+                                        <div class="erd-node-body">
+                                            <?php foreach ($tbl['columns'] as $c): ?>
+                                                <div class="erd-col <?= $c['pk'] ? 'pk' : '' ?> <?= $c['fk'] ? 'fk' : '' ?>">
+                                                    <span>
+                                                        <?php if($c['pk']): ?><i class="fas fa-key" style="color:#fbbf24; font-size:0.7rem;"></i><?php endif; ?>
+                                                        <?php if($c['fk']): ?><i class="fas fa-link" style="color:#6366f1; font-size:0.7rem;"></i><?php endif; ?>
+                                                        <?=htmlspecialchars($c['name'])?>
+                                                    </span>
+                                                    <span class="type"><?=htmlspecialchars($c['type'])?></span>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                    <style>
+                        .erd-node {
+                            position: absolute;
+                            width: fit-content;
+                            background: var(--bg-hover);
+                            border: 1px solid #ffffff;
+                            border-radius: 8px;
+                            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+                            cursor: default;
+                            user-select: none;
+                            z-index: 10;
+                            transition: box-shadow 0.2s;
+                        }
+                        .erd-node:hover { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2); }
+                        .erd-node.dragging { z-index: 100; cursor: grabbing; }
+                        
+                        .erd-node-header {
+                            padding: 8px 12px;
+                            background:var(--bg-input) ;
+                            border-bottom: 1px solid ;
+                            border-radius: 7px 7px 0 0;
+                            font-weight: 600;
+                            font-size: 0.85rem;
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            cursor: grab;
+                        }
+                        .erd-node-actions a { color: #f0f0f0ff; font-size: 0.8rem; }
+                        .erd-node-actions a:hover { color: #f8fafc; }
+
+                        .erd-node-body { padding: 5px 0; }
+                        .erd-col {
+                            padding: 4px 12px;
+                            display: flex;
+                            justify-content: space-between;
+                            font-size: 0.8rem;
+                            color: #cbd5e1;
+                            border-bottom: 1px solid rgba(255,255,255,0.02);
+                        }
+                        .erd-col:last-child { border: none; }
+                        .erd-col .type { color: #64748b; font-family: monospace; font-size: 0.7rem; }
+                        .erd-col.pk { color: #f8fafc; font-weight: 500; }
+                        
+                        #erd-workspace { background-image: radial-gradient(#334155 1px, transparent 1px); background-size: 20px 20px; transition: background-size 0.1s; }
+                        #erd-container:fullscreen { width: 100vw !important; height: 100vh !important; }
+                        #erd-container:-webkit-full-screen { width: 100vw !important; height: 100vh !important; }
+                    </style>
+
+                    <script>
+                        const schemaData = <?= json_encode($schema) ?>;
+                        const workspace = document.getElementById('erd-workspace');
+                        const nodesContainer = document.getElementById('erd-nodes');
+                        const svg = document.getElementById('erd-svg');
+                        
+                        let isPanning = false;
+                        let startX, startY;
+                        let translateX = 0, translateY = 0, scale = 1;
+
+                        // Dragging logic
+                        let activeNode = null;
+                        let dragOffsetX = 0, dragOffsetY = 0;
+
+                        document.querySelectorAll('.erd-node-header').forEach(header => {
+                            header.addEventListener('mousedown', (e) => {
+                                if (e.button !== 0) return;
+                                e.stopPropagation();
+                                activeNode = header.parentElement;
+                                activeNode.classList.add('dragging');
+                                dragOffsetX = e.clientX - activeNode.offsetLeft;
+                                dragOffsetY = e.clientY - activeNode.offsetTop;
+                            });
+                        });
+
+                        workspace.addEventListener('mousedown', (e) => {
+                            if (e.button === 1 || (e.button === 0 && !activeNode)) {
+                                isPanning = true;
+                                workspace.style.cursor = 'grabbing';
+                                startX = e.clientX - translateX;
+                                startY = e.clientY - translateY;
+                            }
+                        });
+
+                        window.addEventListener('mousemove', (e) => {
+                            if (activeNode) {
+                                activeNode.style.left = (e.clientX - dragOffsetX) + 'px';
+                                activeNode.style.top = (e.clientY - dragOffsetY) + 'px';
+                                drawLines();
+                            } else if (isPanning) {
+                                translateX = e.clientX - startX;
+                                translateY = e.clientY - startY;
+                                updateTransform();
+                            }
+                        });
+
+                        window.addEventListener('mouseup', () => {
+                            if (activeNode) {
+                                activeNode.classList.remove('dragging');
+                                const tableName = activeNode.getAttribute('data-table');
+                                const left = parseInt(activeNode.style.left);
+                                const top = parseInt(activeNode.style.top);
+                                
+                                fetch('?', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                    body: `action=save_visualizer_pos&table=${encodeURIComponent(tableName)}&left=${left}&top=${top}`
+                                });
+                            }
+                            activeNode = null;
+                            isPanning = false;
+                            workspace.style.cursor = 'grab';
+                        });
+
+                        function updateTransform() {
+                            nodesContainer.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+                            svg.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+                            workspace.style.backgroundPosition = `${translateX}px ${translateY}px`;
+                            workspace.style.backgroundSize = `${20 * scale}px ${20 * scale}px`;
+                        }
+
+                        workspace.addEventListener('wheel', (e) => {
+                            e.preventDefault();
+                            const zoomSpeed = 0.1;
+                            const delta = e.deltaY > 0 ? -zoomSpeed : zoomSpeed;
+                            const oldScale = scale;
+                            scale = Math.min(Math.max(0.1, scale + delta), 3);
+                            
+                            const rect = workspace.getBoundingClientRect();
+                            const mouseX = e.clientX - rect.left;
+                            const mouseY = e.clientY - rect.top;
+                            
+                            const x = (mouseX - translateX) / oldScale;
+                            const y = (mouseY - translateY) / oldScale;
+                            
+                            translateX = mouseX - x * scale;
+                            translateY = mouseY - y * scale;
+                            
+                            updateTransform();
+                        }, { passive: false });
+
+                        function zoomERD(factor) {
+                            const oldScale = scale;
+                            scale = Math.min(Math.max(0.1, scale * factor), 3);
+                            
+                            const rect = workspace.getBoundingClientRect();
+                            const centerX = rect.width / 2;
+                            const centerY = rect.height / 2;
+                            
+                            const x = (centerX - translateX) / oldScale;
+                            const y = (centerY - translateY) / oldScale;
+                            
+                            translateX = centerX - x * scale;
+                            translateY = centerY - y * scale;
+                            
+                            updateTransform();
+                        }
+
+                        function toggleFullscreen() {
+                            const container = document.getElementById('erd-container');
+                            if (!document.fullscreenElement) {
+                                container.requestFullscreen().catch(err => {
+                                    alert(`Error attempting to enable full-screen mode: ${err.message}`);
+                                });
+                            } else {
+                                document.exitFullscreen();
+                            }
+                        }
+
+                        function drawLines() {
+                            svg.innerHTML = `
+                                <defs>
+                                    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                                        <path d="M0,0 L0,6 L9,3 z" fill="#6366f1" />
+                                    </marker>
+                                </defs>
+                            `;
+                            
+                            schemaData.forEach(table => {
+                                table.fks.forEach(fk => {
+                                    const fromNode = document.getElementById('node-' + table.name);
+                                    const toNode = document.getElementById('node-' + fk.ref_table);
+                                    
+                                    if (fromNode && toNode) {
+                                        const x1 = fromNode.offsetLeft + (fromNode.offsetWidth / 2);
+                                        const y1 = fromNode.offsetTop + (fromNode.offsetHeight / 2);
+                                        const x2 = toNode.offsetLeft + (toNode.offsetWidth / 2);
+                                        const y2 = toNode.offsetTop + (toNode.offsetHeight / 2);
+                                        
+                                        // Simple Bezier curve
+                                        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                                        const dx = Math.abs(x1 - x2);
+                                        const cp1x = x1 > x2 ? x1 - dx/2 : x1 + dx/2;
+                                        const cp2x = x1 > x2 ? x2 + dx/2 : x2 - dx/2;
+                                        
+                                        path.setAttribute("d", `M ${x1} ${y1} C ${cp1x} ${y1}, ${cp2x} ${y2}, ${x2} ${y2}`);
+                                        path.setAttribute("stroke", "#6366f1");
+                                        path.setAttribute("stroke-width", "2");
+                                        path.setAttribute("fill", "none");
+                                        path.setAttribute("opacity", "0.6");
+                                        path.setAttribute("vector-effect", "non-scaling-stroke");
+                                        path.setAttribute("marker-end", "url(#arrow)");
+                                        svg.appendChild(path);
+                                    }
+                                });
+                            });
+                        }
+
+                        function resetZoom() {
+                            translateX = 0; translateY = 0; scale = 1;
+                            updateTransform();
+                        }
+
+                        function autoLayout() {
+                            Swal.fire({
+                                title: 'Are you sure?',
+                                text: "This will overwrite your manual table positions and reset the layout.",
+                                icon: 'warning',
+                                showCancelButton: true,
+                                confirmButtonColor: 'var(--accent)',
+                                cancelButtonColor: '#d33',
+                                confirmButtonText: 'Yes, reset layout!'
+                            }).then((result) => {
+                                if (result.isConfirmed) {
+                                    const nodes = document.querySelectorAll('.erd-node');
+                                    const cols = 4;
+                                    const spacingX = 300;
+                                    const spacingY = 400;
+                                    const positions = {};
+                                    
+                                    nodes.forEach((node, i) => {
+                                        const left = (i % cols) * spacingX + 50;
+                                        const top = Math.floor(i / cols) * spacingY + 50;
+                                        node.style.left = left + 'px';
+                                        node.style.top = top + 'px';
+                                        positions[node.getAttribute('data-table')] = { left, top };
+                                    });
+                                    
+                                    // Batch save
+                                    const fd = new FormData();
+                                    fd.append('action', 'save_all_visualizer_pos');
+                                    Object.entries(positions).forEach(([tbl, pos]) => {
+                                        fd.append(`positions[${tbl}][left]`, pos.left);
+                                        fd.append(`positions[${tbl}][top]`, pos.top);
+                                    });
+                                    fetch('?', { method: 'POST', body: fd });
+                                    
+                                    translateX = 0;
+                                    translateY = 0;
+                                    scale = 1;
+                                    updateTransform();
+                                    drawLines();
+                                }
+                            });
+                        }
+
+                        // Initialize
+                        setTimeout(drawLines, 100);
+                    </script>
+                    <?php else: ?>
         <div class="content-area">
             <?php if ($msg): ?>
                 <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?=$msg?></div>
@@ -12618,7 +13050,6 @@ var advancedFilters = null;
             <?php endif; ?>
 
             <?php 
-            $dbMode = $_SESSION['db_mode'] ?? 'sql';
             if (!$currentTable && ($view === 'structure' || $view === 'compare')): 
             ?>
                 <!-- STRUCTURAL COMPARISON (COLLAPSIBLE) -->
@@ -12858,6 +13289,7 @@ var advancedFilters = null;
                 </div>
             <?php endif; ?>
 
+                <?php if (!$currentTable): ?>
                 <div class="card" id="compare-section" style="margin-bottom: 25px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <h3 class="compare-toggle" onclick="toggleCompareCard()" style="margin:0;">
@@ -13054,7 +13486,6 @@ var advancedFilters = null;
                 
                 <div class="widget-grid">
                     <?php 
-                    $cfg = load_config($configFile);
                     $db = $_SESSION['db_name'] ?? '';
                     $widgets = array_filter($cfg['widgets'] ?? [], function($w) use ($db) {
                         return ($w['db'] ?? '') === $db;
@@ -13200,9 +13631,8 @@ var advancedFilters = null;
                         
                         <?php 
                         $currentDbName = $_SESSION['db_name'] ?? '';
-                        $allCfg = load_config($configFile);
-                        $ghCfg = ($currentDbName && isset($allCfg['backup_configs'][$currentDbName]['github'])) 
-                            ? $allCfg['backup_configs'][$currentDbName]['github'] 
+                        $ghCfg = ($currentDbName && isset($cfg['backup_configs'][$currentDbName]['github'])) 
+                            ? $cfg['backup_configs'][$currentDbName]['github'] 
                             : null;
                         
                         if (!$ghCfg || empty($ghCfg['token']) || !$ghCfg['enabled']): ?>
@@ -13240,10 +13670,8 @@ var advancedFilters = null;
                         </div>
                         
                         <?php 
-                        $currentDbName = $_SESSION['db_name'] ?? '';
-                        $allCfg = load_config($configFile);
-                        $tgCfg = ($currentDbName && isset($allCfg['backup_configs'][$currentDbName]['telegram'])) 
-                            ? $allCfg['backup_configs'][$currentDbName]['telegram'] 
+                        $tgCfg = ($currentDbName && isset($cfg['backup_configs'][$currentDbName]['telegram'])) 
+                            ? $cfg['backup_configs'][$currentDbName]['telegram'] 
                             : null;
                         
                         if (!$tgCfg || empty($tgCfg['token']) || !$tgCfg['enabled']): ?>
@@ -13343,7 +13771,7 @@ var advancedFilters = null;
                         return;
                     }
                     
-                    const allConfig = <?= json_encode(load_config($configFile)); ?>;
+                    const allConfig = <?= json_encode($cfg); ?>;
                     const gh = (allConfig.backup_configs && allConfig.backup_configs[dbName] && allConfig.backup_configs[dbName].github) 
                         ? allConfig.backup_configs[dbName].github 
                         : {};
@@ -13467,7 +13895,7 @@ var advancedFilters = null;
                         return;
                     }
                     
-                    const allConfig = <?= json_encode(load_config($configFile)); ?>;
+                    const allConfig = <?= json_encode($cfg); ?>;
                     const tg = (allConfig.backup_configs && allConfig.backup_configs[dbName] && allConfig.backup_configs[dbName].telegram) 
                         ? allConfig.backup_configs[dbName].telegram 
                         : {};
@@ -13553,7 +13981,7 @@ var advancedFilters = null;
                             input: 'password',
                             inputPlaceholder: 'Enter ZIP password...',
                             showCancelButton: true,
-                            inputValue: <?= json_encode(load_config($configFile)['telegram']['zip_password'] ?? '') ?>
+                            inputValue: <?= json_encode($cfg['telegram']['zip_password'] ?? '') ?>
                         });
                         if (pass === undefined) return; // Cancelled
                         password = pass;
@@ -14034,7 +14462,7 @@ var advancedFilters = null;
             <?php endif; ?>
 
                 <?php 
-                $configList = load_config($configFile)['databases'] ?? [];
+                $configList = $cfg['databases'] ?? [];
                 if (should_show_managed_database_list($hostProfile) && !$currentTable && $view === 'structure'): ?>
                 <!-- MANAGEMENT UI -->
                 <div class="card">
@@ -14051,7 +14479,7 @@ var advancedFilters = null;
                             </thead>
                             <tbody>
                                 <?php 
-                                $configList = load_config($configFile)['databases'] ?? [];
+                                $configList = $cfg['databases'] ?? [];
                                 foreach ($configList as $dbItem): 
                                     $isActive = ($dbItem === ($_SESSION['db_name'] ?? ''));
                                 ?>
@@ -14089,6 +14517,8 @@ var advancedFilters = null;
                     </form>
                 </div>
                 <?php endif; ?>
+                <?php endif; // end if !$currentTable ?>
+                
                 
                 <?php if ($currentTable):
                 $tsJSON = json_encode(array_map(function($c) { return ['name' => $c['Field'], 'type' => $c['Type']]; }, $tableStructure ?? []));
@@ -15103,17 +15533,17 @@ async function generatePhpHash() {
 
                         <div style="display: flex; gap: 10px; margin-left:auto;">
                              <!-- Clone Table -->
-                             <button type="button" onclick="openCloneModal('<?=htmlspecialchars($currentTable)?>')" class="btn btn-accent" style="margin-right:15px;"><i class="fas fa-copy"></i> Clone</button>
+                             <button type="button" onclick="openCloneModal('<?=htmlspecialchars($currentTable)?>')" class="btn btn-accent" style="margin-right:15px;"><i class="fas fa-copy"></i> Clone Table</button>
 
                              <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('TRUNCATE this table? All data will be lost!') ?>)' style="display:inline;">
                                 <input type="hidden" name="action" value="truncate_table">
                                 <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                <button type="submit" class="btn btn-danger"><i class="fas fa-eraser"></i> Truncate</button>
+                                <button type="submit" class="btn btn-danger"><i class="fas fa-eraser"></i> Truncate Table</button>
                             </form>
                             <form method="POST" onsubmit='saConfirmForm(event, <?= json_encode('DROP this table? This cannot be undone!') ?>)' style="display:inline;">
                                 <input type="hidden" name="action" value="delete_table">
                                 <input type="hidden" name="table" value="<?=htmlspecialchars($currentTable)?>">
-                                <button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Drop</button>
+                                <button type="submit" class="btn btn-danger"><i class="fas fa-trash"></i> Drop Table</button>
                             </form>
                         </div>
                     </div>
@@ -16059,7 +16489,7 @@ function readFileContent(file) {
                                         }
                                     }
 
-                                    $configList = load_config($configFile)['databases'] ?? [];
+                                    $configList = $cfg['databases'] ?? [];
                                     foreach ($serverDbs as $dbItem): 
                                         $inList = in_array($dbItem, $configList);
                                     ?>
@@ -16160,72 +16590,6 @@ function readFileContent(file) {
                     <?php endif; ?>
                 </div>
                 <?php endif; // End Quick SQL mode check ?>
-
-                <?php 
-                // Only show Create New Table for SQL mode
-                $dbMode = $_SESSION['db_mode'] ?? 'sql';
-                if ($hasSelectedDatabase && !$currentTable && $dbMode === 'sql'): 
-                ?>
-                <div class="card">
-                    <h3><i class="fas fa-plus-square"></i> Create New Table</h3>
-                    <form method="POST" id="createTableForm" style="margin-top: 20px;">
-                        <input type="hidden" name="action" value="create_table">
-                        
-                        <div class="table-wrapper" style="margin-bottom:20px;">
-                            <table class="table-input">
-                                <thead>
-                                    <tr>
-                                        <th>Table Name</th>
-                                        <th style="width:150px">Engine</th>
-                                        <th style="width:200px">Collation</th>
-                                        <th>Comment</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td><input type="text" name="name" class="form-control" required placeholder="e.g. users"></td>
-                                        <td>
-                                            <select name="engine" class="form-select no-ts">
-                                                <option value="InnoDB">InnoDB</option>
-                                                <option value="MyISAM">MyISAM</option>
-                                            </select>
-                                        </td>
-                                        <td>
-                                            <select name="collation" class="form-select no-ts">
-                                                <option value="utf8mb4_general_ci">utf8mb4_general_ci</option>
-                                                <option value="utf8mb4_unicode_ci">utf8mb4_unicode_ci</option>
-                                                <option value="utf8_general_ci">utf8_general_ci</option>
-                                            </select>
-                                        </td>
-                                        <td><input type="text" name="comments" class="form-control" placeholder="Optional"></td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        
-                        <div class="table-wrapper" style="margin-bottom:15px;">
-                            <table class="table-input">
-                                <thead>
-                                    <tr>
-                                        <th>Column Name</th>
-                                        <th style="width:120px">Type</th>
-                                        <th style="width:80px">Length</th>
-                                        <th style="width:120px">Default</th>
-                                        <th style="width:250px">Options</th>
-                                        <th style="width:40px"></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="colList">
-                                    <!-- Rows injected by JS -->
-                                </tbody>
-                            </table>
-                        </div>
-                        
-                        <button type="button" class="btn" onclick="addColRow()"><i class="fas fa-plus"></i> Add Column</button>
-                        <button type="submit" class="btn btn-primary" style="margin-left:10px;">Create Table</button>
-                    </form>
-                </div>
-                <?php endif; ?>
 
                 <div class="dashboard-stats">
                     <div class="stat-card">
@@ -16411,45 +16775,71 @@ function readFileContent(file) {
                     </div>
                 </div>
 
-                <?php if ($relationshipDiagram): ?>
+<?php 
+                // Only show Create New Table for SQL mode
+                $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                if ($hasSelectedDatabase && !$currentTable && $dbMode === 'sql'): 
+                ?>
                 <div class="card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                        <h3 style="margin:0;">Relationship Map</h3>
-                        <span style="font-size:0.85rem; color:var(--text-secondary);">Mermaid diagram of foreign keys</span>
-                    </div>
-                    <div style="position:relative;">
-                        <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:10px; top:10px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
-                        <pre id="mermaid-graph" class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:500px;"><?= htmlspecialchars($relationshipDiagram) ?></pre>
-                    </div>
-                </div>
-                <?php endif; ?>
-
-                <?php if ($plantumlDiagramEncoded || $erdDiagram): ?>
-                <div class="card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                        <h3 style="margin:0;">Schema ERD</h3>
-                        <span style="font-size:0.85rem; color:var(--text-secondary);">PlantUML (primary) with Mermaid fallback</span>
-                    </div>
-                    <?php if ($plantumlDiagramEncoded): ?>
-                        <div style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:10px; text-align:center; position:relative;">
-                            <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:15px; top:15px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
-                            <img src="https://www.plantuml.com/plantuml/svg/<?= htmlspecialchars($plantumlDiagramEncoded) ?>" alt="PlantUML ERD" class="erd-img" style="width:100%; max-height:600px; object-fit:contain; background:#fff;">
+                    <h3><i class="fas fa-plus-square"></i> Create New Table</h3>
+                    <form method="POST" id="createTableForm" style="margin-top: 20px;">
+                        <input type="hidden" name="action" value="create_table">
+                        
+                        <div class="table-wrapper" style="margin-bottom:20px;">
+                            <table class="table-input">
+                                <thead>
+                                    <tr>
+                                        <th>Table Name</th>
+                                        <th style="width:150px">Engine</th>
+                                        <th style="width:200px">Collation</th>
+                                        <th>Comment</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><input type="text" name="name" class="form-control" required placeholder="e.g. users"></td>
+                                        <td>
+                                            <select name="engine" class="form-select no-ts">
+                                                <option value="InnoDB">InnoDB</option>
+                                                <option value="MyISAM">MyISAM</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <select name="collation" class="form-select no-ts">
+                                                <option value="utf8mb4_general_ci">utf8mb4_general_ci</option>
+                                                <option value="utf8mb4_unicode_ci">utf8mb4_unicode_ci</option>
+                                                <option value="utf8_general_ci">utf8_general_ci</option>
+                                            </select>
+                                        </td>
+                                        <td><input type="text" name="comments" class="form-control" placeholder="Optional"></td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
-                        <?php if ($erdDiagram): ?>
-                            <details style="margin-top:10px;">
-                                <summary style="cursor:pointer; color:#0d6efd;">Show Mermaid fallback</summary>
-                                <div style="position:relative;">
-                                    <button type="button" class="btn btn-sm" onclick="toggleFullscreenDiagram(this.nextElementSibling)" style="position:absolute; right:10px; top:10px; z-index:10; background:rgba(0,0,0,0.5); border:1px solid #444; color:#fff;"><i class="fas fa-expand"></i> Fullscreen</button>
-                                    <pre class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
-                                </div>
-            </details>
-                        <?php endif; ?>
-                    <?php elseif ($erdDiagram): ?>
-                        <pre class="mermaid" style="background:#080808; border:1px solid var(--dark-gray); border-radius:6px; padding:15px; overflow:auto; max-height:600px;"><?= htmlspecialchars($erdDiagram) ?></pre>
-                    <?php endif; ?>
+                        
+                        <div class="table-wrapper" style="margin-bottom:15px;">
+                            <table class="table-input">
+                                <thead>
+                                    <tr>
+                                        <th>Column Name</th>
+                                        <th style="width:120px">Type</th>
+                                        <th style="width:80px">Length</th>
+                                        <th style="width:120px">Default</th>
+                                        <th style="width:250px">Options</th>
+                                        <th style="width:40px"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="colList">
+                                    <!-- Rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <button type="button" class="btn" onclick="addColRow()"><i class="fas fa-plus"></i> Add Column</button>
+                        <button type="submit" class="btn btn-primary" style="margin-left:10px;">Create Table</button>
+                    </form>
                 </div>
                 <?php endif; ?>
-
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                         <h3>Database Tables</h3>
@@ -18800,6 +19190,7 @@ var queryBuilder = null;
                     // switchSqlTab moved to head for better reliability
                     </script>
         </div>
+        <?php endif; ?>
     </div>
 </body>
 </html>
