@@ -5579,6 +5579,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             'palette' => $_POST['palette'] ?? 'vibrant',
             'date_col' => $_POST['date_col'] ?? '',
             'filter_col' => $_POST['filter_col'] ?? '',
+            'filter_op' => $_POST['filter_op'] ?? 'LIKE',
             'filter_keyword' => $_POST['filter_keyword'] ?? '',
             'limit' => (int)($_POST['limit'] ?? 5)
         ];
@@ -5639,6 +5640,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $c['palette'] = $_POST['palette'] ?? $c['palette'] ?? 'vibrant';
                     $c['date_col'] = $_POST['date_col'] ?? $c['date_col'] ?? '';
                     $c['filter_col'] = $_POST['filter_col'] ?? $c['filter_col'] ?? '';
+                    $c['filter_op'] = $_POST['filter_op'] ?? $c['filter_op'] ?? 'LIKE';
                     $c['filter_keyword'] = $_POST['filter_keyword'] ?? $c['filter_keyword'] ?? '';
                     $c['limit'] = (int)($_POST['limit'] ?? $c['limit']);
                     break;
@@ -5693,11 +5695,35 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $where = "1=1";
             $params = [];
             
-            $filterCol = $chart['filter_col'] ?? $labelCol; // Default to labelCol if not specified
-            $filterKeyword = $chart['filter_keyword'] ?? '';
-            if ($filterCol && $filterKeyword) {
-                $where .= " AND `$filterCol` LIKE ?";
-                $params[] = '%' . $filterKeyword . '%';
+            $filterCol = $chart['filter_col'] ?? $labelCol;
+            $filterOp = $chart['filter_op'] ?? 'LIKE';
+            $filterVal = $chart['filter_keyword'] ?? '';
+            
+            if ($filterCol && ($filterVal !== '' || in_array($filterOp, ['IS NULL', 'IS NOT NULL']))) {
+                switch($filterOp) {
+                    case '=': case '!=': case '>': case '<': case '>=': case '<=':
+                        $where .= " AND `$filterCol` $filterOp ?";
+                        $params[] = $filterVal;
+                        break;
+                    case 'CONTAINS': case 'LIKE':
+                        $where .= " AND `$filterCol` LIKE ?";
+                        $params[] = '%' . $filterVal . '%';
+                        break;
+                    case 'STARTS':
+                        $where .= " AND `$filterCol` LIKE ?";
+                        $params[] = $filterVal . '%';
+                        break;
+                    case 'ENDS':
+                        $where .= " AND `$filterCol` LIKE ?";
+                        $params[] = '%' . $filterVal;
+                        break;
+                    case 'IS NULL':
+                        $where .= " AND `$filterCol` IS NULL";
+                        break;
+                    case 'IS NOT NULL':
+                        $where .= " AND `$filterCol` IS NOT NULL";
+                        break;
+                }
             }
             if ($dateCol && $dateRange) {
                 $dates = explode(' to ', $dateRange);
@@ -13107,6 +13133,11 @@ var advancedFilters = null;
                     .compare-toggle { cursor:pointer; display:flex; align-items:center; gap:10px; transition:color 0.2s; }
                     .compare-toggle:hover { color:var(--accent); }
                     .badge-local { background:var(--accent); color:#000; padding:2px 8px; border-radius:4px; font-size:0.65rem; font-weight:900; display:inline-flex; align-items:center; gap:4px; box-shadow:0 2px 8px rgba(0,0,0,0.2); }
+                    
+                    #chartjs-tooltip { opacity: 0; position: absolute; background: rgba(0, 0, 0, 0.95); color: white; border-radius: 8px; padding: 12px 16px; pointer-events: none; transform: translate(-50%, 0); transition: all .1s ease; z-index: 10000; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border: 1px solid #444; font-family: 'Segoe UI', system-ui, sans-serif; min-width: 250px; backdrop-filter: blur(4px); }
+                    #chartjs-tooltip:after { content: ""; display: block; position: absolute; bottom: -10px; left: 50%; margin-left: -10px; width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-top: 10px solid rgba(0, 0, 0, 0.95); }
+                    .tooltip-title { font-weight: 700; margin-bottom: 8px; color: #6366f1; border-bottom: 1px solid #333; padding-bottom: 4px; font-size: 14px; }
+                    .tooltip-body { font-size: 12px; line-height: 1.6; color: #eee; word-break: break-all; font-family: 'Fira Code', monospace; }
                 </style>
 <?php 
                 $uniSearch = $_GET['uni_search'] ?? '';
@@ -18906,14 +18937,29 @@ var queryBuilder = null;
                                                 <label for="c_no_limit" style="font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">No Limit</label>
                                             </div>
                                         </div>
-                                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
-                                            <div>
-                                                <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Filter Column</label>
-                                                <select id="c_filter_col" class="swal2-input" style="width:100%; margin:0; background:var(--bg-input); color:var(--text-primary);"><option value="">Default</option></select>
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Filter Column</label>
+                                            <select id="c_filter_col" class="swal2-input" style="width:100%; margin:0; background:var(--bg-input); color:var(--text-primary);"><option value="">Default</option></select>
+                                        </div>
+                                        <div>
+                                            <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Op</label>
+                                            <select id="c_filter_op" class="swal2-input" style="width:100%; margin:0; background:var(--bg-input); color:var(--text-primary);">
+                                                <option value="CONTAINS">Contains</option>
+                                                    <option value="=">=</option>
+                                                    <option value="!=">!=</option>
+                                                    <option value=">">&gt;</option>
+                                                    <option value="<">&lt;</option>
+                                                    <option value=">=">&gt;=</option>
+                                                    <option value="<=">&lt;=</option>
+                                                    <option value="STARTS">Starts With</option>
+                                                    <option value="ENDS">Ends With</option>
+                                                    <option value="IS NULL">Is NULL</option>
+                                                    <option value="IS NOT NULL">Is Not NULL</option>
+                                                </select>
                                             </div>
                                             <div>
-                                                <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Keyword</label>
-                                                <input type="text" id="c_filter_keyword" class="form-control" placeholder="e.g. login" style="width:100%; box-sizing:border-box; background:var(--bg-input); color:var(--text-primary);">
+                                                <label class="form-label" style="display:block; margin-bottom:5px; font-size:0.85rem; color:var(--text-secondary);">Value</label>
+                                                <input type="text" id="c_filter_keyword" class="form-control" placeholder="Value..." style="width:100%; box-sizing:border-box; background:var(--bg-input); color:var(--text-primary);">
                                             </div>
                                         </div>
                                     </div>
@@ -18947,7 +18993,7 @@ var queryBuilder = null;
                                 </div>
                             `,
                             didOpen: () => {
-                                    initTomSelect('#c_table, #c_label_col, #c_filter_col, #c_calc_mode, #c_data_col, #c_label_display_col, #c_palette, #c_date_col');
+                                    initTomSelect('#c_table, #c_label_col, #c_filter_col, #c_filter_op, #c_calc_mode, #c_data_col, #c_label_display_col, #c_palette, #c_date_col');
                                 if (!existing) {
                                     const tsD = document.getElementById('c_data_col').tomselect;
                                     if (tsD) tsD.setValue('*');
@@ -18967,6 +19013,7 @@ var queryBuilder = null;
                                         document.getElementById('c_limit').value = existing.limit;
                                     }
                                     
+                                     document.getElementById('c_filter_op').tomselect.setValue(existing.filter_op || 'CONTAINS');
                                      document.getElementById('c_filter_keyword').value = existing.filter_keyword || '';
                                      
                                      // Initial column fetch for selects happens below...
@@ -19057,6 +19104,7 @@ var queryBuilder = null;
                                     palette: document.getElementById('c_palette').value,
                                     date_col: document.getElementById('c_date_col').value,
                                     filter_col: document.getElementById('c_filter_col').value,
+                                    filter_op: document.getElementById('c_filter_op').value,
                                     filter_keyword: document.getElementById('c_filter_keyword').value,
                                     limit: document.getElementById('c_no_limit').checked ? 0 : document.getElementById('c_limit').value
                                 };
@@ -19149,21 +19197,76 @@ var queryBuilder = null;
                                         indexAxis: (type === 'horizontalBar') ? 'y' : 'x',
                                         plugins: {
                                             tooltip: {
-                                                backgroundColor: 'rgba(0,0,0,0.95)',
-                                                padding: 14,
-                                                titleFont: { size: 14 },
-                                                bodyFont: { size: 12, family: 'monospace' },
-                                                displayColors: false,
-                                                callbacks: {
-                                                    label: (ctx) => {
-                                                        const fullLabel = data.labels[ctx.dataIndex];
-                                                        const val = ctx.dataset.data[ctx.dataIndex];
-                                                        return [
-                                                            ctx.dataset.label + ': ' + val,
-                                                            '--------------------------------',
-                                                            fullLabel
-                                                        ];
+                                                enabled: false,
+                                                external: function(context) {
+                                                    // Tooltip Element
+                                                    let tooltipEl = document.getElementById('chartjs-tooltip');
+
+                                                    // Create element on first render
+                                                    if (!tooltipEl) {
+                                                        tooltipEl = document.createElement('div');
+                                                        tooltipEl.id = 'chartjs-tooltip';
+                                                        tooltipEl.innerHTML = '<table></table>';
+                                                        document.body.appendChild(tooltipEl);
                                                     }
+
+                                                    // Hide if no tooltip
+                                                    const tooltipModel = context.tooltip;
+                                                    if (tooltipModel.opacity === 0) {
+                                                        tooltipEl.style.opacity = 0;
+                                                        return;
+                                                    }
+
+                                                    // Set caret Position
+                                                    tooltipEl.classList.remove('above', 'below', 'no-transform');
+                                                    if (tooltipModel.yAlign) {
+                                                        tooltipEl.classList.add(tooltipModel.yAlign);
+                                                    } else {
+                                                        tooltipEl.classList.add('no-transform');
+                                                    }
+
+                                                    function getBody(bodyItem) {
+                                                        return bodyItem.lines;
+                                                    }
+
+                                                    // Set Text
+                                                    if (tooltipModel.body) {
+                                                        const titleLines = tooltipModel.title || [];
+                                                        const bodyLines = tooltipModel.body.map(getBody);
+
+                                                        let innerHtml = '<thead>';
+                                                        titleLines.forEach(function(title) {
+                                                            innerHtml += '<tr><th class="tooltip-title">' + title + '</th></tr>';
+                                                        });
+                                                        innerHtml += '</thead><tbody>';
+
+                                                        bodyLines.forEach(function(body, i) {
+                                                            const fullLabel = data.labels[tooltipModel.dataPoints[i].dataIndex];
+                                                            const val = tooltipModel.dataPoints[i].raw;
+                                                            const dsLabel = tooltipModel.dataPoints[i].dataset.label;
+                                                            
+                                                            innerHtml += '<tr><td class="tooltip-body">';
+                                                            innerHtml += '<b>' + dsLabel + ': ' + val + '</b><br>';
+                                                            innerHtml += '<div style="margin-top:5px; border-top:1px solid #333; padding-top:5px; color:#aaa;">SOURCE URL:</div>';
+                                                            innerHtml += '<div style="color:var(--accent);">' + fullLabel + '</div>';
+                                                            innerHtml += '</td></tr>';
+                                                        });
+                                                        innerHtml += '</tbody>';
+
+                                                        let tableRoot = tooltipEl.querySelector('table');
+                                                        tableRoot.innerHTML = innerHtml;
+                                                    }
+
+                                                    const position = context.chart.canvas.getBoundingClientRect();
+
+                                                    // Display, position, and set styles for font
+                                                    tooltipEl.style.opacity = 1;
+                                                    tooltipEl.style.position = 'absolute';
+                                                    tooltipEl.style.left = position.left + window.pageXOffset + tooltipModel.caretX + 'px';
+                                                    tooltipEl.style.top = position.top + window.pageYOffset + tooltipModel.caretY + 'px';
+                                                    tooltipEl.style.font = tooltipModel.options.bodyFont.string;
+                                                    tooltipEl.style.padding = tooltipModel.padding + 'px ' + tooltipModel.padding + 'px';
+                                                    tooltipEl.style.pointerEvents = 'none';
                                                 }
                                             }
                                         },
