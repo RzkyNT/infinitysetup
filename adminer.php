@@ -1668,6 +1668,151 @@ function telegram_api_request($method, $postFields, $cfg) {
 }
 
 /**
+ * Dumps a database (or specific tables) to a file handle using streaming.
+ * Highly memory efficient for large databases (4GB+).
+ */
+function dump_database_to_file($pdo, $finalFile, $dbName, $tables = []) {
+    return dump_database_to_files_split($pdo, $finalFile, $dbName, $tables, 0)[0] ?? false;
+}
+
+/**
+ * Dumps a database to one or more files if size limits are reached.
+ * Returns an array of filenames.
+ */
+function dump_database_to_files_split($pdo, $baseFile, $dbName, $tables = [], $maxSizeBytes = 95000000) {
+    $files = [];
+    $part = 1;
+    $currentFile = ($maxSizeBytes > 0) ? str_replace('.sql', ".part$part.sql", $baseFile) : $baseFile;
+    
+    $handle = fopen($currentFile, 'w');
+    if (!$handle) return [];
+    $files[] = $currentFile;
+
+    $writeHeader = function($h, $p) use ($dbName) {
+        fwrite($h, "-- Adminer Lite Optimized Backup Part $p\n");
+        fwrite($h, "-- Date: " . date('Y-m-d H:i:s') . "\n");
+        fwrite($h, "-- Database: $dbName\n\n");
+        fwrite($h, "SET FOREIGN_KEY_CHECKS=0;\n\n");
+    };
+
+    $writeHeader($handle, $part);
+
+    try {
+        if (empty($tables)) {
+            $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+        }
+
+        foreach ($tables as $t) {
+            if ($maxSizeBytes > 0 && ftell($handle) > $maxSizeBytes) {
+                fwrite($handle, "\nSET FOREIGN_KEY_CHECKS=1;\n");
+                fclose($handle);
+                $part++;
+                $currentFile = str_replace('.sql', ".part$part.sql", $baseFile);
+                $handle = fopen($currentFile, 'w');
+                $files[] = $currentFile;
+                $writeHeader($handle, $part);
+            }
+
+            $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
+            fwrite($handle, "\n\nDROP TABLE IF EXISTS `$t`;\n");
+            fwrite($handle, $res['Create Table'] . ";\n\n");
+
+            $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+            $stmt = $pdo->query("SELECT * FROM `$t` shadow_unbuffered");
+            
+            $rowCount = 0;
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $rowCount++;
+                $keys = array_keys($row);
+                $vals = array_map(function($v) use ($pdo) {
+                    if ($v === null) return 'NULL';
+                    return $pdo->quote((string)$v);
+                }, array_values($row));
+                
+                fwrite($handle, "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ");\n");
+                
+                if ($maxSizeBytes > 0 && $rowCount % 500 === 0 && ftell($handle) > $maxSizeBytes) {
+                    fwrite($handle, "\nSET FOREIGN_KEY_CHECKS=1;\n");
+                    fclose($handle);
+                    $part++;
+                    $currentFile = str_replace('.sql', ".part$part.sql", $baseFile);
+                    $handle = fopen($currentFile, 'w');
+                    $files[] = $currentFile;
+                    $writeHeader($handle, $part);
+                    // If we split mid-table, we should ideally re-ensure the table exists in the next part 
+                    // or just rely on the user restoring parts in order. Restoration in order is the standard.
+                }
+            }
+            $stmt->closeCursor();
+            $pdo->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, true);
+        }
+
+        fwrite($handle, "\n\nSET FOREIGN_KEY_CHECKS=1;\n");
+    } catch (Exception $e) {
+        if ($handle) fclose($handle);
+        foreach($files as $f) @unlink($f);
+        throw $e;
+    }
+
+    if ($handle) fclose($handle);
+    return $files;
+}
+
+/**
+ * Downloads a URL directly to a file handle to avoid memory issues.
+ */
+function download_url_to_file($url, $dest) {
+    $fp = fopen($dest, 'w+');
+    if (!$fp) return false;
+    
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_FILE, $fp);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 300);
+    $success = curl_exec($ch);
+    curl_close($ch);
+    fclose($fp);
+    return $success;
+}
+
+/**
+ * Streams a large SQL file into the database by executing statements one by one.
+ */
+function stream_sql_to_db($pdo, $filePath) {
+    if (!file_exists($filePath)) return false;
+    
+    $handle = fopen($filePath, 'r');
+    if (!$handle) return false;
+    
+    $query = '';
+    $inString = false;
+    
+    $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
+
+    while (($line = fgets($handle)) !== false) {
+        $trimmed = trim($line);
+        if ($trimmed === '' || (substr($trimmed, 0, 2) === '--' && !$inString)) continue;
+        if (substr($trimmed, 0, 2) === '/*' && substr($trimmed, -2) === '*/') continue;
+
+        $query .= $line;
+        
+        // Simple check for semicolon at the end of a line, avoiding it if inside a string
+        if (substr($trimmed, -1) === ';' && !$inString) {
+            try {
+                $pdo->exec($query);
+            } catch (Exception $e) {
+                // Continue on error
+            }
+            $query = '';
+        }
+    }
+    
+    $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
+    fclose($handle);
+    return true;
+}
+
+/**
  * Get Database Health and Performance Stats
  */
 function get_db_health($pdo, $dbName, $dbMode) {
@@ -5954,133 +6099,111 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     elseif ($action === 'push_telegram_backup') {
-        @set_time_limit(180);
+        @set_time_limit(1800); // Increased for multi-file backups
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         
-        // Get current database name
         $dbName = $_SESSION['db_name'] ?? '';
         if (empty($dbName)) {
             echo json_encode(['success' => false, 'message' => 'No database selected']);
             exit;
         }
+
+        $mode = $_POST['mode'] ?? 'single';
+        $selectedTables = $_POST['tables'] ?? [];
+        if (!is_array($selectedTables) && !empty($selectedTables)) {
+            $selectedTables = explode(',', $selectedTables);
+        }
+        $selectedTables = array_filter(array_map('trim', (array)$selectedTables));
         
-        // Load config for this specific database
+        if ($mode === 'per_table' && empty($selectedTables)) {
+            $selectedTables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+        }
+
         $allConfig = load_config($configFile);
         $cfg = $allConfig['backup_configs'][$dbName]['telegram'] ?? null;
         
         if (!$cfg || empty($cfg['token']) || empty($cfg['chat_id'])) {
-            echo json_encode(['success' => false, 'message' => 'Telegram not configured for this database (Token and Chat ID required)']);
+            echo json_encode(['success' => false, 'message' => 'Telegram not configured']);
             exit;
         }
 
         try {
-            $sqlDump = "-- Adminer Lite Backup\n-- Date: " . date('Y-m-d H:i:s') . "\n\n";
-            if ($dbMode === 'sql' && isset($pdo)) {
-                $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
-                foreach ($tables as $t) {
-                    $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
-                    $sqlDump .= "\n\nDROP TABLE IF EXISTS `$t`;\n";
-                    $sqlDump .= $res['Create Table'] . ";\n\n";
-                    $rows = $pdo->query("SELECT * FROM `$t`")->fetchAll(PDO::FETCH_ASSOC);
-                    foreach ($rows as $row) {
-                        $keys = array_keys($row);
-                        $vals = array_map(function($v) use ($pdo) { 
-                            if ($v === null) return 'NULL';
-                            return $pdo->quote((string)$v); 
-                        }, array_values($row));
-                        $sqlDump .= "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ");\n";
-                    }
-                }
-            } else {
-                 echo json_encode(['success' => false, 'message' => 'Backup only supports SQL mode for now']);
-                 exit;
-            }
-
-            $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
-            
             $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
-            if (!is_dir($tmpDir)) {
-                if (!@mkdir($tmpDir, 0755, true)) {
-                    echo json_encode(['success' => false, 'message' => "Failed to create temp directory: $tmpDir. Please create it manually via FTP and set permissions to 755."]);
-                    exit;
-                }
-            }
+            if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
             
-            $finalFile = $tmpDir . DIRECTORY_SEPARATOR . $filename;
-            if (@file_put_contents($finalFile, $sqlDump) === false) {
-                echo json_encode(['success' => false, 'message' => "Failed to write backup file to $finalFile. Check disk space or folder permissions."]);
-                exit;
-            }
-            $mimeType = 'text/plain';
+            $results = [];
+            $tablesToProcess = ($mode === 'per_table') ? $selectedTables : ['_combined_'];
 
-            // ZIP Compression Logic
-            if (($cfg['use_zip'] ?? '0') === '1' && class_exists('ZipArchive')) {
-                $zipFile = $finalFile . ".zip";
-                $zip = new ZipArchive();
-                if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
-                    $pass = $cfg['zip_password'] ?? '';
-                    if (!empty($pass)) {
-                        $zip->setPassword($pass);
-                        $zip->addFromString($filename, $sqlDump);
-                        if (method_exists($zip, 'setEncryptionName')) {
-                            $zip->setEncryptionName($filename, ZipArchive::EM_AES_256);
+            foreach ($tablesToProcess as $table) {
+                $isCombined = ($table === '_combined_');
+                $filename = "backup_" . ($dbName) . ($isCombined ? "" : "_$table") . "_" . date('Y-m-d_H-i-s') . ".sql";
+                $finalFile = $tmpDir . DIRECTORY_SEPARATOR . $filename;
+                $tablesForDump = $isCombined ? $selectedTables : [$table];
+
+                $generatedFiles = dump_database_to_files_split($pdo, $finalFile, $dbName, $tablesForDump, 0); 
+                if (empty($generatedFiles)) {
+                    throw new Exception("Failed to generate dump for " . ($isCombined ? "database" : "table $table"));
+                }
+
+                foreach ($generatedFiles as $fileToUpload) {
+                    $filename = basename($fileToUpload);
+                    $mimeType = 'text/plain';
+
+                    if (($cfg['use_zip'] ?? '0') === '1' && class_exists('ZipArchive')) {
+                        $zipFile = $fileToUpload . ".zip";
+                        $zip = new ZipArchive();
+                        if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
+                            $pass = $cfg['zip_password'] ?? '';
+                            if (!empty($pass)) $zip->setPassword($pass);
+                            $zip->addFile($fileToUpload, $filename);
+                            if (!empty($pass) && method_exists($zip, 'setEncryptionName')) {
+                                $zip->setEncryptionName($filename, ZipArchive::EM_AES_256);
+                            }
+                            $zip->close();
+                            @unlink($fileToUpload);
+                            $fileToUpload = $zipFile;
+                            $filename .= ".zip";
+                            $mimeType = 'application/zip';
                         }
-                    } else {
-                        $zip->addFile($finalFile, $filename);
                     }
-                    $zip->close();
-                    @unlink($finalFile);
-                    $finalFile = $zipFile;
-                    $filename .= ".zip";
-                    $mimeType = 'application/zip';
+
+                    $fileSize = filesize($fileToUpload);
+                    $postFields = [
+                        'chat_id' => $cfg['chat_id'],
+                        'document' => new CURLFile($fileToUpload, $mimeType, $filename),
+                        'caption' => "📦 DB Backup: " . ($dbName) . ($isCombined ? "" : "\n📑 Table: $table") . "\n🏷 Tag: #" . ($cfg['tag'] ?? 'general') . "\n📅 Date: " . date('Y-m-d H:i:s')
+                    ];
+
+                    $resData = telegram_api_request('sendDocument', $postFields, $cfg);
+                    @unlink($fileToUpload);
+
+                    if (isset($resData['ok']) && $resData['ok']) {
+                        $results[] = $filename;
+                        
+                        // Log history only for combined or at least once per set
+                        $config = load_config($configFile);
+                        if (!isset($config['backup_configs'][$dbName]['telegram'])) $config['backup_configs'][$dbName]['telegram'] = [];
+                        $config['backup_configs'][$dbName]['telegram']['last_backup'] = time();
+                        if (!isset($config['backup_configs'][$dbName]['telegram']['history'])) $config['backup_configs'][$dbName]['telegram']['history'] = [];
+                        
+                        array_unshift($config['backup_configs'][$dbName]['telegram']['history'], [
+                            'name' => $filename,
+                            'date' => time(),
+                            'file_id' => $resData['result']['document']['file_id'] ?? '',
+                            'message_id' => $resData['result']['message_id'] ?? '',
+                            'tag' => $cfg['tag'] ?? 'unorganized',
+                            'size' => $fileSize
+                        ]);
+                        $config['backup_configs'][$dbName]['telegram']['history'] = array_slice($config['backup_configs'][$dbName]['telegram']['history'], 0, 20);
+                        save_config($configFile, $config);
+                    } else {
+                        throw new Exception("Telegram Error for $filename: " . ($resData['error'] ?? 'API Error'));
+                    }
                 }
             }
 
-            $postFields = [
-                'chat_id' => $cfg['chat_id'],
-                'document' => new CURLFile($finalFile, $mimeType, $filename),
-                'caption' => "📦 DB Backup: " . ($_SESSION['db_name'] ?? 'db') . "\n🏷 Tag: #" . ($cfg['tag'] ?? 'general') . "\n📅 Date: " . date('Y-m-d H:i:s') . ((!empty($cfg['zip_password'])) ? "\n🔐 Encrypted ZIP" : "")
-            ];
-
-            $resData = telegram_api_request('sendDocument', $postFields, $cfg);
-            @unlink($finalFile);
-
-            if (isset($resData['ok']) && $resData['ok']) {
-                $fileId = $resData['result']['document']['file_id'] ?? '';
-                
-                $config = load_config($configFile);
-                $dbName = $_SESSION['db_name'] ?? '';
-                
-                // Update last_backup for this database
-                if (!isset($config['backup_configs'][$dbName])) {
-                    $config['backup_configs'][$dbName] = [];
-                }
-                if (!isset($config['backup_configs'][$dbName]['telegram'])) {
-                    $config['backup_configs'][$dbName]['telegram'] = [];
-                }
-                
-                $config['backup_configs'][$dbName]['telegram']['last_backup'] = time();
-                
-                // Add to history for this database
-                if (!isset($config['backup_configs'][$dbName]['telegram']['history'])) {
-                    $config['backup_configs'][$dbName]['telegram']['history'] = [];
-                }
-                array_unshift($config['backup_configs'][$dbName]['telegram']['history'], [
-                    'name' => $filename,
-                    'date' => time(),
-                    'file_id' => $fileId,
-                    'message_id' => $resData['result']['message_id'] ?? '',
-                    'tag' => $cfg['tag'] ?? 'unorganized',
-                    'size' => strlen($sqlDump)
-                ]);
-                
-                $config['backup_configs'][$dbName]['telegram']['history'] = array_slice($config['backup_configs'][$dbName]['telegram']['history'], 0, 20);
-                save_config($configFile, $config);
-                echo json_encode(['success' => true, 'message' => 'Backup sent successfully']);
-            } else {
-                echo json_encode(['success' => false, 'message' => $resData['error'] ?? ($resData['description'] ?? 'API Error')]);
-            }
+            echo json_encode(['success' => true, 'message' => count($results) . " backup file(s) sent successfully."]);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
@@ -6088,18 +6211,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     // --- RESTORE FROM TELEGRAM ---
     elseif ($action === 'restore_telegram_backup') {
+        @set_time_limit(900); // 15 mins for large restores
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         $fileId = $_POST['file_id'] ?? '';
         
-        // Get current database name
         $dbName = $_SESSION['db_name'] ?? '';
         if (empty($dbName)) {
             echo json_encode(['success' => false, 'message' => 'No database selected']);
             exit;
         }
         
-        // Load config for this specific database
         $allConfig = load_config($configFile);
         $cfg = $allConfig['backup_configs'][$dbName]['telegram'] ?? null;
         
@@ -6107,6 +6229,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => false, 'message' => 'Invalid request']);
             exit;
         }
+
+        $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+        if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+        $tmpSql = $tmpDir . DIRECTORY_SEPARATOR . 'restore_' . uniqid() . '.sql';
 
         try {
             $password = $_POST['password'] ?? '';
@@ -6120,46 +6246,49 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $filePath = $getFile['result']['file_path'];
             $downloadUrl = "$apiBase/file/bot{$cfg['token']}/$filePath";
             
-            // 2. Download content
-            $content = @file_get_contents($downloadUrl);
-            if (!$content) throw new Exception("Failed to download file from Telegram");
+            // 2. Download directly to file
+            if (!download_url_to_file($downloadUrl, $tmpSql)) {
+                throw new Exception("Failed to download file from Telegram.");
+            }
 
-            $sql = $content;
             // Check if it's a ZIP file
             if (strpos($filePath, '.zip') !== false && class_exists('ZipArchive')) {
-                $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
-                if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
-
-                $tmpZip = $tmpDir . DIRECTORY_SEPARATOR . 'restore_' . uniqid() . '.zip';
-                file_put_contents($tmpZip, $content);
-                
                 $zip = new ZipArchive();
-                if ($zip->open($tmpZip) === TRUE) {
+                if ($zip->open($tmpSql) === TRUE) {
                     if (!empty($password)) {
                         $zip->setPassword($password);
                     }
-                    // Try to get first file content
                     $sqlName = $zip->getNameIndex(0);
-                    $sql = $zip->getFromIndex(0);
+                    $extractedPath = $tmpDir . DIRECTORY_SEPARATOR . 'ext_' . uniqid() . '.sql';
                     
-                    if ($sql === false) {
+                    // Extract first file
+                    if ($zip->extractTo($tmpDir, [$sqlName])) {
+                        $extractedFile = $tmpDir . DIRECTORY_SEPARATOR . $sqlName;
                         $zip->close();
-                        @unlink($tmpZip);
-                        throw new Exception("Failed to extract ZIP. " . (empty($password) ? "Maybe it requires a password?" : "Incorrect password."));
+                        @unlink($tmpSql); // Delete zip
+                        $tmpSql = $extractedFile; // Point to extracted SQL
+                    } else {
+                        $zip->close();
+                        throw new Exception("Failed to extract ZIP.");
                     }
-                    $zip->close();
+                } else {
+                    throw new Exception("Failed to open ZIP file.");
                 }
-                @unlink($tmpZip);
             }
 
-            // 3. Execute SQL
+            // 3. Execute SQL via Streaming
             if ($dbMode === 'sql' && isset($pdo)) {
-                $pdo->exec($sql);
-                echo json_encode(['success' => true, 'message' => 'Restored successfully from Telegram!']);
+                if (stream_sql_to_db($pdo, $tmpSql)) {
+                    @unlink($tmpSql);
+                    echo json_encode(['success' => true, 'message' => 'Restored successfully from Telegram!']);
+                } else {
+                    throw new Exception("Failed to stream SQL to database.");
+                }
             } else {
                  throw new Exception("Restore only supported in SQL mode");
             }
         } catch (Exception $e) {
+            if (file_exists($tmpSql)) @unlink($tmpSql);
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
         exit;
@@ -6208,6 +6337,50 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
+        exit;
+    }
+    // --- BULK DELETE FROM TELEGRAM ---
+    elseif ($action === 'bulk_delete_telegram_backup') {
+        while (ob_get_level()) ob_end_clean(); 
+        header('Content-Type: application/json');
+        $items = $_POST['items'] ?? '[]';
+        if (!is_array($items)) $items = json_decode($items, true);
+
+        $dbName = $_SESSION['db_name'] ?? '';
+        $config = load_config($configFile);
+        $cfg = $config['backup_configs'][$dbName]['telegram'] ?? null;
+
+        if (!$cfg || empty($items)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid request']);
+            exit;
+        }
+
+        $successCount = 0;
+        foreach ($items as $item) {
+            $dateId = $item['date'] ?? '';
+            $msgId = $item['message_id'] ?? '';
+            
+            if ($msgId && !empty($cfg['token'])) {
+                @file_get_contents("https://api.telegram.org/bot{$cfg['token']}/deleteMessage?chat_id={$cfg['chat_id']}&message_id=$msgId");
+            }
+
+            if (isset($config['backup_configs'][$dbName]['telegram']['history'])) {
+                $config['backup_configs'][$dbName]['telegram']['history'] = array_filter(
+                    $config['backup_configs'][$dbName]['telegram']['history'], 
+                    function($h) use ($dateId) {
+                        return (string)$h['date'] !== (string)$dateId;
+                    }
+                );
+            }
+            $successCount++;
+        }
+        
+        if (isset($config['backup_configs'][$dbName]['telegram']['history'])) {
+            $config['backup_configs'][$dbName]['telegram']['history'] = array_values($config['backup_configs'][$dbName]['telegram']['history']);
+            save_config($configFile, $config);
+        }
+
+        echo json_encode(['success' => true, 'message' => "$successCount items removed."]);
         exit;
     }
     // --- TELEGRAM HEALTH REPORT ---
@@ -6272,96 +6445,260 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     // --- PUSH BACKUP TO GITHUB ---
     elseif ($action === 'push_github_backup') {
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        @ini_set('memory_limit', '1024M');
         while (ob_get_level()) ob_end_clean(); 
         header('Content-Type: application/json');
         
-        // Get current database name
         $dbName = $_SESSION['db_name'] ?? '';
         if (empty($dbName)) {
             echo json_encode(['success' => false, 'message' => 'No database selected']);
             exit;
         }
+
+        $mode = $_POST['mode'] ?? 'single';
+        $selectedTables = $_POST['tables'] ?? [];
+        if (!is_array($selectedTables) && !empty($selectedTables)) {
+            $selectedTables = explode(',', $selectedTables);
+        }
+        $selectedTables = array_filter(array_map('trim', (array)$selectedTables));
+
+        if ($mode === 'per_table' && empty($selectedTables)) {
+            $selectedTables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+        }
         
-        // Load config for this specific database
         $allConfig = load_config($configFile);
         $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
         
-        if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
-            echo json_encode(['success' => false, 'message' => 'GitHub not configured for this database (Token, User, and Repo required)']);
+        if (!$cfg || empty($cfg['token']) || empty($cfg['repo'])) {
+            echo json_encode(['success' => false, 'message' => 'GitHub not configured']);
             exit;
         }
 
         try {
-            $sqlDump = "-- Adminer Lite Backup\n-- Date: " . date('Y-m-d H:i:s') . "\n\n";
-            if ($dbMode === 'sql' && isset($pdo)) {
-                $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
-                foreach ($tables as $t) {
-                    $res = $pdo->query("SHOW CREATE TABLE `$t`")->fetch(PDO::FETCH_ASSOC);
-                    $sqlDump .= "\n\nDROP TABLE IF EXISTS `$t`;\n";
-                    $sqlDump .= $res['Create Table'] . ";\n\n";
-                    $rows = $pdo->query("SELECT * FROM `$t`")->fetchAll(PDO::FETCH_ASSOC);
-                    foreach ($rows as $row) {
-                        $keys = array_keys($row);
-                        $vals = array_map(function($v) use ($pdo) { 
-                            if ($v === null) return 'NULL';
-                            return $pdo->quote((string)$v); 
-                        }, array_values($row));
-                        $sqlDump .= "INSERT INTO `$t` (`" . implode("`, `", $keys) . "`) VALUES (" . implode(", ", $vals) . ");\n";
+            $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+            if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+
+            $results = $_SESSION['gh_backup_progress'] ?? [];
+            $resumeMode = !empty($results);
+            
+            $tablesToProcess = ($mode === 'per_table') ? $selectedTables : ['_combined_'];
+            
+            // If resuming, filter out already done tables
+            if ($resumeMode && $mode === 'per_table') {
+                $tablesToProcess = array_filter($tablesToProcess, function($t) use ($results) {
+                    // Check if any part of this table was uploaded (rough check)
+                    foreach ($results as $r) { if (strpos($r, "_$t" . "_") !== false) return false; }
+                    return true;
+                });
+            }
+
+            $totalTables = count($tablesToProcess);
+            $tableIndex = 0;
+
+            foreach ($tablesToProcess as $table) {
+                $tableIndex++;
+                $isCombined = ($table === '_combined_');
+                
+                // Update Status: Creating (Write & Close immediately)
+                if (session_status() === PHP_SESSION_NONE) @session_start();
+                $_SESSION['gh_backup_status'] = [
+                    'table' => $isCombined ? 'Database' : $table,
+                    'table_index' => $tableIndex,
+                    'total_tables' => $totalTables,
+                    'status' => 'Creating SQL...',
+                    'part' => 0,
+                    'total_parts' => 0
+                ];
+                session_write_close(); 
+
+                $filename = "backup_" . ($dbName) . ($isCombined ? "" : "_$table") . "_" . date('Y-m-d_H-i-s') . ".sql";
+                $finalFile = $tmpDir . DIRECTORY_SEPARATOR . $filename;
+                $tablesForDump = $isCombined ? $selectedTables : [$table];
+
+                // Split at 20MB
+                $generatedFiles = dump_database_to_files_split($pdo, $finalFile, $dbName, $tablesForDump, 20000000); 
+                if (empty($generatedFiles)) {
+                    throw new Exception("Failed to generate dump for " . ($isCombined ? "database" : "table $table"));
+                }
+
+                $partCount = count($generatedFiles);
+                $partIndex = 0;
+
+                foreach ($generatedFiles as $partFile) {
+                    $partIndex++;
+                    $filenamePart = basename($partFile);
+                    if (!file_exists($partFile)) continue;
+                    
+                    // Update Status: Pushing (Write & Close immediately)
+                    if (session_status() === PHP_SESSION_NONE) @session_start();
+                    $_SESSION['gh_backup_status'] = [
+                        'table' => $isCombined ? 'Database' : $table,
+                        'table_index' => $tableIndex,
+                        'total_tables' => $totalTables,
+                        'status' => "Pushing to GitHub...",
+                        'part' => $partIndex,
+                        'total_parts' => $partCount
+                    ];
+                    session_write_close(); 
+
+                    @set_time_limit(600); // Reset timer for each part
+                    $content = base64_encode(file_get_contents($partFile));
+                    
+                    $basePath = trim($cfg['path'] ?? 'backups/', '/');
+                    $pathStr = ltrim($basePath . '/' . $filenamePart, '/');
+                    $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
+                    $encPath = implode('/', $pathSegments);
+                    
+                    $user = !empty($cfg['user']) ? $cfg['user'] : explode('/', $cfg['repo'])[0];
+                    $repo = strpos($cfg['repo'], '/') !== false ? explode('/', $cfg['repo'])[1] : $cfg['repo'];
+                    $apiUrl = "https://api.github.com/repos/" . rawurlencode($user) . "/" . rawurlencode($repo) . "/contents/{$encPath}";
+                    
+                    $payload = json_encode([
+                        'message' => "Backup DB: $dbName" . ($isCombined ? "" : " (Table: $table)") . " - " . date('Y-m-d H:i:s'),
+                        'content' => $content,
+                        'branch' => $cfg['branch'] ?? 'main'
+                    ]);
+
+                    $maxRetries = 3;
+                    $success = false;
+                    $lastErr = '';
+
+                    for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+                        $ch = curl_init($apiUrl);
+                        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PUT");
+                        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+                        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                            "Authorization: token {$cfg['token']}",
+                            "User-Agent: Adminer-Lite-Backup",
+                            "Content-Type: application/json",
+                            "Expect:" 
+                        ]);
+                        
+                        $response = curl_exec($ch);
+                        $curlErr = curl_error($ch);
+                        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                        curl_close($ch);
+
+                        if ($httpCode >= 200 && $httpCode < 300) {
+                            $success = true;
+                            $results[] = $filenamePart;
+                            if (session_status() === PHP_SESSION_NONE) @session_start();
+                            $_SESSION['gh_backup_progress'] = $results; 
+                            session_write_close();
+                            @unlink($partFile); 
+                            break;
+                        } else {
+                            $err = json_decode($response, true);
+                            $lastErr = $err['message'] ?? ($curlErr ?: "HTTP $httpCode");
+                            if ($attempt < $maxRetries) sleep(1);
+                        }
+                    }
+
+                    // Free memory
+                    unset($content);
+                    unset($payload);
+                    unset($response);
+
+                    if (!$success) {
+                        if (session_status() === PHP_SESSION_NONE) @session_start();
+                        unset($_SESSION['gh_backup_status']);
+                        session_write_close();
+                        throw new Exception("GitHub Error for $filenamePart: $lastErr (Tried $maxRetries times).");
                     }
                 }
-            } else {
-                 echo json_encode(['success' => false, 'message' => 'Backup only supports SQL mode for now']);
-                 exit;
             }
 
-            $filename = "backup_" . ($_SESSION['db_name'] ?? 'db') . "_" . date('Y-m-d_H-i-s') . ".sql";
-            $pathStr = trim($cfg['path'], '/') . '/' . $filename;
-            $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
-            $encPath = implode('/', $pathSegments);
-            $apiUrl = "https://api.github.com/repos/" . rawurlencode($cfg['user']) . "/" . rawurlencode($cfg['repo']) . "/contents/{$encPath}";
-            
-            $payload = json_encode([
-                'message' => "Database Backup: " . date('Y-m-d H:i:s'),
-                'content' => base64_encode($sqlDump)
-            ]);
+            // --- AUTO-GENERATE / UPDATE README.MD ---
+            try {
+                $readmePath = trim($cfg['path'] ?? 'backups/', '/') . '/README.md';
+                $readmeUrl = "https://api.github.com/repos/" . rawurlencode($user) . "/" . rawurlencode($repo) . "/contents/" . rawurlencode($readmePath);
+                
+                // 1. Fetch existing SHA for update
+                $ch = curl_init($readmeUrl . "?ref=" . ($cfg['branch'] ?? 'main'));
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, ["Authorization: token {$cfg['token']}", "User-Agent: Adminer-Lite-Backup"]);
+                $infoJson = curl_exec($ch);
+                $info = json_decode($infoJson, true);
+                $sha = $info['sha'] ?? null;
+                curl_close($ch);
 
-            $ch = curl_init($apiUrl);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                "Authorization: token {$cfg['token']}",
-                "User-Agent: Adminer-Lite-Backup",
-                "Content-Type: application/json"
-            ]);
-            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PUT");
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+                // 2. Prepare content
+                $readmeMarkdown = "# 🗄️ Database Backup: $dbName\n\n";
+                $readmeMarkdown .= "> **Last Updated:** " . date('Y-m-d H:i:s') . "\n\n";
+                $readmeMarkdown .= "## 📊 Session Summary\n";
+                $readmeMarkdown .= "- **Database:** `$dbName` \n";
+                $readmeMarkdown .= "- **Backup Mode:** " . ($mode === 'per_table' ? "Per Table (Split)" : "Combined File") . "\n";
+                $readmeMarkdown .= "- **Files in this session:** " . count($results) . " files\n\n";
+                $readmeMarkdown .= "### 📄 Files Uploaded:\n";
+                foreach ($results as $file) {
+                    $readmeMarkdown .= "- `$file` \n";
+                }
+                $readmeMarkdown .= "\n---\n_This documentation was automatically generated by Adminer Lite Cloud Backup system._";
 
-            if ($httpCode >= 200 && $httpCode < 300) {
-                // Update last backup time for this database
-                $config = load_config($configFile);
-                $dbName = $_SESSION['db_name'] ?? '';
-                
-                if (!isset($config['backup_configs'][$dbName])) {
-                    $config['backup_configs'][$dbName] = [];
-                }
-                if (!isset($config['backup_configs'][$dbName]['github'])) {
-                    $config['backup_configs'][$dbName]['github'] = [];
-                }
-                
-                $config['backup_configs'][$dbName]['github']['last_backup'] = time();
-                save_config($configFile, $config);
-                
-                echo json_encode(['success' => true, 'message' => 'Backup pushed to GitHub successfully']);
-            } else {
-                $err = json_decode($response, true);
-                echo json_encode(['success' => false, 'message' => $err['message'] ?? 'GitHub API Error']);
+                // 3. Upload to GitHub
+                $payload = json_encode([
+                    'message' => "Update README for backup session: " . date('Y-m-d H:i:s'),
+                    'content' => base64_encode($readmeMarkdown),
+                    'sha' => $sha,
+                    'branch' => $cfg['branch'] ?? 'main'
+                ]);
+
+                $ch = curl_init($readmeUrl);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "PUT");
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    "Authorization: token {$cfg['token']}",
+                    "User-Agent: Adminer-Lite-Backup",
+                    "Content-Type: application/json"
+                ]);
+                curl_exec($ch);
+                curl_close($ch);
+            } catch (Exception $e) {
+                // Ignore README errors to not fail the whole backup
             }
+
+            // Success! Clear progress & status
+            if (session_status() === PHP_SESSION_NONE) @session_start();
+            unset($_SESSION['gh_backup_status']);
+            unset($_SESSION['gh_backup_progress']);
+            session_write_close();
+
+            // Update last backup time if combined or finished
+            $config = load_config($configFile);
+            if (!isset($config['backup_configs'][$dbName]['github'])) $config['backup_configs'][$dbName]['github'] = [];
+            $config['backup_configs'][$dbName]['github']['last_backup'] = time();
+            save_config($configFile, $config);
+
+            while (ob_get_level()) ob_end_clean();
+            header('Content-Type: application/json');
+            echo json_encode(['success' => true, 'message' => count($results) . " file(s) pushed to GitHub."]);
         } catch (Exception $e) {
+            while (ob_get_level()) ob_end_clean();
+            header('Content-Type: application/json');
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
+        exit;
+    }
+    // --- GET GITHUB BACKUP STATUS (FOR POLLING) ---
+    elseif ($action === 'get_gh_backup_status') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        if (session_status() === PHP_SESSION_NONE) @session_start();
+        $status = $_SESSION['gh_backup_status'] ?? ['status' => 'idle'];
+        session_write_close();
+        echo json_encode($status);
+        exit;
+    }
+    // --- CLEAR GITHUB PROGRESS ---
+    elseif ($action === 'clear_github_progress') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        unset($_SESSION['gh_backup_progress']);
+        echo json_encode(['success' => true]);
         exit;
     }
     // --- GET GITHUB BACKUPS ---
@@ -6420,66 +6757,60 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- RESTORE FROM GITHUB ---
     elseif ($action === 'restore_github_backup') {
         header('Content-Type: application/json');
+        while (ob_get_level()) ob_end_clean();
         
-        // Get current database name
         $dbName = $_SESSION['db_name'] ?? '';
         if (empty($dbName)) {
             echo json_encode(['success' => false, 'message' => 'No database selected']);
             exit;
         }
         
-        // Load config for this specific database
         $allConfig = load_config($configFile);
         $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
-        $url = $_POST['url'] ?? '';
+        $urls = $_POST['urls'] ?? $_POST['url'] ?? '';
+        if (is_string($urls)) $urls = explode(',', $urls);
+        $urls = array_filter(array_map('trim', $urls));
         
-        if (!$cfg || empty($cfg['token']) || !$url) {
-            echo json_encode(['success' => false, 'message' => 'GitHub not configured or URL missing']);
+        if (!$cfg || empty($cfg['token']) || empty($urls)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid request or URLs missing']);
             exit;
         }
 
         try {
-            $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                "Authorization: token {$cfg['token']}",
-                "User-Agent: Adminer-Lite-Backup"
-            ]);
-            $sqlContent = curl_exec($ch);
-            curl_close($ch);
+            $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+            if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
 
-            if (!$sqlContent) {
-                echo json_encode(['success' => false, 'message' => 'Failed to download backup file']);
-                exit;
-            }
+            $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
 
-            if (isset($pdo)) {
-                // Backward compatibility: inject DROP TABLE IF EXISTS for old backups that didn't have it
-                $sqlContent = preg_replace('/CREATE\s+TABLE\s+`?([a-zA-Z0-9_$]+)`?/i', "DROP TABLE IF EXISTS `$1`;\nCREATE TABLE `$1`", $sqlContent);
+            foreach ($urls as $url) {
+                $tmpSql = $tmpDir . DIRECTORY_SEPARATOR . 'restore_gh_' . uniqid() . '.sql';
                 
-                // Split by ";\n" to avoid breaking semicolons inside string data
-                $queries = array_filter(array_map('trim', explode(";\n", $sqlContent)));
-                
-                try {
-                    $pdo->exec("SET FOREIGN_KEY_CHECKS=0");
-                    foreach ($queries as $q) {
-                        // Remove any remaining trailing semicolons explicitly
-                        $q = rtrim($q, ';');
-                        if (!empty($q)) {
-                            // Suppress errors per-query so a single failed DDL (like missing table on drop) doesn't halt restore
-                            try { $pdo->exec($q); } catch (PDOException $e) {} 
-                        }
-                    }
-                    $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
-                    echo json_encode(['success' => true]);
-                } catch (Exception $e) {
-                    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                $ch = curl_init($url);
+                $fp = fopen($tmpSql, 'w+');
+                curl_setopt($ch, CURLOPT_FILE, $fp);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    "Authorization: token {$cfg['token']}",
+                    "User-Agent: Adminer-Lite-Backup"
+                ]);
+                curl_exec($ch);
+                curl_close($ch);
+                fclose($fp);
+
+                if (!file_exists($tmpSql) || filesize($tmpSql) === 0) {
+                    throw new Exception("Failed to download part: " . basename($url));
                 }
-            } else {
-                echo json_encode(['success' => false, 'message' => 'Database not connected']);
+
+                if (!stream_sql_to_db($pdo, $tmpSql)) {
+                    @unlink($tmpSql);
+                    throw new Exception("Error processing part: " . basename($url));
+                }
+                @unlink($tmpSql);
             }
+
+            $pdo->exec("SET FOREIGN_KEY_CHECKS=1");
+            echo json_encode(['success' => true]);
         } catch (Exception $e) {
-            if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
         }
         exit;
@@ -13829,8 +14160,11 @@ var advancedFilters = null;
                             <div id="telegram-history-container">
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                                     <span style="font-size:0.82rem; color:var(--text-secondary);">Recent Index (Telegram):</span>
+                                    <button onclick="bulkDeleteTelegram()" id="tg-bulk-del-btn" class="btn btn-sm btn-danger" style="display:none; padding:2px 8px; font-size:0.7rem;">
+                                        <i class="fas fa-trash"></i> Delete Selected
+                                    </button>
                                 </div>
-                                <div id="tg-history-list" class="table-wrapper" style="max-height:160px; overflow:auto; background:rgba(0,0,0,0.1); border-radius:8px; border:1px solid var(--border-color);">
+                                <div id="tg-history-list" class="table-wrapper" style="max-height:220px; overflow:auto; background:rgba(0,0,0,0.1); border-radius:8px; border:1px solid var(--border-color);">
                                     <?php 
                                     $history = $tgCfg['history'] ?? [];
                                     if (empty($history)): ?>
@@ -13839,25 +14173,49 @@ var advancedFilters = null;
                                         <table style="width:100%; font-size:0.8rem; border-collapse:collapse;">
                                             <thead>
                                                 <tr style="border-bottom:1px solid var(--border-color); background:rgba(255,255,255,0.02);">
-                                                    <th style="text-align:left; padding:6px 10px;">Date</th>
-                                                    <th style="text-align:left; padding:6px 10px;">Tag</th>
+                                                    <th style="padding:6px 10px; width:30px;"><input type="checkbox" onclick="toggleAllTg(this.checked)"></th>
+                                                    <th style="text-align:left; padding:6px 10px;">Date / Table</th>
                                                     <th style="text-align:right; padding:6px 10px;">Action</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                <?php foreach ($history as $h): ?>
-                                                    <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
-                                                        <td style="padding:6px 10px; color:var(--text-secondary);"><?= date('m/d H:i', $h['date']) ?></td>
-                                                        <td style="padding:6px 10px;"><span style="opacity:0.7;">#</span><?= htmlspecialchars($h['tag'] ?? 'gen') ?></td>
-                                                        <td style="padding:6px 10px; text-align:right;">
-                                                            <button onclick="restoreFromTelegram('<?= $h['file_id'] ?>', '<?= $h['name'] ?>')" class="btn btn-sm btn-success" style="padding:2px 6px; font-size:0.7rem;" title="Restore this version">
-                                                                <i class="fas fa-undo"></i>
-                                                            </button>
-                                                            <button onclick="deleteTelegramBackup('<?= $h['date'] ?>', '<?= $h['name'] ?>', '<?= $h['message_id'] ?? '' ?>')" class="btn btn-sm btn-danger" style="padding:2px 6px; font-size:0.7rem;" title="Remove from index & chat">
-                                                                <i class="fas fa-trash"></i>
-                                                            </button>
+                                                <?php 
+                                                // Grouping by Date (Day only)
+                                                $tgGroups = [];
+                                                foreach ($history as $h) {
+                                                    $ts = date('Y-m-d', $h['date']);
+                                                    if (!isset($tgGroups[$ts])) $tgGroups[$ts] = [];
+                                                    $tgGroups[$ts][] = $h;
+                                                }
+                                                foreach ($tgGroups as $ts => $groupFiles): 
+                                                    $count = count($groupFiles);
+                                                ?>
+                                                    <tr style="background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.05);">
+                                                        <td style="padding:6px 10px;"><input type="checkbox" class="tg-group-cb" onclick="toggleGroupTg('<?= $ts ?>', this.checked)"></td>
+                                                        <td colspan="2" style="padding:6px 10px; font-weight:bold; color:var(--accent);">
+                                                            <?= $ts ?> <small style="color:var(--text-secondary); font-weight:normal;">(<?= $count ?> files)</small>
                                                         </td>
                                                     </tr>
+                                                    <?php foreach ($groupFiles as $h): ?>
+                                                        <tr style="border-bottom:1px solid rgba(255,255,255,0.02);">
+                                                            <td style="padding:4px 10px 4px 25px;">
+                                                                <input type="checkbox" class="tg-file-cb" data-ts-group="<?= $ts ?>" data-date="<?= $h['date'] ?>" data-msg-id="<?= $h['message_id'] ?? '' ?>" onchange="updateTgBulkBtn()">
+                                                            </td>
+                                                            <td style="padding:4px 10px; font-size:0.75rem; color:var(--text-secondary); font-family:monospace;">
+                                                                <?= htmlspecialchars($h['name']) ?>
+                                                            </td>
+                                                            <td style="padding:4px 10px; text-align:right;">
+                                                                <div style="display:flex; gap:4px; justify-content:flex-end;">
+                                                                    <button onclick="restoreFromTelegram('<?= $h['file_id'] ?>', '<?= $h['name'] ?>')" class="btn btn-sm btn-success" style="padding:1px 5px; font-size:0.65rem;" title="Restore">
+                                                                        <i class="fas fa-undo"></i>
+                                                                    </button>
+                                                                    <button onclick="deleteTelegramBackup('<?= $h['date'] ?>', '<?= $h['name'] ?>', '<?= $h['message_id'] ?? '' ?>')" class="btn btn-sm btn-danger" style="padding:1px 5px; font-size:0.65rem;" title="Delete">
+                                                                        <i class="fas fa-trash"></i>
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    <?php endforeach; ?>
                                                 <?php endforeach; ?>
                                             </tbody>
                                         </table>
@@ -13873,6 +14231,10 @@ var advancedFilters = null;
 
                 <script>
                 // --- SHARED UTILS ---
+                const ALL_TABLES = <?= json_encode(array_map(function($t) { return $t['Name']; }, $tables)) ?>;
+                
+                const HAS_GH_PROGRESS = <?= !empty($_SESSION['gh_backup_progress']) ? 'true' : 'false' ?>;
+
                 async function fetchJson(url, options) {
                     const res = await fetch(url, options);
                     const text = await res.text();
@@ -13880,7 +14242,13 @@ var advancedFilters = null;
                         return JSON.parse(text);
                     } catch (e) {
                         console.error("Invalid JSON:", text);
-                        throw new Error("Server returned invalid response. Check PHP errors.");
+                        const snippet = text.substring(0, 200).replace(/</g, '&lt;');
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Server Error',
+                            html: `Server returned invalid JSON. <br><br> <div style="text-align:left; font-size:0.7rem; background:#000; padding:10px; border-radius:4px; max-height:100px; overflow:auto;"><code>${snippet}...</code></div>`
+                        });
+                        throw new Error("Invalid JSON response");
                     }
                 }
 
@@ -13954,20 +14322,154 @@ var advancedFilters = null;
                 function loadGithubBackups() {
                     const container = document.getElementById('gh-backups-list');
                     if (!container) return;
+                    
                     const params = new URLSearchParams();
                     params.append('action', 'get_github_backups');
+                    
                     fetchJson(window.location.pathname, { method: 'POST', body: params })
                     .then(data => {
                         if (!data || data.length === 0) {
                             container.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-secondary);">No backups found.</div>';
                             return;
                         }
-                        let html = '<table style="width:100%; font-size:0.85rem; border-collapse:collapse;"><thead><tr style="border-bottom:1px solid var(--border-color);"><th style="text-align:left; padding:8px;">File</th><th style="text-align:right; padding:8px;">Size</th><th style="text-align:right; padding:8px;">Action</th></tr></thead><tbody>';
+                        // Grouping by Date (Y-m-d)
+                        const groups = {};
                         data.forEach(f => {
-                            html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);"><td style="padding:8px; font-family:monospace;">${f.name}</td><td style="padding:8px; text-align:right; color:var(--text-secondary);">${(f.size/1024).toFixed(1)} KB</td><td style="padding:8px; text-align:right; white-space:nowrap;"><button onclick="restoreFromGithub('${f.download_url}', '${f.name}')" class="btn btn-sm btn-success" style="padding:2px 8px; font-size:0.75rem; margin-right:5px;"><i class="fas fa-undo"></i></button><button onclick="deleteGithubBackup('${f.path}', '${f.name}', '${f.sha}')" class="btn btn-sm btn-danger" style="padding:2px 8px; font-size:0.75rem;"><i class="fas fa-trash"></i></button></td></tr>`;
+                            const dateMatch = f.name.match(/(\d{4}-\d{2}-\d{2})/);
+                            const ds = dateMatch ? dateMatch[1] : 'Other';
+                            if (!groups[ds]) groups[ds] = { date: ds, sets: {} };
+                            
+                            // Identify Split Sets (everything before .partN.sql)
+                            const setKey = f.name.replace(/\.part\d+\.sql$/, '.sql');
+                            if (!groups[ds].sets[setKey]) groups[ds].sets[setKey] = { name: setKey, files: [] };
+                            groups[ds].sets[setKey].files.push(f);
                         });
-                        container.innerHTML = html + '</tbody></table>';
+
+                        let html = `
+                            <div style="margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; padding:0 10px;">
+                                <label style="font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">
+                                    <input type="checkbox" id="gh-select-all" onclick="toggleAllGh(this.checked)"> Select All
+                                </label>
+                                <button onclick="bulkDeleteGithub()" id="gh-bulk-del-btn" class="btn btn-sm btn-danger" style="display:none; padding:2px 10px; font-size:0.7rem;">
+                                    <i class="fas fa-trash"></i> Delete Selected
+                                </button>
+                            </div>
+                        `;
+
+                        Object.keys(groups).sort().reverse().forEach(ds => {
+                            const g = groups[ds];
+                            html += `<div class="gh-backup-group" style="margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.03);">
+                                <div style="display:flex; align-items:center; gap:8px; padding:4px 8px; background:rgba(255,255,255,0.02);">
+                                    <input type="checkbox" class="gh-group-cb" onchange="toggleGroupGhDate('${ds}', this.checked)">
+                                    <span style="font-weight:bold; font-size:0.8rem; color:var(--accent);">${ds}</span>
+                                </div>
+                                <div id="date-list-${ds}" style="padding-left:15px;">`;
+                            
+                            Object.keys(g.sets).forEach(sk => {
+                                const set = g.sets[sk];
+                                set.files.sort((a,b) => a.name.localeCompare(b.name)); // Sort parts numerically
+                                const isSplit = set.files.length > 1;
+                                const totalSize = set.files.reduce((sum, f) => sum + f.size, 0);
+                                const urls = set.files.map(f => f.download_url).join(',');
+                                
+                                html += `
+                                    <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 8px; font-size:0.75rem; border-left:2px solid ${isSplit ? 'var(--warning)' : 'transparent'};">
+                                        <div style="display:flex; align-items:center; gap:8px; flex:1; overflow:hidden;">
+                                            <input type="checkbox" class="gh-file-cb" data-date-group="${ds}" data-files='${JSON.stringify(set.files.map(f=>({path:f.path,sha:f.sha,name:f.name})))}' onchange="updateGhBulkBtn()">
+                                            <span style="font-family:monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${sk}">${sk} ${isSplit ? `<span style="color:var(--warning);">[Split: ${set.files.length}]</span>` : ''}</span>
+                                        </div>
+                                        <div style="display:flex; align-items:center; gap:10px;">
+                                            <span style="color:var(--text-secondary); font-size:0.7rem;">${(totalSize/1024).toFixed(0)}KB</span>
+                                            <div style="display:flex; gap:4px;">
+                                                <button onclick="restoreFromGithub('${urls}', '${sk}')" class="btn btn-sm btn-success" style="padding:1px 5px; font-size:0.65rem;" title="Restore"><i class="fas fa-undo"></i></button>
+                                                <button onclick="deleteGithubBackupSet('${urls}', '${sk}')" class="btn btn-sm btn-danger" style="padding:1px 5px; font-size:0.65rem;" title="Delete"><i class="fas fa-trash"></i></button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            });
+                            html += `</div></div>`;
+                        });
+                        
+                        container.innerHTML = html;
                     }).catch(err => { container.innerHTML = `<div style="padding:20px; text-align:center; color:var(--danger);">${err.message}</div>`; });
+                }
+
+                function toggleGroupGhDate(ds, checked) {
+                    document.querySelectorAll(`.gh-file-cb[data-date-group="${ds}"]`).forEach(cb => cb.checked = checked);
+                    updateGhBulkBtn();
+                }
+
+                function toggleAllGh(checked) {
+                    document.querySelectorAll('.gh-file-cb, .gh-group-cb').forEach(cb => cb.checked = checked);
+                    updateGhBulkBtn();
+                }
+
+                function updateGhBulkBtn() {
+                    const count = document.querySelectorAll('.gh-file-cb:checked').length;
+                    const btn = document.getElementById('gh-bulk-del-btn');
+                    if (btn) {
+                        btn.style.display = count > 0 ? 'block' : 'none';
+                        btn.innerHTML = `<i class="fas fa-trash"></i> Delete Selected (${count})`;
+                    }
+                }
+
+                function bulkDeleteGithub() {
+                    const checked = document.querySelectorAll('.gh-file-cb:checked');
+                    let selected = [];
+                    checked.forEach(cb => {
+                        const files = JSON.parse(cb.dataset.files);
+                        selected = selected.concat(files);
+                    });
+
+                    if (selected.length === 0) return;
+
+                    Swal.fire({
+                        title: `Delete ${selected.length} file(s)?`,
+                        text: "This will remove all selected parts from GitHub.",
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Yes, delete',
+                        showLoaderOnConfirm: true,
+                        preConfirm: async () => {
+                            let count = 0;
+                            for (const item of selected) {
+                                try {
+                                    const fd = new FormData();
+                                    fd.append('action', 'delete_github_backup');
+                                    fd.append('path', item.path);
+                                    fd.append('sha', item.sha);
+                                    const res = await fetchJson('?', { method: 'POST', body: fd });
+                                    if (res.success) count++;
+                                } catch (e) { console.error("Failed", item.name, e); }
+                            }
+                            return count;
+                        }
+                    }).then((r) => { if (r.isConfirmed) { Swal.fire('Deleted!', `${r.value} items removed.`, 'success'); loadGithubBackups(); } });
+                }
+
+                function restoreFromGithub(urls, name) {
+                    Swal.fire({
+                        title: 'Restore Database',
+                        text: `Overwrite database with ${name}? ${urls.split(',').length > 1 ? '(Split Set)' : ''}`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Restore Now',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'restore_github_backup');
+                            fd.append('urls', urls);
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
+                }
+
+                function deleteGithubBackupSet(urls, name) {
+                    // Logic to delete a whole set would need their individual paths/shas
+                    // For simplicity, users can use checkboxes for bulk delete
+                    Swal.fire('Info', 'Use the checkboxes and "Delete Selected" to remove multi-part backups.', 'info');
                 }
 
                 function deleteGithubBackup(path, name, sha) {
@@ -13989,20 +14491,124 @@ var advancedFilters = null;
                     }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Deleted' }); loadGithubBackups(); } });
                 }
 
+                function clearGhProgress() {
+                    const fd = new FormData();
+                    fd.append('action', 'clear_github_progress');
+                    fetchJson('?', { method: 'POST', body: fd }).then(() => {
+                        const alert = document.getElementById('resume-alert');
+                        if (alert) alert.style.display = 'none';
+                        Swal.fire('Cleared', 'Progress discarded. You can start a fresh backup.', 'info');
+                    });
+                }
+
                 function pushBackupToGithub() {
                     Swal.fire({
-                        title: 'GitHub Backup',
-                        text: 'Push current state to repository?',
-                        icon: 'question',
+                        title: '<i class="fab fa-github"></i> GitHub Backup',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        html: `
+                            ${HAS_GH_PROGRESS ? `
+                                <div id="resume-alert" style="margin-bottom:15px; padding:10px; background:rgba(255,193,7,0.1); border:1px solid #ffc107; border-radius:6px; text-align:left; font-size:0.85rem;">
+                                    <i class="fas fa-exclamation-triangle" style="color:#ffc107;"></i> 
+                                    <strong>Interrupted backup detected!</strong><br>
+                                    You can resume uploading from the last successful table.
+                                    <div style="margin-top:8px; display:flex; gap:10px;">
+                                        <button onclick="clearGhProgress()" class="btn btn-sm btn-outline-danger" style="padding:2px 8px; font-size:0.7rem;">Discard & Fresh Start</button>
+                                    </div>
+                                </div>
+                            ` : ''}
+                            <div style="text-align:left; margin-bottom:15px; font-size:0.9rem; color:var(--text-secondary);">
+                                Select tables to include. Uncheck all for a full backup.
+                                <br><small style="color:var(--danger);">Note: GitHub API limit is 100MB per file.</small>
+                            </div>
+                            <div style="margin-bottom:15px; text-align:left;">
+                                <label class="form-label">Backup Mode:</label>
+                                <select id="gh_backup_mode" class="swal2-input" style="margin:0; width:100%;">
+                                    <option value="single">Single SQL File (Combined)</option>
+                                    <option value="per_table">Separate SQL Files (Per Table)</option>
+                                </select>
+                            </div>
+                            <div id="backup-table-selection" style="text-align:left; max-height:250px; overflow-y:auto; padding:10px; border:1px solid var(--border-color); border-radius:8px; background:rgba(0,0,0,0.2);">
+                                <div style="margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:8px; display:flex; align-items:center; gap:10px;">
+                                    <input type="checkbox" id="backup-select-all-gh" checked onchange="document.querySelectorAll('.backup-table-cb-gh').forEach(c => c.checked = this.checked)" style="width:18px; height:18px;">
+                                    <label for="backup-select-all-gh" style="font-weight:bold; cursor:pointer; color:var(--accent);">Select All Tables</label>
+                                </div>
+                                <div id="backup-tables-list-inner">
+                                    ${ALL_TABLES.map(name => `
+                                        <div style="padding:6px 0; display:flex; align-items:center; gap:10px; border-bottom:1px solid rgba(255,255,255,0.03);">
+                                            <input type="checkbox" class="backup-table-cb-gh" value="${name}" id="cb-gh-${name}" checked style="width:16px; height:16px;">
+                                            <label for="cb-gh-${name}" style="cursor:pointer; flex:1;">${name}</label>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `,
                         showCancelButton: true,
-                        confirmButtonText: 'Backup Now',
-                        showLoaderOnConfirm: true,
+                        confirmButtonText: 'Push to GitHub',
+                        confirmButtonColor: '#6366f1',
                         preConfirm: () => {
+                            const total = document.querySelectorAll('.backup-table-cb-gh').length;
+                            const checked = document.querySelectorAll('.backup-table-cb-gh:checked');
+                            const selected = Array.from(checked).map(cb => cb.value);
+                            const mode = document.getElementById('gh_backup_mode').value;
+                            return { tables: (selected.length === total && mode === 'single') ? [] : selected, mode: mode };
+                        }
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const { tables, mode } = result.value;
+                            let pollInterval;
+
+                            Swal.fire({ 
+                                title: 'Backing Up...', 
+                                html: `
+                                    <div id="gh-progress-container" style="text-align:left; margin-top:10px;">
+                                        <div style="font-weight:bold; color:var(--accent);" id="gh-progress-table">Initializing...</div>
+                                        <div style="font-size:0.85rem; color:var(--text-secondary);" id="gh-progress-status">Preparing data...</div>
+                                        <div style="margin-top:10px; height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden;">
+                                            <div id="gh-progress-bar" style="width:0%; height:100%; background:var(--accent); transition:width 0.3s;"></div>
+                                        </div>
+                                    </div>
+                                `,
+                                allowOutsideClick: false, 
+                                didOpen: () => { 
+                                    Swal.showLoading(); 
+                                    let isPolling = false;
+                                    pollInterval = setInterval(async () => {
+                                        if (isPolling) return;
+                                        isPolling = true;
+                                        try {
+                                            const status = await fetchJson('?action=get_gh_backup_status');
+                                            if (status && status.table) {
+                                                document.getElementById('gh-progress-table').innerText = `Table: ${status.table} (${status.table_index}/${status.total_tables})`;
+                                                document.getElementById('gh-progress-status').innerText = `${status.status} ${status.total_parts > 1 ? `(Part ${status.part}/${status.total_parts})` : ''}`;
+                                                const pct = (status.table_index - 1) / status.total_tables * 100;
+                                                document.getElementById('gh-progress-bar').style.width = `${pct}%`;
+                                            }
+                                        } catch (e) {} finally { isPolling = false; }
+                                    }, 3000);
+                                } 
+                            });
+                            
                             const fd = new FormData();
                             fd.append('action', 'push_github_backup');
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            fd.append('mode', mode);
+                            if (tables.length > 0) fd.append('tables', tables.join(','));
+                            
+                            fetchJson('?', { method: 'POST', body: fd })
+                                .then(data => {
+                                    clearInterval(pollInterval);
+                                    if (data.success) {
+                                        Swal.fire({ icon:'success', title:'Success', text:'Backup completed and pushed to GitHub!' }).then(() => loadGithubBackups());
+                                    } else {
+                                        Swal.fire({ icon:'error', title:'Backup Failed', text: data.message });
+                                    }
+                                })
+                                .catch(err => {
+                                    clearInterval(pollInterval);
+                                    Swal.fire({ icon:'error', title:'Request Failed', text: err.message });
+                                });
                         }
-                    }).then((r) => { if (r.isConfirmed) { Swal.fire('Success!', 'Backup uploaded!', 'success'); loadGithubBackups(); } });
+                    });
                 }
 
                 function restoreFromGithub(url, name) {
@@ -14086,14 +14692,76 @@ var advancedFilters = null;
                 }
 
                 function pushBackupToTelegram() {
-                    Swal.fire({ title: 'Sending...', text: 'Uploading SQL dump to Telegram...', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
-                    const params = new URLSearchParams();
-                    params.append('action', 'push_telegram_backup');
-                    fetchJson(window.location.pathname, { method: 'POST', body: params })
-                    .then(data => {
-                        if (data.success) { Swal.fire({ icon: 'success', title: 'Sent!', text: data.message }).then(() => { window.location.reload(); }); }
-                        else { Swal.fire({ icon: 'error', title: 'Failed', text: data.message }); }
-                    }).catch(e => { Swal.fire({ icon: 'error', title: 'Request Failed', text: e.message }); });
+                    Swal.fire({
+                        title: '<i class="fab fa-telegram"></i> Telegram Backup',
+                        background: 'var(--bg-card)',
+                        color: 'var(--text-primary)',
+                        html: `
+                            <div style="text-align:left; margin-bottom:15px; font-size:0.9rem; color:var(--text-secondary);">
+                                Select tables to include in this backup. Uncheck all for a full backup.
+                            </div>
+                            <div style="margin-bottom:15px; text-align:left;">
+                                <label class="form-label">Backup Mode:</label>
+                                <select id="tg_backup_mode" class="swal2-input" style="margin:0; width:100%;">
+                                    <option value="single">Single SQL File (Combined)</option>
+                                    <option value="per_table">Separate SQL Files (Per Table)</option>
+                                </select>
+                            </div>
+                            <div id="backup-table-selection" style="text-align:left; max-height:250px; overflow-y:auto; padding:10px; border:1px solid var(--border-color); border-radius:8px; background:rgba(0,0,0,0.2);">
+                                <div style="margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:8px; display:flex; align-items:center; gap:10px;">
+                                    <input type="checkbox" id="backup-select-all-tg" checked onchange="document.querySelectorAll('.backup-table-cb-tg').forEach(c => c.checked = this.checked)" style="width:18px; height:18px;">
+                                    <label for="backup-select-all-tg" style="font-weight:bold; cursor:pointer; color:var(--accent);">Select All Tables</label>
+                                </div>
+                                <div id="backup-tables-list-inner">
+                                    ${ALL_TABLES.map(name => `
+                                        <div style="padding:6px 0; display:flex; align-items:center; gap:10px; border-bottom:1px solid rgba(255,255,255,0.03);">
+                                            <input type="checkbox" class="backup-table-cb-tg" value="${name}" id="cb-tg-${name}" checked style="width:16px; height:16px;">
+                                            <label for="cb-tg-${name}" style="cursor:pointer; flex:1;">${name}</label>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `,
+                        showCancelButton: true,
+                        confirmButtonText: 'Start Backup',
+                        confirmButtonColor: '#0088cc',
+                        preConfirm: () => {
+                            const total = document.querySelectorAll('.backup-table-cb-tg').length;
+                            const checked = document.querySelectorAll('.backup-table-cb-tg:checked');
+                            const selected = Array.from(checked).map(cb => cb.value);
+                            const mode = document.getElementById('tg_backup_mode').value;
+                            return { tables: (selected.length === total && mode === 'single') ? [] : selected, mode: mode };
+                        }
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            const { tables, mode } = result.value;
+                            Swal.fire({ 
+                                title: 'Backing Up...', 
+                                text: mode === 'per_table' ? 'Processing tables individually...' : 'Generating dump and uploading to Telegram...', 
+                                allowOutsideClick: false, 
+                                didOpen: () => { Swal.showLoading(); } 
+                            });
+                            
+                            const fd = new FormData();
+                            fd.append('action', 'push_telegram_backup');
+                            fd.append('mode', mode);
+                            if (tables.length > 0) {
+                                fd.append('tables', tables.join(','));
+                            }
+                            
+                            fetch(window.location.pathname, { method: 'POST', body: fd })
+                            .then(r => r.json())
+                            .then(data => {
+                                if (data.success) { 
+                                    Swal.fire({ icon: 'success', title: 'Backup Successful', text: data.message }).then(() => { window.location.reload(); }); 
+                                } else { 
+                                    Swal.fire({ icon: 'error', title: 'Backup Failed', text: data.message }); 
+                                }
+                            }).catch(e => { 
+                                Swal.fire({ icon: 'error', title: 'Request Failed', text: e.message }); 
+                            });
+                        }
+                    });
                 }
 
                 function sendTelegramHealthReport() {
@@ -14213,12 +14881,61 @@ var advancedFilters = null;
                     });
                 }
 
-                function deleteTelegramBackup(dateId, msgId) {
+                function toggleAllTg(checked) {
+                    document.querySelectorAll('.tg-file-cb, .tg-group-cb').forEach(cb => cb.checked = checked);
+                    updateTgBulkBtn();
+                }
+
+                function toggleGroupTg(ts, checked) {
+                    document.querySelectorAll(`.tg-file-cb[data-ts-group="${ts}"]`).forEach(cb => cb.checked = checked);
+                    updateTgBulkBtn();
+                }
+
+                function updateTgBulkBtn() {
+                    const count = document.querySelectorAll('.tg-file-cb:checked').length;
+                    const btn = document.getElementById('tg-bulk-del-btn');
+                    if (btn) {
+                        btn.style.display = count > 0 ? 'block' : 'none';
+                        btn.innerHTML = `<i class="fas fa-trash"></i> Delete ${count} Selected`;
+                    }
+                }
+
+                function bulkDeleteTelegram() {
+                    const selected = Array.from(document.querySelectorAll('.tg-file-cb:checked')).map(cb => ({
+                        date: cb.dataset.date,
+                        message_id: cb.dataset.msgId
+                    }));
+
+                    if (selected.length === 0) return;
+
                     Swal.fire({
-                        title: 'Delete Backup?',
-                        text: 'This will remove the backup from Telegram channel/bot.',
+                        title: `Delete ${selected.length} items?`,
+                        text: "They will be removed from local index and Telegram chat.",
                         icon: 'warning',
                         showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Yes, delete',
+                        showLoaderOnConfirm: true,
+                        preConfirm: async () => {
+                            const fd = new FormData();
+                            fd.append('action', 'bulk_delete_telegram_backup');
+                            fd.append('items', JSON.stringify(selected));
+                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => {
+                        if (r.isConfirmed) {
+                            Swal.fire('Deleted!', r.value.message, 'success').then(() => location.reload());
+                        }
+                    });
+                }
+
+                function deleteTelegramBackup(dateId, name, msgId) {
+                    Swal.fire({
+                        title: 'Delete Backup?',
+                        text: `Remove "${name}" from Telegram index and chat?`,
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
                         confirmButtonText: 'Delete',
                         showLoaderOnConfirm: true,
                         preConfirm: () => {
