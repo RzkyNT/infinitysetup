@@ -6547,7 +6547,10 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $content = base64_encode(file_get_contents($partFile));
                     
                     $basePath = trim($cfg['path'] ?? 'backups/', '/');
-                    $pathStr = ltrim($basePath . '/' . $filenamePart, '/');
+                    $dailyFolder = date('Y-m-d');
+                    // Add table folder to prevent cluttering even within daily folder
+                    $tableSubFolder = $isCombined ? 'full_backup' : $table;
+                    $pathStr = ltrim($basePath . '/' . $dailyFolder . '/' . $tableSubFolder . '/' . $filenamePart, '/');
                     $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
                     $encPath = implode('/', $pathSegments);
                     
@@ -6584,7 +6587,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         if ($httpCode >= 200 && $httpCode < 300) {
                             $success = true;
-                            $results[] = $filenamePart;
+                            $tableSubFolder = $isCombined ? 'full_backup' : $table;
+                            $results[] = "{$tableSubFolder}/{$filenamePart}";
                             if (session_status() === PHP_SESSION_NONE) @session_start();
                             $_SESSION['gh_backup_progress'] = $results; 
                             session_write_close();
@@ -6613,7 +6617,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // --- AUTO-GENERATE / UPDATE README.MD ---
             try {
-                $readmePath = trim($cfg['path'] ?? 'backups/', '/') . '/README.md';
+                $readmePath = trim($cfg['path'] ?? 'backups/', '/') . '/' . date('Y-m-d') . '/README.md';
                 $readmeUrl = "https://api.github.com/repos/" . rawurlencode($user) . "/" . rawurlencode($repo) . "/contents/" . rawurlencode($readmePath);
                 
                 // 1. Fetch existing SHA for update
@@ -6701,57 +6705,95 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['success' => true]);
         exit;
     }
+    // --- FETCH EXTERNAL SQL ---
+    elseif ($action === 'fetch_external_sql') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        $url = $_POST['url'] ?? '';
+        if (empty($url)) {
+            echo json_encode(['success' => false, 'message' => 'URL is empty']);
+            exit;
+        }
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Adminer-Lite-Visualizer');
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        $content = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($httpCode === 200) {
+            echo json_encode(['success' => true, 'sql' => $content]);
+        } else {
+            echo json_encode(['success' => false, 'message' => "Failed to fetch. HTTP Code: $httpCode"]);
+        }
+        exit;
+    }
     // --- GET GITHUB BACKUPS ---
     elseif ($action === 'get_github_backups') {
         while (ob_get_level()) ob_end_clean();
         header('Content-Type: application/json');
         
-        // Get current database name
         $dbName = $_SESSION['db_name'] ?? '';
-        if (empty($dbName)) {
-            echo json_encode([]);
-            exit;
-        }
+        if (empty($dbName)) { echo json_encode([]); exit; }
         
-        // Load config for this specific database
         $allConfig = load_config($configFile);
         $cfg = $allConfig['backup_configs'][$dbName]['github'] ?? null;
         
         if (!$cfg || empty($cfg['token']) || empty($cfg['repo']) || empty($cfg['user'])) {
-            echo json_encode([]);
-            exit;
+            echo json_encode([]); exit;
         }
 
-        $pathStr = trim($cfg['path'], '/');
-        $pathSegments = array_map('rawurlencode', explode('/', $pathStr));
-        $encPath = implode('/', $pathSegments);
-        $apiUrl = "https://api.github.com/repos/" . rawurlencode($cfg['user']) . "/" . rawurlencode($cfg['repo']) . "/contents/{$encPath}";
-        
-        $ch = curl_init($apiUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            "Authorization: token {$cfg['token']}",
-            "User-Agent: Adminer-Lite-Backup"
-        ]);
-        $response = curl_exec($ch);
-        curl_close($ch);
-        
-        $files = json_decode($response, true);
-        $backups = [];
-        if (is_array($files)) {
-            foreach ($files as $f) {
-                if (isset($f['name']) && strpos($f['name'], '.sql') !== false) {
-                    $backups[] = [
-                        'name' => $f['name'],
-                        'download_url' => $f['download_url'],
-                        'size' => $f['size'],
-                        'path' => $f['path'],
-                        'sha' => $f['sha']
+        $token = $cfg['token'];
+        $user = $cfg['user'];
+        $repo = $cfg['repo'];
+        $basePath = trim($cfg['path'], '/');
+
+        // Recursive function to fetch all files from GitHub
+        function fetchFilesRecursive($apiUrl, $token, &$allFiles, $currentPath = '') {
+            $ch = curl_init($apiUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                "Authorization: token $token",
+                "User-Agent: Adminer-Lite-Backup"
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($httpCode !== 200) return;
+
+            $items = json_decode($response, true);
+            if (!is_array($items)) return;
+
+            foreach ($items as $item) {
+                if ($item['type'] === 'file' && strpos($item['name'], '.sql') !== false) {
+                    $allFiles[] = [
+                        'name' => ($currentPath ? $currentPath . '/' : '') . $item['name'],
+                        'download_url' => $item['download_url'],
+                        'size' => $item['size'],
+                        'path' => $item['path']
                     ];
+                } elseif ($item['type'] === 'dir') {
+                    // Limit recursion depth to prevent API abuse, but enough for Date/Table structure
+                    fetchFilesRecursive($item['url'], $token, $allFiles, ($currentPath ? $currentPath . '/' : '') . $item['name']);
                 }
             }
         }
-        echo json_encode(array_reverse($backups));
+
+        $allFiles = [];
+        $rootUrl = "https://api.github.com/repos/" . rawurlencode($user) . "/" . rawurlencode($repo) . "/contents/" . rawurlencode($basePath);
+        fetchFilesRecursive($rootUrl, $token, $allFiles);
+
+        // Sort by name descending (usually latest dates first)
+        usort($allFiles, function($a, $b) {
+            return strcmp($b['name'], $a['name']);
+        });
+
+        echo json_encode($allFiles);
         exit;
     }
     // --- RESTORE FROM GITHUB ---
@@ -12943,6 +12985,9 @@ var advancedFilters = null;
             <a href="?view=visualizer" class="nav-item <?= ($_GET['view'] ?? '') === 'visualizer' ? 'active' : '' ?>">
                 <i class="fas fa-project-diagram" style="width:20px; text-align:center;"></i> <span>Schema Visualizer</span>
             </a>
+            <a href="?view=sql_visualizer" class="nav-item <?= ($_GET['view'] ?? '') === 'sql_visualizer' ? 'active' : '' ?>">
+                <i class="fas fa-magic" style="width:20px; text-align:center;"></i> <span>SQL File Visualizer</span>
+            </a>
             
 
             
@@ -13435,7 +13480,491 @@ var advancedFilters = null;
                         // Initialize
                         setTimeout(drawLines, 100);
                     </script>
-                    <?php else: ?>
+                <?php elseif ($view === 'sql_visualizer'): ?>
+                    <div class="sql-visualizer-container" style="display:flex; flex-direction:column; height:calc(100vh - 120px); gap:15px; padding:20px;">
+                        <!-- Header -->
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="display:flex; align-items:center; gap:12px;">
+                                <div style="width:40px; height:40px; background:var(--accent); color:black; display:flex; align-items:center; justify-content:center; border-radius:10px; font-size:1.2rem;">
+                                    <i class="fas fa-magic"></i>
+                                </div>
+                                <div>
+                                    <h2 style="margin:0; font-size:1.4rem;">SQL File Visualizer</h2>
+                                    <p style="margin:0; color:var(--text-secondary); font-size:0.8rem;">Paste SQL or enter a URL to visualize tables and data.</p>
+                                </div>
+                            </div>
+                            
+                            <!-- URL Fetcher Bar -->
+                            <div style="flex:1; max-width:500px; display:flex; gap:5px; background:rgba(255,255,255,0.05); padding:5px; border-radius:10px; border:1px solid #333; margin:0 20px;">
+                                <input type="text" id="sql-url-input" placeholder="https://raw.githubusercontent.com/.../file.sql" 
+                                    style="flex:1; background:transparent; border:none; color:#fff; padding:5px 10px; font-size:0.8rem; outline:none;">
+                                <button class="btn btn-primary" onclick="fetchSqlFromUrl()" id="fetch-btn" style="padding:5px 15px; font-size:0.75rem; background:var(--accent); color:#000; font-weight:bold;">
+                                    <i class="fas fa-cloud-download-alt"></i> FETCH
+                                </button>
+                            </div>
+
+                            <div style="display:flex; gap:10px;">
+                                <button class="btn btn-secondary" onclick="document.getElementById('sql-input').value = ''; visualizeSql();">
+                                    <i class="fas fa-trash-alt"></i> Clear
+                                </button>
+                                <button class="btn btn-primary" onclick="visualizeSql()" style="background:var(--accent); color:black; font-weight:bold;">
+                                    <i class="fas fa-play"></i> VISUALIZE NOW
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns: 400px 1fr; gap:15px; flex:1; min-height:0;">
+                            <!-- Left: SQL Input -->
+                            <div class="card" style="margin:0; display:flex; flex-direction:column; padding:15px; background:#0a0a0a;">
+                                <label style="font-size:0.75rem; font-weight:bold; color:var(--text-secondary); margin-bottom:10px; text-transform:uppercase; letter-spacing:1px;">SQL Source Code</label>
+                                <textarea id="sql-input" placeholder="-- Paste CREATE TABLE and INSERT INTO here..." style="flex:1; background:#000; color:#a5d6ff; border:1px solid #333; border-radius:8px; padding:15px; font-family:'Fira Code', 'Consolas', monospace; font-size:0.85rem; resize:none; outline:none; line-height:1.5;"></textarea>
+                            </div>
+
+                            <!-- Right: Tabs for ERD and Data -->
+                            <div class="card" style="margin:0; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+                                <div style="display:flex; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--border-color);">
+                                    <button class="viz-tab active" onclick="switchVizTab('erd')"><i class="fas fa-project-diagram"></i> ER Diagram</button>
+                                    <button class="viz-tab" onclick="switchVizTab('data')"><i class="fas fa-table"></i> Data Preview</button>
+                                </div>
+                                
+                                <div id="viz-content" style="flex:1; position:relative; overflow:hidden;">
+                                    <!-- ERD Canvas -->
+                                    <div id="viz-erd" style="width:100%; height:100%; display:block; background:#111;">
+                                        <div id="viz-erd-canvas" style="width:100%; height:100%; position:relative; cursor:grab; overflow:hidden; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 20px 20px;">
+                                             <svg id="viz-svg" style="position:absolute; top:0; left:0; width:10000px; height:10000px; pointer-events:none;"></svg>
+                                             <div id="viz-nodes" style="position:absolute; top:0; left:0; width:10000px; height:10000px;"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Data Grid -->
+                                    <div id="viz-data" style="width:100%; height:100%; display:none; padding:20px; overflow:auto;">
+                                        <div id="viz-data-tabs" style="display:flex; gap:10px; margin-bottom:15px; overflow-x:auto;"></div>
+                                        <div id="viz-data-grid"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <style>
+                        .viz-tab { padding:12px 20px; background:transparent; border:none; border-bottom:2px solid transparent; color:var(--text-secondary); cursor:pointer; font-weight:600; transition:0.2s; }
+                        .viz-tab:hover { color:var(--text-primary); background:rgba(255,255,255,0.02); }
+                        .viz-tab.active { color:var(--accent); border-bottom-color:var(--accent); background:rgba(99,102,241,0.05); }
+                        
+                        .viz-node { position:absolute; background:var(--bg-card); border:1px solid var(--border-color); border-radius:10px; width:220px; box-shadow:0 10px 30px rgba(0,0,0,0.5); z-index:1; }
+                        .viz-node-header { padding:8px 12px; background:rgba(255,255,255,0.05); border-bottom:1px solid var(--border-color); border-radius:10px 10px 0 0; font-weight:bold; font-size:0.85rem; color:var(--accent); cursor:move; }
+                        .viz-col { padding:4px 12px; display:flex; justify-content:space-between; font-size:0.75rem; color:#cbd5e1; border-bottom:1px solid rgba(255,255,255,0.02); }
+                        .viz-col .type { color:#64748b; font-family:monospace; font-size:0.65rem; }
+                        
+                        .media-prev { max-width:100px; max-height:60px; border-radius:4px; cursor:pointer; transition:0.2s; border:1px solid #444; }
+                        .media-prev:hover { transform:scale(1.1); border-color:var(--accent); z-index:100; position:relative; }
+                    </style>
+
+                    <style>
+                        /* ... existing styles ... */
+                        .viz-processing-overlay {
+                            position: absolute; top:0; left:0; width:100%; height:100%; 
+                            background: rgba(0,0,0,0.8); backdrop-filter: blur(5px);
+                            display:none; flex-direction:column; align-items:center; justify-content:center;
+                            z-index: 10000; border-radius: 10px;
+                        }
+                    </style>
+
+                    <div id="viz-processing" class="viz-processing-overlay">
+                        <div class="fas fa-magic fa-spin" style="font-size:3rem; color:var(--accent); margin-bottom:20px;"></div>
+                        <h3 style="margin:0;">Analyzing SQL Structure...</h3>
+                        <p style="color:var(--text-secondary); font-size:0.8rem; margin-top:10px;">Building ERD and indexing data points</p>
+                    </div>
+
+                    <script>
+                        let vizTables = [];
+                        let vizRelations = [];
+                        let vizData = {};
+                        let vizActiveNode = null;
+                        let vizDragX = 0, vizDragY = 0;
+
+                        function switchVizTab(type) {
+                            document.querySelectorAll('.viz-tab').forEach(t => t.classList.remove('active'));
+                            event.currentTarget.classList.add('active');
+                            document.getElementById('viz-erd').style.display = type === 'erd' ? 'block' : 'none';
+                            document.getElementById('viz-data').style.display = type === 'data' ? 'block' : 'none';
+                        }
+
+                        async function fetchSqlFromUrl() {
+                            const url = document.getElementById('sql-url-input').value;
+                            if(!url) return Swal.fire('Error', 'Please enter a valid URL', 'warning');
+                            
+                            const btn = document.getElementById('fetch-btn');
+                            const originalHtml = btn.innerHTML;
+                            btn.disabled = true;
+                            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> FETCHING...';
+
+                            try {
+                                const fd = new FormData();
+                                fd.append('action', 'fetch_external_sql');
+                                fd.append('url', url);
+                                
+                                const res = await fetch('?', { method: 'POST', body: fd });
+                                const data = await res.json();
+                                
+                                if(data.success) {
+                                    document.getElementById('sql-input').value = data.sql;
+                                    visualizeSql();
+                                    Swal.fire({ toast:true, position:'top-end', timer:2000, showConfirmButton:false, icon:'success', title:'SQL Fetched Successfully' });
+                                } else {
+                                    Swal.fire('Fetch Failed', data.message, 'error');
+                                }
+                            } catch(e) {
+                                Swal.fire('Error', e.message, 'error');
+                            } finally {
+                                btn.disabled = false;
+                                btn.innerHTML = originalHtml;
+                            }
+                        }
+
+                        function visualizeSql() {
+                            let sql = document.getElementById('sql-input').value;
+                            if(!sql) return;
+
+                            const overlay = document.getElementById('viz-processing');
+                            overlay.style.display = 'flex';
+
+                            // Use setTimeout to allow UI to render overlay
+                            setTimeout(() => {
+                                try {
+                                    // 1. Clean SQL (Strip comments)
+                                    sql = sql.replace(/--.*$/gm, '') // Single line --
+                                             .replace(/\/\*[\s\S]*?\*\//g, '') // Multi-line /* */
+                                             .replace(/^#.*$/gm, ''); // Single line #
+
+                                    vizTables = []; vizRelations = []; vizData = {};
+                                    
+                                    // 2. Parse CREATE TABLE
+                                    const createRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"]?(\w+)[`"]?\.)?[`"]?(\w+)[`"]?\s*\(([\s\S]*?)\)(?:\s|;|$)/gi;
+                                    let match;
+                                    while ((match = createRegex.exec(sql)) !== null) {
+                                        const tableName = match[2];
+                                        const columnsDef = match[3];
+                                        const cols = [];
+                                        
+                                        const lines = columnsDef.split(/,(?![^(]*\))/).map(l => l.trim()).filter(l => l);
+                                        lines.forEach(line => {
+                                            const upLine = line.toUpperCase();
+                                            if(upLine.startsWith('PRIMARY KEY')) return;
+                                            if(upLine.startsWith('FOREIGN KEY')) {
+                                                const fk = line.match(/FOREIGN\s+KEY\s*\(([`"]?\w+[`"]?)\)\s*REFERENCES\s*[`"]?(\w+)[`"]?\s*\(([`"]?\w+[`"]?)\)/i);
+                                                if(fk) vizRelations.push({ from: tableName, col: fk[1].replace(/[`"]/g, ''), to: fk[2], toCol: fk[3].replace(/[`"]/g, '') });
+                                                return;
+                                            }
+                                            if(upLine.startsWith('KEY') || upLine.startsWith('CONSTRAINT') || upLine.startsWith('UNIQUE') || upLine.startsWith('INDEX')) return;
+
+                                            const parts = line.match(/[`"]?(\w+)[`"]?\s+([\w()]+)/i);
+                                            if(parts) {
+                                                cols.push({ name: parts[1], type: parts[2], pk: upLine.includes('PRIMARY KEY') });
+                                            }
+                                        });
+
+                                        vizTables.push({ name: tableName, columns: cols });
+                                    }
+
+                                    // 3. Parse INSERT INTO (Better support for multi-line and multi-insert)
+                                    const insertRegex = /INSERT\s+INTO\s+[`"]?(\w+)[`"]?\s*(?:\((.*?)\))?\s+VALUES\s*([\s\S]*?)(?:\s*;|$)/gi;
+                                    while ((match = insertRegex.exec(sql)) !== null) {
+                                        const table = match[1];
+                                        const colsStr = match[2];
+                                        const valuesStr = match[3];
+                                        
+                                        const rows = [];
+                                        // Improved value splitting that handles commas inside strings better
+                                        const rowRegex = /\(([\s\S]*?)\)(?:\s*,\s*|\s*;|$)/g;
+                                        let rowMatch;
+                                        while((rowMatch = rowRegex.exec(valuesStr)) !== null) {
+                                            const rowVals = rowMatch[1].split(/,(?=(?:(?:[^']*'){2})*[^']*$)/).map(v => v.trim().replace(/^'|'$/g, '').replace(/^"|"$/g, ''));
+                                            rows.push(rowVals);
+                                        }
+                                        
+                                        if(!vizData[table]) vizData[table] = { cols: colsStr ? colsStr.split(',').map(c => c.trim().replace(/[`"]/g, '')) : [], rows: [] };
+                                        vizData[table].rows.push(...rows);
+                                    }
+
+                                    renderERD();
+                                    renderDataGrid();
+                                } catch(e) {
+                                    console.error(e);
+                                    Swal.fire('Parsing Error', 'An error occurred while analyzing the SQL file.', 'error');
+                                } finally {
+                                    overlay.style.display = 'none';
+                                }
+                            }, 50);
+                        }
+
+                        function renderERD() {
+                            const container = document.getElementById('viz-nodes');
+                            const svg = document.getElementById('viz-svg');
+                            container.innerHTML = '';
+                            svg.innerHTML = '';
+
+                            const colCount = Math.ceil(Math.sqrt(vizTables.length)) || 3;
+                            
+                            vizTables.forEach((tbl, i) => {
+                                const node = document.createElement('div');
+                                node.className = 'viz-node';
+                                node.id = `viz-node-${tbl.name}`;
+                                
+                                // Auto-layout in a grid
+                                node.style.left = (50 + (i % colCount) * 300) + 'px';
+                                node.style.top = (50 + Math.floor(i / colCount) * 350) + 'px';
+                                
+                                let html = `<div class="viz-node-header" onmousedown="startVizDrag(event, '${tbl.name}')">${tbl.name}</div><div class="viz-node-body">`;
+                                tbl.columns.forEach(col => {
+                                    html += `<div class="viz-col"><span>${col.name} ${col.pk ? '🔑' : ''}</span><span class="type">${col.type}</span></div>`;
+                                });
+                                html += `</div>`;
+                                node.innerHTML = html;
+                                container.appendChild(node);
+                            });
+
+                            setTimeout(drawVizLines, 100);
+                        }
+
+                        function startVizDrag(e, name) {
+                            if(e.button !== 0) return;
+                            vizActiveNode = document.getElementById(`viz-node-${name}`);
+                            vizDragX = e.clientX - vizActiveNode.offsetLeft;
+                            vizDragY = e.clientY - vizActiveNode.offsetTop;
+                            document.addEventListener('mousemove', handleVizDrag);
+                            document.addEventListener('mouseup', stopVizDrag);
+                        }
+
+                        function handleVizDrag(e) {
+                            if(!vizActiveNode) return;
+                            vizActiveNode.style.left = (e.clientX - vizDragX) + 'px';
+                            vizActiveNode.style.top = (e.clientY - vizDragY) + 'px';
+                            drawVizLines();
+                        }
+
+                        function stopVizDrag() {
+                            vizActiveNode = null;
+                            document.removeEventListener('mousemove', handleVizDrag);
+                            document.removeEventListener('mouseup', stopVizDrag);
+                        }
+
+                        function drawVizLines() {
+                            const svg = document.getElementById('viz-svg');
+                            svg.innerHTML = `
+                                <defs>
+                                    <marker id="viz-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+                                        <path d="M0,0 L0,6 L9,3 z" fill="#6366f1" />
+                                    </marker>
+                                </defs>
+                            `;
+                            
+                            vizRelations.forEach(rel => {
+                                const fromNode = document.getElementById(`viz-node-${rel.from}`);
+                                const toNode = document.getElementById(`viz-node-${rel.to}`);
+                                if(fromNode && toNode) {
+                                    const x1 = fromNode.offsetLeft + fromNode.offsetWidth;
+                                    const y1 = fromNode.offsetTop + (fromNode.offsetHeight / 2);
+                                    const x2 = toNode.offsetLeft;
+                                    const y2 = toNode.offsetTop + (toNode.offsetHeight / 2);
+                                    
+                                    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                                    path.setAttribute("d", `M ${x1} ${y1} C ${x1+50} ${y1}, ${x2-50} ${y2}, ${x2} ${y2}`);
+                                    path.setAttribute("stroke", "#6366f1");
+                                    path.setAttribute("stroke-width", "2");
+                                    path.setAttribute("fill", "none");
+                                    path.setAttribute("opacity", "0.5");
+                                    path.setAttribute("marker-end", "url(#viz-arrow)");
+                                    svg.appendChild(path);
+                                }
+                            });
+                        }
+
+                        function renderDataGrid() {
+                            const tabsCont = document.getElementById('viz-data-tabs');
+                            const gridCont = document.getElementById('viz-data-grid');
+                            tabsCont.innerHTML = '';
+                            gridCont.innerHTML = '';
+
+                            const tableNames = Object.keys(vizData);
+                            if(tableNames.length === 0) {
+                                gridCont.innerHTML = '<div style="text-align:center; padding:50px; color:var(--text-secondary);">No INSERT data found in SQL.</div>';
+                                return;
+                            }
+
+                            tableNames.forEach((t, i) => {
+                                const btn = document.createElement('button');
+                                btn.className = 'btn ' + (i === 0 ? 'btn-primary' : 'btn-secondary');
+                                btn.style.marginRight = '5px';
+                                btn.innerText = t;
+                                btn.onclick = () => {
+                                    document.querySelectorAll('#viz-data-tabs button').forEach(b => { b.classList.remove('btn-primary'); b.classList.add('btn-secondary'); });
+                                    btn.classList.add('btn-primary');
+                                    showVizTable(t);
+                                };
+                                tabsCont.appendChild(btn);
+                            });
+
+                            showVizTable(tableNames[0]);
+                        }
+
+                        function isMedia(url) {
+                            if(!url || typeof url !== 'string') return null;
+                            const trimmed = url.trim();
+                            // Improved Regex: Search for extension BEFORE query parameters (for Firebase/Cloud storage)
+                            if(trimmed.match(/\.(jpeg|jpg|gif|png|webp|avif|svg)(?:\?.*)?$/i)) return 'img';
+                            if(trimmed.match(/\.(mp4|webm|ogg|mov)(?:\?.*)?$/i)) return 'video';
+                            if(trimmed.startsWith('data:image/')) return 'img';
+                            return null;
+                        }
+
+                        let vizCurrentTable = '';
+                        let vizSearchQuery = '';
+                        let vizHiddenCols = new Set();
+                        let vizPage = 1;
+                        const vizRowsPerPage = 50;
+
+                        function showVizTable(name, query = '', page = 1) {
+                            vizCurrentTable = name;
+                            vizSearchQuery = query.toLowerCase();
+                            vizPage = page;
+                            
+                            const data = vizData[name];
+                            const gridCont = document.getElementById('viz-data-grid');
+                            
+                            // 1. Filter Data
+                            const filteredRows = data.rows.filter(row => {
+                                if(!vizSearchQuery) return true;
+                                return row.some(val => String(val).toLowerCase().includes(vizSearchQuery));
+                            });
+
+                            // 2. Paginate Data
+                            const totalRows = filteredRows.length;
+                            const totalPages = Math.ceil(totalRows / vizRowsPerPage) || 1;
+                            if(vizPage > totalPages) vizPage = totalPages;
+                            const start = (vizPage - 1) * vizRowsPerPage;
+                            const paginatedRows = filteredRows.slice(start, start + vizRowsPerPage);
+
+                            // Build Toolbar
+                            let html = `
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; gap:10px; background:rgba(255,255,255,0.02); padding:10px; border-radius:8px;">
+                                    <div style="position:relative; flex:1;">
+                                        <i class="fas fa-search" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#666;"></i>
+                                        <input type="text" placeholder="Search in ${name}..." value="${vizSearchQuery}" 
+                                            oninput="showVizTable('${name}', this.value, 1)" 
+                                            style="width:100%; background:#000; border:1px solid #333; border-radius:20px; padding:8px 15px 8px 35px; color:#fff; font-size:0.85rem; outline:none; transition:border-color 0.2s;"
+                                            onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='#333'">
+                                    </div>
+                                    <div style="display:flex; gap:8px;">
+                                        <div class="dropdown">
+                                            <button class="btn btn-secondary" onclick="toggleVizColMenu()"><i class="fas fa-columns"></i> Columns</button>
+                                            <div id="viz-col-menu" class="card" style="display:none; position:absolute; right:0; top:40px; z-index:1000; width:200px; padding:10px; box-shadow:0 10px 30px rgba(0,0,0,0.5); background:var(--bg-card);">
+                                                <div style="font-size:0.7rem; font-weight:bold; color:var(--text-secondary); margin-bottom:8px; display:flex; justify-content:space-between;">
+                                                    SHOW/HIDE COLUMNS
+                                                    <a href="javascript:void(0)" onclick="resetVizCols()" style="color:var(--accent);">Reset</a>
+                                                </div>
+                                                <div style="max-height:250px; overflow:auto;">
+                                                    ${data.cols.map(c => `
+                                                        <label style="display:flex; align-items:center; gap:8px; padding:4px 0; font-size:0.8rem; cursor:pointer;">
+                                                            <input type="checkbox" ${vizHiddenCols.has(c)?'':'checked'} onchange="toggleVizCol('${c}')"> ${c}
+                                                        </label>
+                                                    `).join('')}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <button class="btn btn-secondary" onclick="exportVizData('${name}', 'json')" title="Export to JSON"><i class="fas fa-file-code"></i></button>
+                                    </div>
+                                </div>
+                            `;
+
+                            // Build Table
+                            html += `<div class="table-wrapper"><table><thead><tr>`;
+                            data.cols.forEach(c => {
+                                if(!vizHiddenCols.has(c)) html += `<th>${c}</th>`;
+                            });
+                            html += `</tr></thead><tbody>`;
+                            
+                            if(paginatedRows.length === 0) {
+                                html += `<tr><td colspan="${data.cols.length}" style="text-align:center; padding:40px; color:#666;">No results found</td></tr>`;
+                            } else {
+                                paginatedRows.forEach(row => {
+                                    html += `<tr>`;
+                                    data.cols.forEach((colName, idx) => {
+                                        if(!vizHiddenCols.has(colName)) {
+                                            const val = row[idx];
+                                            const mediaType = isMedia(val);
+                                            let cellContent = val;
+                                            if(mediaType === 'img') cellContent = `<img src="${val}" class="media-prev" onclick="Swal.fire({imageUrl:'${val}', background:'#111', showConfirmButton:false, customClass:{image:'swal-image-preview'}})">`;
+                                            if(mediaType === 'video') cellContent = `<video src="${val}" class="media-prev" onclick="this.paused ? this.play() : this.pause()" muted></video>`;
+                                            html += `<td>${cellContent}</td>`;
+                                        }
+                                    });
+                                    html += `</tr>`;
+                                });
+                            }
+                            
+                            html += `</tbody></table></div>`;
+
+                            // Build Pagination UI
+                            if(totalPages > 1) {
+                                html += `
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:15px; padding:10px; background:rgba(255,255,255,0.02); border-radius:8px;">
+                                        <div style="font-size:0.75rem; color:var(--text-secondary);">
+                                            Showing <b>${start + 1}</b> to <b>${Math.min(start + vizRowsPerPage, totalRows)}</b> of <b>${totalRows}</b> rows
+                                        </div>
+                                        <div style="display:flex; gap:5px;">
+                                            <button class="btn btn-secondary" ${vizPage === 1 ? 'disabled' : ''} onclick="showVizTable('${name}', '${vizSearchQuery}', 1)"><i class="fas fa-angle-double-left"></i></button>
+                                            <button class="btn btn-secondary" ${vizPage === 1 ? 'disabled' : ''} onclick="showVizTable('${name}', '${vizSearchQuery}', ${vizPage - 1})"><i class="fas fa-angle-left"></i></button>
+                                            <span style="padding:5px 15px; background:#000; border-radius:5px; font-size:0.8rem; border:1px solid #333;">Page ${vizPage} of ${totalPages}</span>
+                                            <button class="btn btn-secondary" ${vizPage === totalPages ? 'disabled' : ''} onclick="showVizTable('${name}', '${vizSearchQuery}', ${vizPage + 1})"><i class="fas fa-angle-right"></i></button>
+                                            <button class="btn btn-secondary" ${vizPage === totalPages ? 'disabled' : ''} onclick="showVizTable('${name}', '${vizSearchQuery}', ${totalPages})"><i class="fas fa-angle-double-right"></i></button>
+                                        </div>
+                                    </div>
+                                `;
+                            } else {
+                                html += `<div style="margin-top:10px; font-size:0.75rem; color:var(--text-secondary);">Showing ${totalRows} rows</div>`;
+                            }
+                            
+                            gridCont.innerHTML = html;
+                        }
+
+                        function toggleVizColMenu() {
+                            const menu = document.getElementById('viz-col-menu');
+                            menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+                            if(menu.style.display === 'block') {
+                                const closer = (e) => {
+                                    if(!menu.contains(e.target) && !e.target.closest('.dropdown')) {
+                                        menu.style.display = 'none';
+                                        document.removeEventListener('click', closer);
+                                    }
+                                };
+                                setTimeout(() => document.addEventListener('click', closer), 10);
+                            }
+                        }
+
+                        function toggleVizCol(col) {
+                            if(vizHiddenCols.has(col)) vizHiddenCols.delete(col);
+                            else vizHiddenCols.add(col);
+                            showVizTable(vizCurrentTable, vizSearchQuery);
+                        }
+
+                        function resetVizCols() {
+                            vizHiddenCols.clear();
+                            showVizTable(vizCurrentTable, vizSearchQuery);
+                        }
+
+                        function exportVizData(name, format) {
+                            const data = vizData[name];
+                            const json = JSON.stringify(data, null, 2);
+                            const blob = new Blob([json], {type: 'application/json'});
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `${name}_exported.json`;
+                            a.click();
+                        }
+                    </script>
+                <?php else: ?>
         <div class="content-area">
             <?php if ($msg): ?>
                 <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?=$msg?></div>
