@@ -2686,235 +2686,24 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       exit;
   }
 
-  // file viewer
+  // file viewer (Redirected to Modal)
   if (isset($_GET['view'])) {
-      $file = $_GET['view'];
-      $file = fm_clean_path($file, false);
+      $file = fm_clean_path($_GET['view'], false);
       $file = str_replace('/', '', $file);
-      if ($file == '' || !is_file($path . '/' . $file) || !fm_is_exclude_items($file, $path . '/' . $file)) {
-          fm_set_msg(lng('File not found'), 'error');
-          $FM_PATH = FM_PATH;
-          fm_redirect(FM_SELF_URL . '?p=' . urlencode($FM_PATH));
+      if ($file != '' && is_file($path . '/' . $file) && fm_is_exclude_items($file, $path . '/' . $file)) {
+          $file_url = FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $file;
+          
+          // Fix for external/streamed files
+          $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
+          $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
+          if (strpos($normalized_root_path, $normalized_doc_root) !== 0) {
+              $file_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($file) . '&stream=1';
+          }
+
+          $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+          // Set flag for JS to open modal on load
+          $auto_preview_js = "window.autoPreview = { url: '".addslashes($file_url)."', ext: '".addslashes($ext)."', name: '".addslashes($file)."' };";
       }
-
-      fm_show_header(); // HEADER
-      fm_show_nav_path(FM_PATH); // current path
-
-      $file_url = FM_ROOT_URL . fm_convert_win((FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $file);
-      $file_path = $path . '/' . $file;
-
-      $ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
-      $mime_type = fm_get_mime_type($file_path);
-      $filesize_raw = fm_get_size($file_path);
-      $filesize = fm_get_filesize($filesize_raw);
-
-      $is_zip = false;
-      $is_gzip = false;
-      $is_image = false;
-      $is_audio = false;
-      $is_video = false;
-      $is_text = false;
-      $is_csv = false;
-      $is_onlineViewer = false;
-
-      $view_title = 'File';
-      $filenames = false; // for zip
-      $content = ''; // for text
-      $online_viewer = strtolower(FM_DOC_VIEWER);
-
-      if (in_array($ext, fm_get_video_exts())) {
-          $is_video = true;
-          $view_title = 'Video';
-      } elseif (in_array($ext, fm_get_image_exts())) {
-          $is_image = true;
-          $view_title = 'Image';
-      } elseif ($online_viewer && $online_viewer !== 'false' && in_array($ext, fm_get_onlineViewer_exts())) {
-          $is_onlineViewer = true;
-      } elseif ($ext == 'zip' || $ext == 'tar') {
-          $is_zip = true;
-          $view_title = 'Archive';
-          $filenames = fm_get_zif_info($file_path, $ext);
-      } elseif (in_array($ext, fm_get_audio_exts())) {
-          $is_audio = true;
-          $view_title = 'Audio';
-      } elseif ($ext == 'csv') {
-          $is_csv = true;
-          $view_title = "CSV File";
-      } elseif (in_array($ext, fm_get_text_exts()) || substr($mime_type, 0, 4) == 'text' || in_array($mime_type, fm_get_text_mimes())) {
-          $is_text = true;
-          $content = file_get_contents($file_path);
-      }
-
-  ?>
-      <div class="row">
-          <div class="col-12">
-              <ul class="list-group w-50 my-3" data-bs-theme="<?php echo FM_THEME; ?>">
-                  <li class="list-group-item active" aria-current="true"><strong><?php echo lng($view_title) ?>:</strong> <?php echo fm_enc(fm_convert_win($file)) ?></li>
-                  <?php $display_path = fm_get_display_path($file_path); ?>
-                  <li class="list-group-item"><strong><?php echo $display_path['label']; ?>:</strong> <?php echo $display_path['path']; ?></li>
-                  <li class="list-group-item"><strong><?php echo lng('Date Modified') ?>:</strong> <?php echo date(FM_DATETIME_FORMAT, filemtime($file_path)); ?></li>
-                  <li class="list-group-item"><strong><?php echo lng('File size') ?>:</strong> <?php echo ($filesize_raw <= 1000) ? "$filesize_raw bytes" : $filesize; ?></li>
-                  <li class="list-group-item"><strong><?php echo lng('MIME-type') ?>:</strong> <?php echo $mime_type ?></li>
-                  <?php
-                  // ZIP info
-                  if (($is_zip || $is_gzip) && $filenames !== false) {
-                      $total_files = 0;
-                      $total_comp = 0;
-                      $total_uncomp = 0;
-                      foreach ($filenames as $fn) {
-                          if (!$fn['folder']) {
-                              $total_files++;
-                          }
-                          $total_comp += $fn['compressed_size'];
-                          $total_uncomp += $fn['filesize'];
-                      }
-                  ?>
-                      <li class="list-group-item"><?php echo lng('Files in archive') ?>: <?php echo $total_files ?></li>
-                      <li class="list-group-item"><?php echo lng('Total size') ?>: <?php echo fm_get_filesize($total_uncomp) ?></li>
-                      <li class="list-group-item"> <?php echo lng('Size in archive') ?>: <?php echo fm_get_filesize($total_comp) ?></li>
-                      <li class="list-group-item"><?php echo lng('Compression') ?>: <?php echo round(($total_comp / max($total_uncomp, 1)) * 100) ?>%</li>
-                  <?php
-                  }
-                  // Image info
-                  if ($is_image) {
-                      $image_size = getimagesize($file_path);
-                      echo '<li class="list-group-item"><strong>' . lng('Image size') . ':</strong> ' . (isset($image_size[0]) ? $image_size[0] : '0') . ' x ' . (isset($image_size[1]) ? $image_size[1] : '0') . '</li>';
-                  }
-                  // Text info
-                  if ($is_text) {
-                      $is_utf8 = fm_is_utf8($content);
-                      if (function_exists('iconv')) {
-                          if (!$is_utf8) {
-                              $content = iconv(FM_ICONV_INPUT_ENC, 'UTF-8//IGNORE', $content);
-                          }
-                      }
-                      echo '<li class="list-group-item"><strong>' . lng('Charset') . ':</strong> ' . ($is_utf8 ? 'utf-8' : '8 bit') . '</li>';
-                  }
-                  ?>
-              </ul>
-              <div class="btn-group btn-group-sm flex-wrap" role="group">
-                  <form method="post" class="d-inline mb-0 btn btn-outline-primary" action="?p=<?php echo urlencode(FM_PATH) ?>&amp;dl=<?php echo urlencode($file) ?>">
-                      <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                      <button type="submit" class="btn btn-link btn-sm text-decoration-none fw-bold p-0"><i class="fa fa-cloud-download"></i> <?php echo lng('Download') ?></button> &nbsp;
-                  </form>
-                  <?php if (!FM_READONLY): ?>
-                      <a class="fw-bold btn btn-outline-primary" title="<?php echo lng('Delete') ?>" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;del=<?php echo urlencode($file) ?>" onclick="confirmDailog(event, 1209, '<?php echo lng('Delete') . ' ' . lng('File'); ?>','<?php echo urlencode($file); ?>', this.href);"> <i class="fa fa-trash"></i> Delete</a>
-                  <?php endif; ?>
-                  <a class="fw-bold btn btn-outline-primary" href="<?php echo fm_enc($file_url) ?>" target="_blank"><i class="fa fa-external-link-square"></i> <?php echo lng('Open') ?></a></b>
-                  <?php
-                  // ZIP actions
-                  if (!FM_READONLY && ($is_zip || $is_gzip) && $filenames !== false) {
-                      $zip_name = pathinfo($file_path, PATHINFO_FILENAME);
-                  ?>
-                      <form method="post" class="d-inline btn btn-outline-primary mb-0">
-                          <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                          <input type="hidden" name="unzip" value="<?php echo urlencode($file); ?>">
-                          <button type="submit" class="btn btn-link text-decoration-none fw-bold p-0 border-0" style="font-size: 14px;"><i class="fa fa-check-circle"></i> <?php echo lng('UnZip') ?></button>
-                      </form>
-                      <form method="post" class="d-inline btn btn-outline-primary mb-0">
-                          <input type="hidden" name="token" value="<?php echo $_SESSION['token']; ?>">
-                          <input type="hidden" name="unzip" value="<?php echo urlencode($file); ?>">
-                          <input type="hidden" name="tofolder" value="1">
-                          <button type="submit" class="btn btn-link text-decoration-none fw-bold p-0" style="font-size: 14px;" title="UnZip to <?php echo fm_enc($zip_name) ?>"><i class="fa fa-check-circle"></i> <?php echo lng('UnZipToFolder') ?></button>
-                      </form>
-                  <?php
-                  }
-                if (!FM_READONLY && ($is_text || $is_csv)) {
-                    ?>
-                      <a class="fw-bold btn btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;edit=<?php echo urlencode($file) ?>" class="edit-file">
-                          <i class="fa fa-pencil-square"></i> <?php echo lng('Edit') ?>
-                      </a>
-                      <a class="fw-bold btn btn-outline-primary" href="?p=<?php echo urlencode(trim(FM_PATH)) ?>&amp;edit=<?php echo urlencode($file) ?>&env=ace"
-                          class="edit-file"><i class="fa fa-pencil-square"></i> <?php echo lng('AdvancedEditor') ?>
-                      </a>
-                  <?php } ?>
-                  <a class="fw-bold btn btn-outline-primary" href="?p=<?php echo urlencode(FM_PATH) ?>"><i class="fa fa-chevron-circle-left go-back"></i> <?php echo lng('Back') ?></a>
-              </div>
-              <div class="row mt-3">
-                  <?php
-                  if ($is_onlineViewer) {
-                      if ($online_viewer == 'google') {
-                          echo '<iframe src="https://docs.google.com/viewer?embedded=true&hl=en&url=' . fm_enc($file_url) . '" frameborder="no" style="width:100%;min-height:460px"></iframe>';
-                      } else if ($online_viewer == 'microsoft') {
-                          echo '<iframe src="https://view.officeapps.live.com/op/embed.aspx?src=' . fm_enc($file_url) . '" frameborder="no" style="width:100%;min-height:460px"></iframe>';
-                      }
-                  } elseif ($is_zip) {
-                      // ZIP content
-                      if ($filenames !== false) {
-                          echo '<code class="maxheight">';
-                          foreach ($filenames as $fn) {
-                              if ($fn['folder']) {
-                                  echo '<b>' . fm_enc($fn['name']) . '</b><br>';
-                              } else {
-                                  echo $fn['name'] . ' (' . fm_get_filesize($fn['filesize']) . ')<br>';
-                              }
-                          }
-                          echo '</code>';
-                      } else {
-                          echo '<p>' . lng('Error while fetching archive info') . '</p>';
-                      }
-                  } elseif ($is_image) {
-                      // Image content
-                      if (in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'ico', 'svg', 'webp', 'avif'))) {
-                          echo '<p><input type="checkbox" id="preview-img-zoomCheck"><label for="preview-img-zoomCheck"><img src="' . fm_enc($file_url) . '" alt="image" class="preview-img"></label></p>';
-                      }
-                  } elseif ($is_audio) {
-                      // Audio content
-                      echo '<p><audio src="' . fm_enc($file_url) . '" controls preload="metadata"></audio></p>';
-                  } elseif ($is_video) {
-                       // Video content - Enhanced for External Drives
-                       $video_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($file);
-                       echo '<div class="preview-video" style="background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #333;">
-                               <video src="' . fm_enc($video_url) . '" 
-                                      style="width: 100%; max-height: 70vh; display: block;" 
-                                      controls 
-                                      autoplay
-                                      preload="metadata">
-                                      Your browser does not support the video tag.
-                               </video>
-                             </div>
-                             <div class="mt-2 text-center text-muted small">
-                                <i class="fa fa-info-circle"></i> Memutar via Stream Proxy (Mendukung Disk Eksternal)
-                             </div>';
-                  } elseif ($is_csv) {
-				$tableTheme = (FM_THEME == "dark") ? "text-white bg-dark table-dark" : "bg-white";
-                echo '<table class="table table-hover table-sm ' . $tableTheme .'">';
-                $csvFilePointer = fopen($file_path, 'r');
-                while ( ($csvRow = fgetcsv($csvFilePointer) ) !== FALSE ) {
-                    echo '<tr><td>'. implode('</td><td>', $csvRow). '</td></tr>';
-                }
-                fclose($csvFilePointer);
-                echo '</table>';} elseif ($is_text) {
-                      if (FM_USE_HIGHLIGHTJS) {
-                          // highlight
-                          $hljs_classes = array(
-                              'shtml' => 'xml',
-                              'htaccess' => 'apache',
-                              'phtml' => 'php',
-                              'lock' => 'json',
-                              'svg' => 'xml',
-                          );
-                          $hljs_class = isset($hljs_classes[$ext]) ? 'lang-' . $hljs_classes[$ext] : 'lang-' . $ext;
-                          if (empty($ext) || in_array(strtolower($file), fm_get_text_names()) || preg_match('#\.min\.(css|js)$#i', $file)) {
-                              $hljs_class = 'nohighlight';
-                          }
-                          // PHP files should use syntax highlighting
-                          if (in_array($ext, array('php', 'php4', 'php5', 'phtml', 'phps'))) {
-                              $hljs_class = 'lang-php';
-                          }
-                          $content = '<pre class="with-hljs"><code class="' . $hljs_class . '">' . fm_enc($content) . '</code></pre>';
-                      } else {
-                          $content = '<pre>' . fm_enc($content) . '</pre>';
-                      }
-                      echo $content;
-                  }
-                  ?>
-              </div>
-          </div>
-      </div>
-  <?php
-      fm_show_footer();
-      exit;
   }
 
   // file editor
@@ -3138,8 +2927,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   <div class="row g-2 mb-3 mt-1 align-items-center">
       <div class="col-md-6">
           <div class="input-group">
-              <span class="input-group-text bg-primary text-white border-0 shadow-sm"><i class="fa fa-search"></i></span>
-              <input type="text" id="fm-search" class="form-control border-0 shadow-sm" placeholder="Search files in this folder..." onkeyup="filterFiles()" style="height: 38px;">
+              <span class="input-group-text bg-primary text-white border-0 shadow-sm" title="Local Filter"><i class="fa fa-search"></i></span>
+              <input type="text" id="fm-search" class="form-control border-0 shadow-sm" placeholder="Search files in this folder..." onkeyup="filterFiles(event)" style="height: 38px;">
           </div>
       </div>
       <div class="col-md-6 text-md-end">
@@ -5762,56 +5551,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       <li class="nav-item me-1">
                           <a class="nav-link p-2" href="adminer.php" title="Database"><i class="fa fa-database"></i><span class="d-md-none ms-1">Database</span></a>
                       </li>
-                      <li class="nav-item me-2 d-none d-md-block">
-                          <div class="input-group input-group-sm" style="margin-top:4px; width: 200px;">
-                              <label for="search-addon" class="visually-hidden"><?php echo lng('Search') ?></label>
-                              <input type="text" class="form-control" placeholder="<?php echo lng('Search') ?>" aria-label="<?php echo lng('Search') ?>" aria-describedby="search-addon2" id="search-addon">
-                              <div class="input-group-append">
-                                  <span class="input-group-text brl-0 brr-0" id="search-addon2"><i class="fa fa-search"></i></span>
-                              </div>
-                              <div class="input-group-append btn-group">
-                                  <span class="input-group-text dropdown-toggle brl-0" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false"></span>
-                                  <div class="dropdown-menu dropdown-menu-right">
-                                      <a class="dropdown-item" href="<?php echo $path2 = $path ? $path : '.'; ?>" id="js-search-modal" data-bs-toggle="modal" data-bs-target="#searchModal"><?php echo lng('Advanced Search') ?></a>
-                                  </div>
-                              </div>
-                          </div>
-                          <script>
-                              (function() {
-                                  const input = document.getElementById('search-addon');
-                                  if (!input) return;
-                                  input.addEventListener('input', function() {
-                                      const value = this.value.toLowerCase();
-                                      console.log("[NAV-SEARCH] Filtering for:", value);
-                                      const tableRows = document.querySelectorAll("#main-table tbody tr");
-                                      tableRows.forEach(row => {
-                                          if (row.querySelector('i.go-back')) return;
-                                          const fileName = (row.querySelector('.filename')?.textContent || row.textContent).toLowerCase();
-                                          row.style.display = fileName.indexOf(value) > -1 ? "" : "none";
-                                      });
-                                      const gridItems = document.querySelectorAll("#main-grid .grid-item");
-                                      gridItems.forEach(item => {
-                                          const fileName = (item.querySelector('.grid-name')?.textContent || item.textContent).toLowerCase();
-                                          item.style.display = fileName.indexOf(value) > -1 ? "" : "none";
-                                      });
-                                  });
-                                  input.addEventListener('keypress', function(e) {
-                                      if (e.key === 'Enter') {
-                                          const advSearch = document.getElementById('advanced-search');
-                                          if (advSearch) advSearch.value = this.value;
-                                          if (typeof fm_search === 'function') fm_search();
-                                      }
-                                  });
-                              })();
-                          </script>
-                      </li>
-                      <!-- Mobile Search Button -->
-                      <li class="nav-item me-1 d-md-none">
-                          <a class="nav-link p-2" href="#" data-bs-toggle="modal" data-bs-target="#searchModal" title="Search">
-                              <i class="fa fa-search"></i><span class="ms-1">Search</span>
-                          </a>
-                      </li>
-                      <?php if (!FM_READONLY): ?>
+<?php if (!FM_READONLY): ?>
                           <!-- <li class="nav-item me-1">
                               <a title="<?php echo lng('Upload') ?>" class="nav-link p-2" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;upload">
                                   <i class="fa fa-cloud-upload" aria-hidden="true"></i><span class="d-md-none ms-1"><?php echo lng('Upload') ?></span>
@@ -8007,6 +7747,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
     <script type="text/javascript">
         window.csrf = '<?php echo $_SESSION['token']; ?>';
         window.fm_root_url = '<?php echo fm_enc(FM_ROOT_URL); ?>';
+        <?php global $auto_preview_js; echo $auto_preview_js ?? ''; ?>
     </script>
           <?php print_external('js-jquery'); ?>
           <?php print_external('js-bootstrap'); ?>
@@ -10642,11 +10383,32 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
 
             /* SEARCH & FILTER LOGIC */
             window.currentFilter = 'all';
+            window.globalSearchTimer = null;
 
-            function filterFiles() {
-                const search = document.getElementById('fm-search').value.toLowerCase();
+            function runGlobalSearch() {
+                const val = document.getElementById('fm-search').value;
+                if (val.length <= 2) return;
+                
+                // Show modal automatically for global results
+                $("#searchModal").modal('show');
+                
+                const advSearch = document.getElementById('advanced-search');
+                if (advSearch) advSearch.value = val;
+                
+                // Set recursive to true for fallback
+                const recursiveCheck = document.getElementById('js-search-options-recursive');
+                if (recursiveCheck) recursiveCheck.checked = true;
+
+                if (typeof fm_search === 'function') fm_search();
+            }
+
+            function filterFiles(event) {
+                const searchInput = document.getElementById('fm-search');
+                const search = searchInput.value.toLowerCase();
                 const listRows = document.querySelectorAll('#main-table tbody tr');
                 const gridItems = document.querySelectorAll('#main-grid .grid-item');
+                
+                let visibleCount = 0;
                 
                 const filterFunc = (name, type, ext) => {
                     const matchesSearch = name.toLowerCase().includes(search);
@@ -10654,7 +10416,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     
                     if (window.currentFilter !== 'all') {
                         if (type === 'folder') {
-                            matchesFilter = false; // Folders usually hidden in specific filters
+                            matchesFilter = false; 
                         } else {
                             const categories = {
                                 image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic', 'heif', 'bmp', 'ico'],
@@ -10665,7 +10427,9 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                             matchesFilter = categories[window.currentFilter].includes(ext.toLowerCase());
                         }
                     }
-                    return matchesSearch && matchesFilter;
+                    const result = matchesSearch && matchesFilter;
+                    if (result) visibleCount++;
+                    return result;
                 };
 
                 // Filter List View
@@ -10673,7 +10437,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     const name = row.getAttribute('data-name') || '';
                     const type = row.getAttribute('data-type') || '';
                     const ext = row.getAttribute('data-ext') || '';
-                    if (row.id === 'folder-up') return; // Always show back button
+                    if (row.id === 'folder-up') return; 
                     row.style.display = filterFunc(name, type, ext) ? '' : 'none';
                 });
 
@@ -10684,6 +10448,12 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     const ext = item.getAttribute('data-ext') || '';
                     item.style.display = filterFunc(name, type, ext) ? '' : 'none';
                 });
+
+                // SMART FALLBACK: If no local matches, trigger recursive search after 500ms
+                clearTimeout(window.globalSearchTimer);
+                if (visibleCount === 0 && search.length > 2) {
+                    window.globalSearchTimer = setTimeout(runGlobalSearch, 500);
+                }
             }
 
             function applyFilter(category, btn) {
@@ -10700,14 +10470,14 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                 filterFiles();
             }
 
-            // Hook into preview logic
-            const originalFmPreview = window.fm_preview;
-            if (originalFmPreview) {
-                window.fm_preview = function() {
-                    originalFmPreview.apply(this, arguments);
-                    setTimeout(convertHeicElements, 300);
-                };
-            }
+            // 13. Auto Preview Logic for direct URLs
+            $(document).ready(function() {
+                if (window.autoPreview) {
+                    setTimeout(function() {
+                        preview_file(window.autoPreview.url, window.autoPreview.ext, window.autoPreview.name);
+                    }, 600);
+                }
+            });
           </script>
           <div id="snackbar"></div>
       </body>
