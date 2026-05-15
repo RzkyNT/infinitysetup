@@ -3249,6 +3249,12 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
                       <div class="grid-icon"><img src="<?=$img_src?>" loading="lazy" class="<?= (in_array($ext, ['heic', 'heif']) ? 'heic-convert-target' : '') ?>" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px;"></div>
+                  <?php elseif(in_array($ext, ['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'])): ?>
+                      <div class="grid-icon video-thumb-container">
+                          <img data-video-src="<?=$http_url?>" class="video-thumb-target" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px; display:none;">
+                          <div class="video-placeholder"><i class="<?=$icon_class?>"></i></div>
+                          <div class="video-play-overlay"><i class="fa fa-play-circle-o"></i></div>
+                      </div>
                   <?php else: ?>
                       <div class="grid-icon"><i class="<?=$icon_class?>"></i></div>
                   <?php endif; ?>
@@ -10478,7 +10484,107 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     }, 600);
                 }
             });
+
+            // 14. Video Thumbnailer System
+            window.videoQueue = [];
+            window.isVideoProcessing = false;
+
+            function processVideoQueue() {
+                if (window.isVideoProcessing || window.videoQueue.length === 0) return;
+                
+                window.isVideoProcessing = true;
+                const item = window.videoQueue.shift();
+                const img = item.img;
+                const videoSrc = item.src;
+                const container = img.closest('.video-thumb-container');
+
+                const video = document.createElement('video');
+                video.src = videoSrc;
+                video.preload = 'metadata';
+                video.muted = true;
+                
+                // Seek to avoid black frames
+                video.onloadedmetadata = function() {
+                    video.currentTime = Math.min(video.duration * 0.1, 2); // 10% or 2 seconds
+                };
+
+                video.onseeked = function() {
+                    const canvas = document.createElement('canvas');
+                    // Thumbnail size
+                    canvas.width = 240;
+                    canvas.height = 160;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Maintain aspect ratio
+                    const videoRatio = video.videoWidth / video.videoHeight;
+                    const canvasRatio = canvas.width / canvas.height;
+                    let drawW, drawH, offsetLeft, offsetTop;
+
+                    if (videoRatio > canvasRatio) {
+                        drawH = canvas.height;
+                        drawW = video.videoWidth * (canvas.height / video.videoHeight);
+                        offsetLeft = (canvas.width - drawW) / 2;
+                        offsetTop = 0;
+                    } else {
+                        drawW = canvas.width;
+                        drawH = video.videoHeight * (canvas.width / video.videoWidth);
+                        offsetLeft = 0;
+                        offsetTop = (canvas.height - drawH) / 2;
+                    }
+
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(video, offsetLeft, offsetTop, drawW, drawH);
+                    
+                    img.src = canvas.toDataURL('image/jpeg', 0.6);
+                    img.style.display = 'block';
+                    if (container) {
+                        const placeholder = container.querySelector('.video-placeholder');
+                        if (placeholder) placeholder.style.display = 'none';
+                    }
+                    
+                    // Cleanup
+                    video.src = "";
+                    video.load();
+                    video.remove();
+                    
+                    window.isVideoProcessing = false;
+                    setTimeout(processVideoQueue, 150);
+                };
+
+                video.onerror = function() {
+                    window.isVideoProcessing = false;
+                    processVideoQueue();
+                };
+            }
+
+            function initVideoThumbnails() {
+                const targets = document.querySelectorAll('.video-thumb-target:not(.enqueued)');
+                targets.forEach(img => {
+                    img.classList.add('enqueued');
+                    window.videoQueue.push({
+                        img: img,
+                        src: img.getAttribute('data-video-src')
+                    });
+                });
+                processVideoQueue();
+            }
+
+            $(document).ready(function() {
+                initVideoThumbnails();
+                // Re-run if table/grid updates
+                if (window.table) {
+                    window.table.on('draw', initVideoThumbnails);
+                }
+            });
           </script>
+          <style>
+              .video-thumb-container { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #1a1a1a; border-radius: 4px; overflow: hidden; }
+              .video-play-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; color: rgba(255,255,255,0.7); pointer-events: none; z-index: 2; transition: all 0.3s; }
+              .grid-item:hover .video-play-overlay { color: #fff; transform: translate(-50%, -50%) scale(1.2); }
+              .video-placeholder { font-size: 32px; opacity: 0.3; }
+              .video-thumb-target { width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+          </style>
           <div id="snackbar"></div>
       </body>
 
