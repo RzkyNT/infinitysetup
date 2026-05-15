@@ -8696,7 +8696,23 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       }
                   });
 
-                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic', 'heif'].includes(ext)) {
+                  if (ext === 'pdf') {
+                      content.html('<div id="pdf-viewer" style="height: 75vh; width: 100%; border-radius: 8px; overflow: hidden; background: #222;"></div>');
+                      import('https://cdn.jsdelivr.net/npm/@embedpdf/snippet@2/dist/embedpdf.js')
+                          .then((m) => {
+                              const EmbedPDF = m.default || m;
+                              EmbedPDF.init({
+                                  type: 'container',
+                                  target: document.getElementById('pdf-viewer'),
+                                  src: url,
+                                  theme: { preference: 'system' }
+                              });
+                          })
+                          .catch(err => {
+                              console.error('Failed to load EmbedPDF:', err);
+                              content.html('<div class="alert alert-danger">Failed to load PDF Viewer. Please check your connection.</div>');
+                          });
+                  } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic', 'heif'].includes(ext)) {
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
                   } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
                       content.html('<div class="text-center"><video src="'+url+'" controls autoplay style="max-width:100%; max-height:70vh;"></video></div>');
