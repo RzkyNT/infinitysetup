@@ -196,6 +196,7 @@ ob_start(); // Start output buffering to prevent "headers already sent" errors
       'js-highlightjs' => '<script src="' . get_asset_url('assets/vendor/highlightjs/highlight.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js') . '"></script>',
       'js-heic2any' => '<script src="https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.4/heic2any.min.js" integrity="sha512-VjmsArkf8Vv2yyvbXCyVxp+R3n4N2WyS1GEQ+YQxa7Hu0tx836WpY4nW9/T1W5JBmvuIsxkVH/DlHgp7NEMjDw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>',
       'js-leaflet' => '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>',
+      'js-wavesurfer' => '<script src="https://unpkg.com/wavesurfer.js@7"></script>',
       'pre-jsdelivr' => '',
       'pre-cloudflare' => ''
   );
@@ -3132,6 +3133,26 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   
   fm_show_nav_path(FM_PATH); // current path
   fm_show_message();
+  ?>
+  <!-- SMART SEARCH & QUICK FILTER -->
+  <div class="row g-2 mb-3 mt-1 align-items-center">
+      <div class="col-md-6">
+          <div class="input-group">
+              <span class="input-group-text bg-primary text-white border-0 shadow-sm"><i class="fa fa-search"></i></span>
+              <input type="text" id="fm-search" class="form-control border-0 shadow-sm" placeholder="Search files in this folder..." onkeyup="filterFiles()" style="height: 38px;">
+          </div>
+      </div>
+      <div class="col-md-6 text-md-end">
+          <div class="btn-group btn-group-sm shadow-sm" role="group">
+              <button type="button" class="btn btn-primary active filter-btn" onclick="applyFilter('all', this)" id="filter-all">All</button>
+              <button type="button" class="btn btn-outline-primary filter-btn" onclick="applyFilter('image', this)">Images</button>
+              <button type="button" class="btn btn-outline-primary filter-btn" onclick="applyFilter('video', this)">Videos</button>
+              <button type="button" class="btn btn-outline-primary filter-btn" onclick="applyFilter('audio', this)">Audio</button>
+              <button type="button" class="btn btn-outline-primary filter-btn" onclick="applyFilter('doc', this)">Docs</button>
+          </div>
+      </div>
+  </div>
+  <?php
 
   $num_files = count($files);
   $num_folders = count($folders);
@@ -7992,6 +8013,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
           <?php print_external('js-jquery-datatables'); ?>
           <?php print_external('js-heic2any'); ?>
           <?php print_external('js-leaflet'); ?>
+          <?php print_external('js-wavesurfer'); ?>
           <?php if (FM_USE_HIGHLIGHTJS && isset($_GET['view'])): ?>
               <?php print_external('js-highlightjs'); ?>
               <script>
@@ -8758,8 +8780,55 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
                   } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
                       content.html('<div class="text-center"><video src="'+url+'" controls autoplay style="max-width:100%; max-height:70vh;"></video></div>');
-                  } else if (['mp3', 'wav'].includes(ext)) {
-                      content.html('<div class="text-center"><audio src="'+url+'" controls style="width:100%; margin-top:20px;"></audio></div>');
+                  } else if (['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac'].includes(ext)) {
+                      content.html(`
+                          <div id="audio-visualizer-container" class="p-4 bg-dark rounded border border-secondary shadow-lg">
+                              <div id="waveform" style="width:100%; height:128px; background: rgba(0,0,0,0.2); border-radius: 8px;"></div>
+                              <div class="d-flex justify-content-center align-items-center gap-4 mt-4">
+                                  <button id="ws-backward" class="btn btn-outline-light btn-sm rounded-circle" style="width:40px; height:40px;"><i class="fa fa-backward"></i></button>
+                                  <button id="ws-play-pause" class="btn btn-primary rounded-circle shadow" style="width:60px; height:60px;"><i class="fa fa-play fa-lg"></i></button>
+                                  <button id="ws-forward" class="btn btn-outline-light btn-sm rounded-circle" style="width:40px; height:40px;"><i class="fa fa-forward"></i></button>
+                              </div>
+                              <div class="mt-3 text-center small text-muted font-monospace">
+                                  <span id="ws-current-time">0:00</span> / <span id="ws-duration">0:00</span>
+                              </div>
+                          </div>
+                      `);
+                      
+                      setTimeout(() => {
+                          if (window.wavesurfer) { try { window.wavesurfer.destroy(); } catch(e){} }
+                          window.wavesurfer = WaveSurfer.create({
+                              container: '#waveform',
+                              waveColor: '#0d6efd',
+                              progressColor: '#0dcaf0',
+                              cursorColor: '#ffffff',
+                              barWidth: 3,
+                              barRadius: 3,
+                              responsive: true,
+                              height: 128,
+                              normalize: true,
+                              url: url
+                          });
+
+                          const playBtn = $('#ws-play-pause');
+                          playBtn.on('click', () => window.wavesurfer.playPause());
+                          
+                          window.wavesurfer.on('play', () => playBtn.html('<i class="fa fa-pause fa-lg"></i>'));
+                          window.wavesurfer.on('pause', () => playBtn.html('<i class="fa fa-play fa-lg"></i>'));
+                          
+                          $('#ws-backward').on('click', () => window.wavesurfer.skip(-10));
+                          $('#ws-forward').on('click', () => window.wavesurfer.skip(10));
+
+                          const formatTime = (s) => new Date(s * 1000).toISOString().substr(14, 5);
+                          
+                          window.wavesurfer.on('timeupdate', (time) => $('#ws-current-time').text(formatTime(time)));
+                          window.wavesurfer.on('ready', (duration) => $('#ws-duration').text(formatTime(duration)));
+
+                          // Stop audio when modal closes
+                          $('#previewModal').one('hidden.bs.modal', function () {
+                              if (window.wavesurfer) { try { window.wavesurfer.stop(); window.wavesurfer.destroy(); window.wavesurfer = null; } catch(e){} }
+                          });
+                      }, 200);
                   } else if (['pdf'].includes(ext)) {
                       content.html('<iframe src="'+url+'" style="width:100%; height:70vh; border:none;"></iframe>');
                   } else if (textExtensions.includes(ext)) {
@@ -10570,6 +10639,66 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     });
                 }
             });
+
+            /* SEARCH & FILTER LOGIC */
+            window.currentFilter = 'all';
+
+            function filterFiles() {
+                const search = document.getElementById('fm-search').value.toLowerCase();
+                const listRows = document.querySelectorAll('#main-table tbody tr');
+                const gridItems = document.querySelectorAll('#main-grid .grid-item');
+                
+                const filterFunc = (name, type, ext) => {
+                    const matchesSearch = name.toLowerCase().includes(search);
+                    let matchesFilter = true;
+                    
+                    if (window.currentFilter !== 'all') {
+                        if (type === 'folder') {
+                            matchesFilter = false; // Folders usually hidden in specific filters
+                        } else {
+                            const categories = {
+                                image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic', 'heif', 'bmp', 'ico'],
+                                video: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'flv', 'wmv', 'm4v'],
+                                audio: ['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac'],
+                                doc: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'md', 'json', 'xml']
+                            };
+                            matchesFilter = categories[window.currentFilter].includes(ext.toLowerCase());
+                        }
+                    }
+                    return matchesSearch && matchesFilter;
+                };
+
+                // Filter List View
+                listRows.forEach(row => {
+                    const name = row.getAttribute('data-name') || '';
+                    const type = row.getAttribute('data-type') || '';
+                    const ext = row.getAttribute('data-ext') || '';
+                    if (row.id === 'folder-up') return; // Always show back button
+                    row.style.display = filterFunc(name, type, ext) ? '' : 'none';
+                });
+
+                // Filter Grid View
+                gridItems.forEach(item => {
+                    const name = item.getAttribute('data-name') || '';
+                    const type = item.getAttribute('data-type') || '';
+                    const ext = item.getAttribute('data-ext') || '';
+                    item.style.display = filterFunc(name, type, ext) ? '' : 'none';
+                });
+            }
+
+            function applyFilter(category, btn) {
+                window.currentFilter = category;
+                
+                // Update UI
+                document.querySelectorAll('.filter-btn').forEach(b => {
+                    b.classList.remove('btn-primary', 'active');
+                    b.classList.add('btn-outline-primary');
+                });
+                btn.classList.remove('btn-outline-primary');
+                btn.classList.add('btn-primary', 'active');
+                
+                filterFiles();
+            }
 
             // Hook into preview logic
             const originalFmPreview = window.fm_preview;
