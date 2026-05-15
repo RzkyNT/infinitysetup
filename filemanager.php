@@ -1601,6 +1601,53 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       }
   }
 
+  // Thumbnail Cache Handler
+  if (isset($_POST['thumb_cache']) && !FM_READONLY) {
+      header('Content-Type: application/json');
+      
+      // Verify CSRF token
+      if (!isset($_POST['token']) || !verifyToken($_POST['token'])) {
+          echo json_encode(['success' => false, 'error' => 'Invalid token']);
+          exit;
+      }
+      
+      $tc_path   = fm_clean_path(isset($_POST['path']) ? $_POST['path'] : '');
+      $tc_file   = isset($_POST['file']) ? basename($_POST['file']) : '';
+      $tc_base64 = isset($_POST['data']) ? $_POST['data'] : '';
+      
+      if (!$tc_file || !$tc_base64) {
+          echo json_encode(['success' => false, 'error' => 'Missing data']);
+          exit;
+      }
+      
+      // Validate base64 is actually a JPEG/PNG image
+      if (!preg_match('/^data:image\/(jpeg|png|webp);base64,/', $tc_base64)) {
+          echo json_encode(['success' => false, 'error' => 'Invalid image data']);
+          exit;
+      }
+      
+      $img_data = base64_decode(preg_replace('/^data:image\/\w+;base64,/', '', $tc_base64));
+      
+      // Build cache directory path
+      $base_dir = FM_ROOT_PATH . ($tc_path !== '' ? '/' . $tc_path : '');
+      $cache_dir = $base_dir . '/.thumbcache';
+      
+      if (!is_dir($cache_dir)) {
+          mkdir($cache_dir, 0755, true);
+          // Create index file to prevent directory listing
+          file_put_contents($cache_dir . '/index.html', '');
+      }
+      
+      $cache_file = $cache_dir . '/' . $tc_file . '.jpg';
+      
+      if (file_put_contents($cache_file, $img_data) !== false) {
+          echo json_encode(['success' => true]);
+      } else {
+          echo json_encode(['success' => false, 'error' => 'Could not write file']);
+      }
+      exit;
+  }
+
   // Upload
   if (!empty($_FILES) && !FM_READONLY) {
       if (isset($_POST['token'])) {
@@ -3241,6 +3288,24 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $filesize_raw = fm_get_size($file_path);
               $filesize = fm_get_filesize($filesize_raw);
               $perms = substr(decoct(fileperms($file_path)), -4);
+              
+              // Check for server-side cached thumbnail
+              $is_video = in_array($ext, ['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv']);
+              $cached_thumb_url = '';
+              if ($is_video) {
+                  $cache_dir = $path . '/.thumbcache';
+                  $cache_file = $cache_dir . '/' . $f . '.jpg';
+                  if (is_file($cache_file)) {
+                      // Serve cached thumbnail via stream proxy if outside web root
+                      if ($is_outside_root) {
+                          // dl handler strips '/' from dl — put .thumbcache in p param, filename only in dl
+                          $tc_p = trim(FM_PATH . '/.thumbcache', '/');
+                          $cached_thumb_url = FM_SELF_URL . '?p=' . urlencode($tc_p) . '&dl=' . urlencode($f . '.jpg') . '&stream=1';
+                      } else {
+                          $cached_thumb_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/.thumbcache/' . $f . '.jpg');
+                      }
+                  }
+              }
               ?>
               <div class="grid-item" onclick="if(!event.target.closest('.context-menu-trigger, .grid-check')) preview_file('<?=$http_url?>', '<?=$ext?>', '<?=fm_enc($f)?>')" data-type="file" data-path="<?php echo fm_enc(FM_PATH) ?>" data-name="<?php echo fm_enc($f) ?>" data-ext="<?php echo $ext ?>" data-size="<?=$filesize?>" data-date="<?=$modif?>" data-perms="<?=$perms?>" data-url="<?=$http_url?>">
                   <div class="grid-check" onclick="event.stopPropagation()">
@@ -3249,10 +3314,14 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
                       <div class="grid-icon"><img src="<?=$img_src?>" loading="lazy" class="<?= (in_array($ext, ['heic', 'heif']) ? 'heic-convert-target' : '') ?>" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px;"></div>
-                  <?php elseif(in_array($ext, ['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'])): ?>
+                  <?php elseif($is_video): ?>
                       <div class="grid-icon video-thumb-container">
-                          <img data-video-src="<?=$http_url?>" class="video-thumb-target" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px; display:none;">
-                          <div class="video-placeholder"><i class="<?=$icon_class?>"></i></div>
+                          <?php if($cached_thumb_url): ?>
+                              <img src="<?=$cached_thumb_url?>" class="video-thumb-cached" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px;">
+                          <?php else: ?>
+                              <img data-video-src="<?=$http_url?>" data-file="<?=fm_enc($f)?>" data-path="<?=fm_enc(FM_PATH)?>" class="video-thumb-target" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px; display:none;">
+                              <div class="video-placeholder"><i class="<?=$icon_class?>"></i></div>
+                          <?php endif; ?>
                           <div class="video-play-overlay"><i class="fa fa-play-circle-o"></i></div>
                       </div>
                   <?php else: ?>
@@ -10608,11 +10677,30 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(video, offsetLeft, offsetTop, drawW, drawH);
                     
-                    img.src = canvas.toDataURL('image/jpeg', 0.6);
+                    const base64 = canvas.toDataURL('image/jpeg', 0.6);
+                    img.src = base64;
                     img.style.display = 'block';
                     if (container) {
                         const placeholder = container.querySelector('.video-placeholder');
                         if (placeholder) placeholder.style.display = 'none';
+                    }
+                    
+                    // Save thumbnail to server cache (fire-and-forget)
+                    const fileName = img.getAttribute('data-file');
+                    const filePath = img.getAttribute('data-path');
+                    const csrfToken = window.csrf || (document.querySelector('input[name="token"]') || {}).value || '';
+                    if (fileName && csrfToken) {
+                        const fd = new FormData();
+                        fd.append('thumb_cache', '1');
+                        fd.append('token', csrfToken);
+                        fd.append('file', fileName);
+                        fd.append('path', filePath || '');
+                        fd.append('data', base64);
+                        fetch(window.location.pathname + '?p=' + encodeURIComponent(filePath || ''), {
+                            method: 'POST',
+                            body: fd,
+                            credentials: 'same-origin'
+                        }).catch(function() {}); // silent fail
                     }
                     
                     // Cleanup
