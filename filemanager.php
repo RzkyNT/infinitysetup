@@ -183,6 +183,7 @@ ob_start(); // Start output buffering to prevent "headers already sent" errors
       'css-dropzone' => '<link href="' . get_asset_url('assets/vendor/dropzone/dropzone.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.css') . '" rel="stylesheet">',
       'css-font-awesome' => '<link rel="stylesheet" href="' . get_asset_url('assets/vendor/fontawesome4/css/font-awesome.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css') . '">',
       'css-highlightjs' => '<link rel="stylesheet" href="' . get_asset_url('assets/vendor/highlightjs/highlight-vs.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/' . $highlightjs_style . '.min.css') . '">',
+      'css-leaflet' => '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />',
       'js-ace' => '<script src="' . get_asset_url('assets/vendor/ace/ace.js', 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js') . '"></script>',
       'js-aceext-language_tools' => '<script src="' . get_asset_url(
     'assets/vendor/ace/ext-language_tools.js',
@@ -193,6 +194,8 @@ ob_start(); // Start output buffering to prevent "headers already sent" errors
       'js-jquery' => '<script src="' . get_asset_url('assets/vendor/jquery/jquery-3.6.1.min.js', 'https://code.jquery.com/jquery-3.6.1.min.js') . '"></script>',
       'js-jquery-datatables' => '<script src="' . get_asset_url('assets/vendor/datatables/jquery.dataTables.min.js', 'https://cdn.datatables.net/1.13.1/js/jquery.dataTables.min.js') . '" defer></script>',
       'js-highlightjs' => '<script src="' . get_asset_url('assets/vendor/highlightjs/highlight.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js') . '"></script>',
+      'js-heic2any' => '<script src="https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.4/heic2any.min.js" integrity="sha512-VjmsArkf8Vv2yyvbXCyVxp+R3n4N2WyS1GEQ+YQxa7Hu0tx836WpY4nW9/T1W5JBmvuIsxkVH/DlHgp7NEMjDw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>',
+      'js-leaflet' => '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>',
       'pre-jsdelivr' => '',
       'pre-cloudflare' => ''
   );
@@ -790,7 +793,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
               $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
               
               // 1. EXIF for Images
-              if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp']) && function_exists('exif_read_data')) {
+              if (in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif']) && function_exists('exif_read_data')) {
                   $exif = @exif_read_data($absPath, 'IFD0', true);
                   if ($exif) {
                       $meta['exif'] = [
@@ -800,9 +803,29 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                           'Software' => $exif['IFD0']['Software'] ?? '',
                           'DateTime' => $exif['IFD0']['DateTime'] ?? '',
                       ];
-                      // Add GPS if available
-                      if (isset($exif['GPS'])) {
-                          $meta['exif']['GPS'] = 'Available';
+                      
+                      // Add Technical Photography Metadata
+                      $meta['exif']['ISO'] = $exif['EXIF']['ISOSpeedRatings'] ?? ($exif['IFD0']['ISOSpeedRatings'] ?? '');
+                      if (isset($exif['EXIF']['FNumber'])) {
+                          $meta['exif']['Aperture'] = 'f/' . fm_gps_to_num($exif['EXIF']['FNumber']);
+                      }
+                      if (isset($exif['EXIF']['ExposureTime'])) {
+                          $meta['exif']['Exposure'] = $exif['EXIF']['ExposureTime'] . ' s';
+                      }
+                      if (isset($exif['EXIF']['FocalLength'])) {
+                          $meta['exif']['Focal Length'] = fm_gps_to_num($exif['EXIF']['FocalLength']) . ' mm';
+                      }
+                      $meta['exif']['Lens'] = $exif['EXIF']['UndefinedTag:0xA434'] ?? ($exif['EXIF']['LensModel'] ?? '');
+
+                      // Add GPS if available and has actual data
+                      if (isset($exif['GPS']) && isset($exif['GPS']['GPSLatitude'])) {
+                          $lat = fm_get_gps_decimal($exif['GPS']['GPSLatitude'] ?? null, $exif['GPS']['GPSLatitudeRef'] ?? 'N');
+                          $lng = fm_get_gps_decimal($exif['GPS']['GPSLongitude'] ?? null, $exif['GPS']['GPSLongitudeRef'] ?? 'E');
+                          if ($lat !== null && $lng !== null) {
+                              $meta['exif']['Coordinates'] = "$lat, $lng";
+                              $meta['exif']['Lat'] = $lat;
+                              $meta['exif']['Lng'] = $lng;
+                          }
                       }
                   }
               }
@@ -2169,12 +2192,6 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               }
           }
       </script>
-  <?php
-      fm_show_footer();
-      exit;
-  }
-
-  // copy form POST
   if (isset($_POST['copy']) && !FM_READONLY) {
       $copy_files = isset($_POST['file']) ? $_POST['file'] : null;
       if (!is_array($copy_files) || empty($copy_files)) {
@@ -3392,7 +3409,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
           foreach ($files as $f) {
               $file_path = $path . '/' . $f;
               $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
-              $is_img = in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp'));
+              $is_img = in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp', 'heic', 'heif'));
               $icon_class = fm_get_file_icon_class($file_path);
               $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
                $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
@@ -3421,7 +3438,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   </div>
                   <div class="grid-item-menu context-menu-trigger"><i class="fa fa-ellipsis-v"></i></div>
                   <?php if($is_img): ?>
-                      <img src="<?=$img_src?>" loading="lazy">
+                      <div class="grid-icon"><img src="<?=$img_src?>" loading="lazy" class="<?= (in_array($ext, ['heic', 'heif']) ? 'heic-convert-target' : '') ?>" style="max-width:100%; max-height:100%; object-fit: cover; border-radius: 4px;"></div>
                   <?php else: ?>
                       <div class="grid-icon"><i class="<?=$icon_class?>"></i></div>
                   <?php endif; ?>
@@ -5016,6 +5033,8 @@ function fm_foldersize($path) {
       $fileTypes['jpg'] = 'image/jpg';
       $fileTypes['webp'] = 'image/webp';
       $fileTypes['avif'] = 'image/avif';
+      $fileTypes['heic'] = 'image/heic';
+      $fileTypes['heif'] = 'image/heif';
       $fileTypes['rar'] = 'application/rar';
 
       $fileTypes['ra'] = 'audio/x-pn-realaudio';
@@ -5079,6 +5098,29 @@ function fm_foldersize($path) {
           }
           return $files;
       }
+  }
+
+  /**
+   * Helper to convert EXIF GPS to decimal
+   */
+  function fm_get_gps_decimal($coordinate, $ref)
+  {
+      if (!$coordinate || !is_array($coordinate)) return null;
+      $degrees = count($coordinate) > 0 ? fm_gps_to_num($coordinate[0]) : 0;
+      $minutes = count($coordinate) > 1 ? fm_gps_to_num($coordinate[1]) : 0;
+      $seconds = count($coordinate) > 2 ? fm_gps_to_num($coordinate[2]) : 0;
+      $flip = ($ref == 'W' || $ref == 'S') ? -1 : 1;
+      return $flip * ($degrees + ($minutes / 60) + ($seconds / 3600));
+  }
+
+  function fm_gps_to_num($coordPart)
+  {
+      $parts = explode('/', $coordPart);
+      if (count($parts) <= 0) return 0;
+      if (count($parts) == 1) return (float)$parts[0];
+      $denominator = floatval($parts[1]);
+      if ($denominator == 0) return floatval($parts[0]);
+      return floatval($parts[0]) / $denominator;
   }
 
   /**
@@ -6043,6 +6085,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
           <?php print_external('pre-cloudflare'); ?>
           <?php print_external('css-bootstrap'); ?>
           <?php print_external('css-font-awesome'); ?>
+          <?php print_external('css-leaflet'); ?>
           <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
           <?php if (FM_USE_HIGHLIGHTJS && isset($_GET['view'])): ?>
               <?php print_external('css-highlightjs'); ?>
@@ -7947,6 +7990,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
           <?php print_external('js-jquery'); ?>
           <?php print_external('js-bootstrap'); ?>
           <?php print_external('js-jquery-datatables'); ?>
+          <?php print_external('js-heic2any'); ?>
+          <?php print_external('js-leaflet'); ?>
           <?php if (FM_USE_HIGHLIGHTJS && isset($_GET['view'])): ?>
               <?php print_external('js-highlightjs'); ?>
               <script>
@@ -8601,9 +8646,24 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                   metaHtml += '<div class="small mb-2 text-primary fw-bold"><i class="fa fa-info-circle"></i> Image Metadata:</div>';
                                   metaHtml += '<table class="table table-sm table-dark table-borderless small mb-0 opacity-75">';
                                   for (const [key, val] of Object.entries(res.meta.exif)) {
-                                      if (val) metaHtml += `<tr><td style="width:100px;">${key}:</td><td>${val}</td></tr>`;
+                                      if (val && key !== 'Lat' && key !== 'Lng') metaHtml += `<tr><td style="width:100px;">${key}:</td><td>${val}</td></tr>`;
                                   }
                                   metaHtml += '</table>';
+
+                                  // Add Map if GPS exists
+                                  if (res.meta.exif.Lat && res.meta.exif.Lng) {
+                                      metaHtml += '<div id="exif-map" style="height: 200px; width: 100%; border-radius: 8px; margin-top: 10px; border: 1px solid #444;"></div>';
+                                      setTimeout(() => {
+                                          if (window.exifMap) window.exifMap.remove();
+                                          window.exifMap = L.map('exif-map').setView([res.meta.exif.Lat, res.meta.exif.Lng], 13);
+                                          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                                              attribution: '&copy; OpenStreetMap'
+                                          }).addTo(window.exifMap);
+                                          L.marker([res.meta.exif.Lat, res.meta.exif.Lng]).addTo(window.exifMap)
+                                              .bindPopup(res.meta.exif.Coordinates)
+                                              .openPopup();
+                                      }, 300);
+                                  }
                               }
                               
                               // Handle Subtitles
@@ -8636,7 +8696,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       }
                   });
 
-                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
+                  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic', 'heif'].includes(ext)) {
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
                   } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
                       content.html('<div class="text-center"><video src="'+url+'" controls autoplay style="max-width:100%; max-height:70vh;"></video></div>');
@@ -9518,6 +9578,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       icon.removeClass('fa-th-large').addClass('fa-list');
                       if(save) localStorage.setItem('fm_view', 'grid');
                   }
+                  // Re-run HEIC conversion for the newly shown view
+                  if (typeof convertHeicElements === 'function') convertHeicElements();
               }
 
               function confirmMassAction(e, actionId, title, text) {
@@ -10341,6 +10403,124 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       <div class="d-flex align-items-center"><span class="type-other me-1" style="width:12px;height:12px;border-radius:2px;"></span> Others</div>
                   `);
               }
+          </script>
+          <script>
+            /**
+             * HEIC Image Engine
+             * Automatically converts HEIC/HEIF images to JPEG in the browser
+             */
+            /**
+             * HEIC Image Engine (Optimized)
+             * Features: Sequential Queue, Memory Caching, Performance Tuning
+             */
+            window.heicCache = window.heicCache || {};
+            window.heicQueue = [];
+            window.isHeicProcessing = false;
+
+            async function processHeicQueue() {
+                if (window.isHeicProcessing || window.heicQueue.length === 0) return;
+                
+                window.isHeicProcessing = true;
+                const item = window.heicQueue.shift();
+                const img = item.el;
+                const src = item.src;
+
+                // Check Cache First
+                if (window.heicCache[src]) {
+                    img.src = window.heicCache[src];
+                    img.dataset.heicProcessed = "true";
+                    img.style.opacity = '1';
+                    window.isHeicProcessing = false;
+                    processHeicQueue();
+                    return;
+                }
+
+                try {
+                    img.style.opacity = '0.5';
+                    const response = await fetch(src);
+                    if (!response.ok) throw new Error("Network error");
+                    const blob = await response.blob();
+                    
+                    // Quality optimization: Lower quality for small thumbnails
+                    const isThumbnail = img.classList.contains('heic-convert-target') || (img.width > 0 && img.width < 300);
+                    
+                    const convertedBlob = await heic2any({
+                        blob,
+                        toType: "image/jpeg",
+                        quality: isThumbnail ? 0.4 : 0.7
+                    });
+                    
+                    const url = URL.createObjectURL(Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob);
+                    
+                    // Store in cache
+                    window.heicCache[src] = url;
+                    
+                    img.src = url;
+                    img.dataset.heicProcessed = "true";
+                    img.style.opacity = '1';
+                } catch (e) {
+                    console.error("HEIC Engine Error:", e);
+                    img.dataset.heicProcessed = "failed";
+                    img.style.opacity = '1';
+                }
+
+                window.isHeicProcessing = false;
+                // Process next item after a small break to keep UI responsive
+                setTimeout(processHeicQueue, 50);
+            }
+
+            function convertHeicElements() {
+                if (typeof heic2any === 'undefined') return;
+                
+                const elements = document.querySelectorAll('img[src*=".heic" i], img[src*=".heif" i], .heic-convert-target');
+                elements.forEach(img => {
+                    const src = img.src || img.dataset.src;
+                    if (!src || img.dataset.heicProcessed === "true" || img.dataset.heicProcessed === "queued") return;
+
+                    // Check Cache
+                    if (window.heicCache[src]) {
+                        img.src = window.heicCache[src];
+                        img.dataset.heicProcessed = "true";
+                        img.style.opacity = '1';
+                        return;
+                    }
+
+                    img.dataset.heicProcessed = "queued";
+                    window.heicQueue.push({ el: img, src: src });
+                });
+
+                processHeicQueue();
+            }
+
+            // Run conversion on load and after AJAX calls
+            $(document).ready(function() {
+                // Run immediately for grid/list thumbnails
+                setTimeout(convertHeicElements, 500);
+                
+                // Listen for modal shows (preview)
+                const previewModal = document.getElementById('previewModal');
+                if (previewModal) {
+                    previewModal.addEventListener('shown.bs.modal', function () {
+                        setTimeout(convertHeicElements, 200);
+                    });
+                }
+                
+                // Re-run after any potential AJAX table redraws
+                if (window.table) {
+                    window.table.on('draw', function() {
+                        convertHeicElements();
+                    });
+                }
+            });
+
+            // Hook into preview logic
+            const originalFmPreview = window.fm_preview;
+            if (originalFmPreview) {
+                window.fm_preview = function() {
+                    originalFmPreview.apply(this, arguments);
+                    setTimeout(convertHeicElements, 300);
+                };
+            }
           </script>
           <div id="snackbar"></div>
       </body>
