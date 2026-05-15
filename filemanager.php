@@ -5309,10 +5309,14 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
       $isStickyNavBar = $sticky_navbar ? 'fixed-top' : '';
   ?>
       <nav class="navbar navbar-expand-md mb-4 main-nav <?php echo $isStickyNavBar ?> bg-body-tertiary" data-bs-theme="<?php echo FM_THEME; ?>">
+          <button class="btn btn-link text-secondary d-md-none me-2 p-0" type="button" id="sidebar-mobile-toggle" style="font-size: 1.5rem;">
+              <i class="fa fa-bars"></i>
+          </button>
           <a class="navbar-brand"> <?php echo lng('AppTitle') ?> </a>
-          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
-              <span class="navbar-toggler-icon"></span>
-          </button>           <div class="collapse navbar-collapse" id="navbarSupportedContent">
+          <button class="btn btn-link text-secondary d-md-none ms-auto p-0" type="button" id="details-mobile-toggle" style="font-size: 1.3rem;">
+              <i class="fa fa-info-circle"></i>
+          </button>
+          <div class="collapse navbar-collapse" id="navbarSupportedContent">
                <!-- Drive Selector Dynamic -->
                <div class="ms-md-2 me-md-2 mb-2 mb-md-0">
                    <div class="dropdown">
@@ -5884,6 +5888,77 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               }
 
               /* Mobile Responsive Styles */
+              @media (max-width: 992px) {
+                  #sidebar-pane {
+                      position: fixed !important;
+                      left: -280px !important;
+                      top: 56px !important;
+                      height: calc(100vh - 56px) !important;
+                      width: 280px !important;
+                      z-index: 1050 !important;
+                      transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                      box-shadow: 15px 0 30px rgba(0,0,0,0.3) !important;
+                      border-right: 1px solid var(--border-color) !important;
+                      display: flex !important;
+                  }
+                  #sidebar-pane.show-mobile {
+                      left: 0 !important;
+                  }
+                  #details-pane {
+                      position: fixed !important;
+                      right: -320px !important;
+                      top: 56px !important;
+                      height: calc(100vh - 56px) !important;
+                      width: 320px !important;
+                      max-width: 90vw !important;
+                      z-index: 1050 !important;
+                      transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                      box-shadow: -15px 0 30px rgba(0,0,0,0.3) !important;
+                      border-left: 1px solid var(--border-color) !important;
+                      display: flex !important;
+                      padding: 15px !important;
+                  }
+                  #details-pane.show-mobile {
+                      right: 0 !important;
+                  }
+                  .pane-resizer { display: none !important; }
+                  
+                  .mobile-overlay {
+                      position: fixed;
+                      top: 56px;
+                      left: 0;
+                      width: 100%;
+                      height: calc(100vh - 56px);
+                      background: rgba(0,0,0,0.6);
+                      backdrop-filter: blur(2px);
+                      z-index: 1040;
+                      display: none;
+                      opacity: 0;
+                      transition: opacity 0.3s ease;
+                  }
+                  .mobile-overlay.show {
+                      display: block;
+                      opacity: 1;
+                  }
+
+                  body { font-size: 14px; }
+                  .navbar-brand { font-size: 16px; }
+                  .table-responsive { display: none !important; }
+                  .grid-view-container { display: block !important; padding: 10px; }
+                  .grid-view-container .grid-item { width: calc(33.33% - 20px) !important; margin: 10px !important; }
+                  
+                  .breadcrumb-container { font-size: 12px; }
+              }
+
+              @media (max-width: 576px) {
+                  .grid-view-container .grid-item { width: calc(50% - 14px) !important; margin: 7px !important; height: 110px !important; }
+                  .grid-view-container .grid-item .grid-icon { font-size: 32px !important; margin-top: 10px !important; }
+                  .grid-view-container .grid-item img { height: 65px !important; }
+                  .grid-view-container .grid-item .grid-name { font-size: 10px !important; }
+                  .filename { max-width: 120px !important; }
+                  .breadcrumb-container { font-size: 11px; padding: 2px 4px !important; }
+              }
+
               @media (max-width: 768px) {
                   body {
                       font-size: 14px;
@@ -6528,11 +6603,6 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               .details-label { color: var(--text-secondary); }
               .details-value { color: var(--text-primary); font-weight: 500; }
 
-              /* Mobile adjustments */
-              @media (max-width: 992px) {
-                  #sidebar-pane { width: 0; min-width: 0; overflow: hidden; border-right: none; }
-                  #details-pane { width: 0; min-width: 0; overflow: hidden; border-left: none; }
-              }
 
               /* Grid View Enhancements */
               .grid-item {
@@ -7433,6 +7503,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
 
       <body class="<?php echo (FM_THEME == "dark") ? 'theme-dark' : ''; ?> <?php echo $isStickyNavBar; ?>">
           <div id="wrapper" class="container-fluid">
+              <!-- Mobile Off-Canvas Overlay -->
+              <div class="mobile-overlay" id="mobile-overlay"></div>
               <!-- New Item creation -->
               <div class="modal fade" id="createNewItem" tabindex="-1" role="dialog" data-bs-backdrop="static" data-bs-keyboard="false" aria-labelledby="newItemModalLabel" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
                   <div class="modal-dialog" role="document">
@@ -10577,6 +10649,75 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                     window.table.on('draw', initVideoThumbnails);
                 }
             });
+
+            // 15. Mobile Off-Canvas Toggle
+            (function() {
+                var $sidebar = document.getElementById('sidebar-pane');
+                var $details = document.getElementById('details-pane');
+                var $overlay = document.getElementById('mobile-overlay');
+                var $sidebarBtn = document.getElementById('sidebar-mobile-toggle');
+                var $detailsBtn = document.getElementById('details-mobile-toggle');
+
+                if (!$sidebarBtn || !$sidebar) return; // only on main page
+
+                function isMobile() { return window.innerWidth <= 992; }
+
+                function closePanels() {
+                    $sidebar.classList.remove('show-mobile');
+                    $details.classList.remove('show-mobile');
+                    $overlay.classList.remove('show');
+                    document.body.style.overflow = '';
+                }
+
+                function openSidebar() {
+                    $details.classList.remove('show-mobile');
+                    $sidebar.classList.add('show-mobile');
+                    $overlay.classList.add('show');
+                    document.body.style.overflow = 'hidden';
+                }
+
+                function openDetails() {
+                    $sidebar.classList.remove('show-mobile');
+                    $details.classList.add('show-mobile');
+                    $overlay.classList.add('show');
+                    document.body.style.overflow = 'hidden';
+                }
+
+                $sidebarBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (!isMobile()) return;
+                    $sidebar.classList.contains('show-mobile') ? closePanels() : openSidebar();
+                });
+
+                $detailsBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (!isMobile()) return;
+                    $details.classList.contains('show-mobile') ? closePanels() : openDetails();
+                });
+
+                $overlay.addEventListener('click', closePanels);
+
+                // Close sidebar after folder navigation
+                document.addEventListener('click', function(e) {
+                    if (!isMobile()) return;
+                    var treeHeader = e.target.closest('.tree-header, .qa-item');
+                    if (treeHeader) setTimeout(closePanels, 300);
+                });
+
+                // Auto-show details pane when a file is selected (only on mobile)
+                document.addEventListener('click', function(e) {
+                    if (!isMobile()) return;
+                    var row = e.target.closest('tr[data-name], .grid-item[data-name]');
+                    if (row && row.dataset.type === 'file') {
+                        setTimeout(openDetails, 150);
+                    }
+                });
+
+                // Reset on resize to desktop
+                window.addEventListener('resize', function() {
+                    if (!isMobile()) closePanels();
+                });
+            })();
           </script>
           <style>
               .video-thumb-container { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #1a1a1a; border-radius: 4px; overflow: hidden; }
