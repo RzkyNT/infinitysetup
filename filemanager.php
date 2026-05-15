@@ -8712,6 +8712,48 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                               console.error('Failed to load EmbedPDF:', err);
                               content.html('<div class="alert alert-danger">Failed to load PDF Viewer. Please check your connection.</div>');
                           });
+                  } else if (ext === 'csv') {
+                      content.html('<div class="spinner-border text-primary" role="status"></div>');
+                      fetch(url).then(r => r.text()).then(data => {
+                          let rows = data.split("\n");
+                          let tableHtml = '<div class="table-responsive" style="max-height:70vh;"><table class="table table-sm table-dark table-striped table-hover small">';
+                          rows.forEach((row, i) => {
+                              let cols = row.split(",");
+                              tableHtml += '<tr>';
+                              cols.forEach(col => {
+                                  tableHtml += i === 0 ? `<th class="bg-primary">${col}</th>` : `<td>${col}</td>`;
+                              });
+                              tableHtml += '</tr>';
+                          });
+                          tableHtml += '</table></div>';
+                          content.html(tableHtml);
+                      });
+                  } else if (['xlsx', 'xls'].includes(ext)) {
+                      content.html('<div class="spinner-border text-primary" role="status"></div>');
+                      const script = document.createElement('script');
+                      script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+                      script.onload = () => {
+                          fetch(url).then(r => r.arrayBuffer()).then(ab => {
+                              const wb = XLSX.read(ab, {type: "array"});
+                              const ws = wb.Sheets[wb.SheetNames[0]];
+                              const html = XLSX.utils.sheet_to_html(ws, { id: "excel-table", editable: false });
+                              content.html('<div class="table-responsive text-dark bg-light p-3 rounded" style="max-height:70vh;">' + html + '</div>');
+                              $('#excel-table').addClass('table table-sm table-bordered');
+                          });
+                      };
+                      document.head.appendChild(script);
+                  } else if (ext === 'docx') {
+                      content.html('<div class="spinner-border text-primary" role="status"></div>');
+                      const script = document.createElement('script');
+                      script.src = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js";
+                      script.onload = () => {
+                          fetch(url).then(r => r.arrayBuffer()).then(ab => {
+                              mammoth.convertToHtml({arrayBuffer: ab}).then(res => {
+                                  content.html('<div class="bg-white text-dark p-4 rounded shadow-sm" style="max-height:70vh; overflow-y:auto; font-family:serif;">' + res.value + '</div>');
+                              });
+                          });
+                      };
+                      document.head.appendChild(script);
                   } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'heic', 'heif'].includes(ext)) {
                       content.html('<div class="text-center"><img src="'+url+'" style="max-width:100%; max-height:70vh; object-fit:contain;"></div>');
                   } else if (['mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'm4v'].includes(ext)) {
