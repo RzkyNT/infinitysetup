@@ -1723,6 +1723,10 @@ function dump_database_to_files_split($pdo, $baseFile, $dbName, $tables = [], $m
             $rowCount = 0;
             while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                 $rowCount++;
+                if ($rowCount % 500 === 0 && file_exists(__DIR__ . DIRECTORY_SEPARATOR . 'temp_backups' . DIRECTORY_SEPARATOR . 'cancel_backup.flag')) {
+                    fclose($handle);
+                    throw new Exception("Backup cancelled by user.");
+                }
                 $keys = array_keys($row);
                 $vals = array_map(function($v) use ($pdo) {
                     if ($v === null) return 'NULL';
@@ -6479,6 +6483,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
             if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+            @unlink($tmpDir . DIRECTORY_SEPARATOR . 'cancel_backup.flag');
 
             $results = $_SESSION['gh_backup_progress'] ?? [];
             $resumeMode = !empty($results);
@@ -6531,6 +6536,13 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $filenamePart = basename($partFile);
                     if (!file_exists($partFile)) continue;
                     
+                    if (file_exists($tmpDir . DIRECTORY_SEPARATOR . 'cancel_backup.flag')) {
+                        if (session_status() === PHP_SESSION_NONE) @session_start();
+                        unset($_SESSION['gh_backup_status']);
+                        session_write_close();
+                        throw new Exception("Backup cancelled by user.");
+                    }
+
                     // Update Status: Pushing (Write & Close immediately)
                     if (session_status() === PHP_SESSION_NONE) @session_start();
                     $_SESSION['gh_backup_status'] = [
@@ -6697,6 +6709,21 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode($status);
         exit;
     }
+    // --- CANCEL GITHUB BACKUP ---
+    elseif ($action === 'cancel_github_backup') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+        if (!is_dir($tmpDir)) @mkdir($tmpDir, 0755, true);
+        file_put_contents($tmpDir . DIRECTORY_SEPARATOR . 'cancel_backup.flag', '1');
+        
+        if (session_status() === PHP_SESSION_NONE) @session_start();
+        $_SESSION['gh_backup_status'] = ['status' => 'Cancelling... Please wait.'];
+        session_write_close();
+        
+        echo json_encode(['success' => true]);
+        exit;
+    }
     // --- CLEAR GITHUB PROGRESS ---
     elseif ($action === 'clear_github_progress') {
         while (ob_get_level()) ob_end_clean();
@@ -6775,7 +6802,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         'name' => ($currentPath ? $currentPath . '/' : '') . $item['name'],
                         'download_url' => $item['download_url'],
                         'size' => $item['size'],
-                        'path' => $item['path']
+                        'path' => $item['path'],
+                        'sha' => $item['sha']
                     ];
                 } elseif ($item['type'] === 'dir') {
                     // Limit recursion depth to prevent API abuse, but enough for Date/Table structure
@@ -6854,6 +6882,27 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => true]);
         } catch (Exception $e) {
             echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- CLEAR TEMP BACKUPS ---
+    elseif ($action === 'clear_temp_backups') {
+        while (ob_get_level()) ob_end_clean();
+        header('Content-Type: application/json');
+        
+        $tmpDir = __DIR__ . DIRECTORY_SEPARATOR . 'temp_backups';
+        if (is_dir($tmpDir)) {
+            $files = glob($tmpDir . DIRECTORY_SEPARATOR . '*');
+            $count = 0;
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    @unlink($file);
+                    $count++;
+                }
+            }
+            echo json_encode(['success' => true, 'message' => "$count temporary file(s) cleared."]);
+        } else {
+            echo json_encode(['success' => true, 'message' => "Temp directory does not exist or already empty."]);
         }
         exit;
     }
@@ -14618,6 +14667,12 @@ var advancedFilters = null;
                                 <button type="button" class="btn btn-sm" onclick="openGithubSettings()" style="background:#444;">
                                     <i class="fas fa-cog"></i> Settings
                                 </button>
+                                <button type="button" class="btn btn-sm" onclick="checkMissingBackups()" style="background:#f59e0b; color:white;" title="Check Missing Backups Today">
+                                    <i class="fas fa-search"></i> Check
+                                </button>
+                                <button type="button" class="btn btn-sm" onclick="clearTempBackups()" style="background:#ef4444; color:white;" title="Clear Temporary Backups">
+                                    <i class="fas fa-trash-alt"></i> Clear Temp
+                                </button>
                                 <button type="button" class="btn btn-primary btn-sm" onclick="pushBackupToGithub()">
                                     <i class="fas fa-cloud-upload-alt"></i> Push
                                 </button>
@@ -14969,7 +15024,7 @@ var advancedFilters = null;
                                     fd.append('action', 'delete_github_backup');
                                     fd.append('path', item.path);
                                     fd.append('sha', item.sha);
-                                    const res = await fetchJson('?', { method: 'POST', body: fd });
+                                    const res = await fetchJson(window.location.pathname, { method: 'POST', body: fd });
                                     if (res.success) count++;
                                 } catch (e) { console.error("Failed", item.name, e); }
                             }
@@ -14990,7 +15045,7 @@ var advancedFilters = null;
                             const fd = new FormData();
                             fd.append('action', 'restore_github_backup');
                             fd.append('urls', urls);
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
                 }
@@ -15015,15 +15070,150 @@ var advancedFilters = null;
                             fd.append('action', 'delete_github_backup');
                             fd.append('path', path);
                             fd.append('sha', sha);
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Deleted' }); loadGithubBackups(); } });
+                }
+
+                function clearTempBackups() {
+                    Swal.fire({
+                        title: 'Clear Temporary Backups?',
+                        text: 'This will delete all files inside the temp_backups folder on your server.',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        confirmButtonText: 'Clear Now',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const fd = new FormData();
+                            fd.append('action', 'clear_temp_backups');
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                        }
+                    }).then((r) => { if (r.isConfirmed) { Swal.fire('Cleared!', r.value.message, 'success'); } });
+                }
+
+                function checkMissingBackups() {
+                    Swal.fire({
+                        title: 'Checking Backups...',
+                        text: "Analyzing today's backups on GitHub...",
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading(); }
+                    });
+                    
+                    const params = new URLSearchParams();
+                    params.append('action', 'get_github_backups');
+                    
+                    fetchJson(window.location.pathname, { method: 'POST', body: params })
+                    .then(data => {
+                        if (!data) data = [];
+                        
+                        // Create a YYYY-MM-DD string for today local time
+                        const tzoffset = (new Date()).getTimezoneOffset() * 60000;
+                        const today = (new Date(Date.now() - tzoffset)).toISOString().split('T')[0];
+                        
+                        const todaysFiles = data.filter(f => f.path.includes(`/${today}/`));
+                        
+                        const backedUpTables = new Set();
+                        let hasCombined = false;
+                        const incompleteParts = [];
+                        
+                        // Group by folder
+                        const folderGroups = {};
+                        todaysFiles.forEach(f => {
+                            // Path format: backups/2026-05-17/table_name/backup_....sql
+                            const segments = f.path.split('/');
+                            // find index of today's date
+                            const dateIdx = segments.findIndex(s => s === today);
+                            if (dateIdx !== -1 && segments.length > dateIdx + 1) {
+                                const folderName = segments[dateIdx + 1];
+                                if (folderName === 'full_backup') {
+                                    hasCombined = true;
+                                } else if (folderName.endsWith('.sql')) {
+                                    // Old format directly in date folder
+                                    if (folderName.includes('_combined_')) hasCombined = true;
+                                } else {
+                                    backedUpTables.add(folderName);
+                                }
+                                
+                                // To check incomplete parts: Group files by base name
+                                const filename = segments[segments.length - 1];
+                                const baseMatch = filename.match(/^(.*)\\.part\\d+\\.sql$/);
+                                if (baseMatch) {
+                                    const baseName = baseMatch[1];
+                                    if (!folderGroups[baseName]) folderGroups[baseName] = [];
+                                    folderGroups[baseName].push(filename);
+                                }
+                            }
+                        });
+                        
+                        // Check missing parts in sequences
+                        Object.keys(folderGroups).forEach(baseName => {
+                            const files = folderGroups[baseName];
+                            if (files.length > 1) {
+                                const parts = files.map(f => parseInt(f.match(/\\.part(\\d+)\\.sql$/)[1])).sort((a, b) => a - b);
+                                for (let i = 0; i < parts.length - 1; i++) {
+                                    if (parts[i + 1] - parts[i] > 1) {
+                                        incompleteParts.push(`${baseName} (Missing part between ${parts[i]} and ${parts[i+1]})`);
+                                    }
+                                }
+                            }
+                        });
+                        
+                        let msg = `<div style="text-align:left; font-size:0.9rem;">`;
+                        
+                        if (hasCombined) {
+                            msg += `<div style="color:#10b981; margin-bottom:10px;"><i class="fas fa-check-circle"></i> Full combined database backup found for today.</div>`;
+                        } else {
+                            const missingTables = ALL_TABLES.filter(t => !backedUpTables.has(t));
+                            if (missingTables.length === 0) {
+                                msg += `<div style="color:#10b981; margin-bottom:10px;"><i class="fas fa-check-circle"></i> All tables have been individually backed up today.</div>`;
+                            } else {
+                                msg += `<div style="color:#f59e0b; margin-bottom:5px;"><i class="fas fa-exclamation-triangle"></i> <b>Missing Tables (${missingTables.length}):</b></div>`;
+                                msg += `<div style="max-height:120px; overflow:auto; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; margin-bottom:15px; color:#ddd;">`;
+                                msg += missingTables.map(t => `- ${t}`).join('<br>');
+                                msg += `</div>`;
+                            }
+                        }
+                        
+                        if (incompleteParts.length > 0) {
+                            msg += `<div style="color:#ef4444; margin-bottom:5px;"><i class="fas fa-times-circle"></i> <b>Incomplete Part Sequences:</b></div>`;
+                            msg += `<div style="max-height:100px; overflow:auto; background:rgba(239,68,68,0.1); padding:8px; border-radius:6px; color:#f87171;">`;
+                            msg += incompleteParts.map(p => `- ${p}`).join('<br>');
+                            msg += `</div>`;
+                        } else if (todaysFiles.length > 0) {
+                            msg += `<div style="color:#10b981;"><i class="fas fa-check-circle"></i> All multipart sequences appear contiguous.</div>`;
+                        }
+                        
+                        msg += `</div>`;
+                        
+                        Swal.fire({
+                            title: "Today's Backup Status",
+                            html: msg,
+                            icon: (hasCombined || incompleteParts.length === 0 && Array.from(backedUpTables).length === ALL_TABLES.length) ? 'success' : 'warning',
+                            width: 500
+                        });
+                    })
+                    .catch(err => {
+                        Swal.fire('Error', 'Failed to check backups: ' + err.message, 'error');
+                    });
+                }
+
+                function cancelGithubBackup() {
+                    const fd = new FormData();
+                    fd.append('action', 'cancel_github_backup');
+                    fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(() => {
+                        const statusEl = document.getElementById('gh-progress-status');
+                        if (statusEl) {
+                            statusEl.innerText = 'Cancelling... Please wait.';
+                            statusEl.style.color = '#ef4444';
+                        }
+                    });
                 }
 
                 function clearGhProgress() {
                     const fd = new FormData();
                     fd.append('action', 'clear_github_progress');
-                    fetchJson('?', { method: 'POST', body: fd }).then(() => {
+                    fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(() => {
                         const alert = document.getElementById('resume-alert');
                         if (alert) alert.style.display = 'none';
                         Swal.fire('Cleared', 'Progress discarded. You can start a fresh backup.', 'info');
@@ -15094,19 +15284,22 @@ var advancedFilters = null;
                                         <div style="font-weight:bold; color:var(--accent);" id="gh-progress-table">Initializing...</div>
                                         <div style="font-size:0.85rem; color:var(--text-secondary);" id="gh-progress-status">Preparing data...</div>
                                         <div style="margin-top:10px; height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden;">
-                                            <div id="gh-progress-bar" style="width:0%; height:100%; background:var(--accent); transition:width 0.3s;"></div>
-                                        </div>
+                                        <div id="gh-progress-bar" style="width:0%; height:100%; background:var(--accent); transition:width 0.3s;"></div>
                                     </div>
-                                `,
-                                allowOutsideClick: false, 
-                                didOpen: () => { 
-                                    Swal.showLoading(); 
+                                    <div style="margin-top:15px; text-align:center;">
+                                        <button onclick="cancelGithubBackup()" class="btn btn-sm btn-danger"><i class="fas fa-times"></i> Force Stop</button>
+                                    </div>
+                                </div>
+                            `,
+                            allowOutsideClick: false, 
+                            didOpen: () => { 
+                                Swal.showLoading(); 
                                     let isPolling = false;
                                     pollInterval = setInterval(async () => {
                                         if (isPolling) return;
                                         isPolling = true;
                                         try {
-                                            const status = await fetchJson('?action=get_gh_backup_status');
+                                            const status = await fetchJson(window.location.pathname + '?action=get_gh_backup_status');
                                             if (status && status.table) {
                                                 document.getElementById('gh-progress-table').innerText = `Table: ${status.table} (${status.table_index}/${status.total_tables})`;
                                                 document.getElementById('gh-progress-status').innerText = `${status.status} ${status.total_parts > 1 ? `(Part ${status.part}/${status.total_parts})` : ''}`;
@@ -15123,7 +15316,7 @@ var advancedFilters = null;
                             fd.append('mode', mode);
                             if (tables.length > 0) fd.append('tables', tables.join(','));
                             
-                            fetchJson('?', { method: 'POST', body: fd })
+                            fetchJson(window.location.pathname, { method: 'POST', body: fd })
                                 .then(data => {
                                     clearInterval(pollInterval);
                                     if (data.success) {
@@ -15152,7 +15345,7 @@ var advancedFilters = null;
                             const fd = new FormData();
                             fd.append('action', 'restore_github_backup');
                             fd.append('url', url);
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading...', 'success').then(() => location.reload()); });
                 }
@@ -15331,7 +15524,7 @@ var advancedFilters = null;
                             fd.append('action', 'restore_telegram_backup');
                             fd.append('file_id', fileId);
                             fd.append('password', password);
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) Swal.fire('Restored!', 'Reloading database...', 'success').then(() => location.reload()); });
                 }
@@ -15449,7 +15642,7 @@ var advancedFilters = null;
                             const fd = new FormData();
                             fd.append('action', 'bulk_delete_telegram_backup');
                             fd.append('items', JSON.stringify(selected));
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => {
                         if (r.isConfirmed) {
@@ -15472,7 +15665,7 @@ var advancedFilters = null;
                             fd.append('action', 'delete_telegram_backup');
                             fd.append('date_id', dateId);
                             fd.append('message_id', msgId);
-                            return fetchJson('?', { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
+                            return fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(d => { if (!d.success) throw new Error(d.message); return d; });
                         }
                     }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Removed' }).then(() => location.reload()); } });
                 }
@@ -15713,7 +15906,7 @@ var advancedFilters = null;
                     document.addEventListener('DOMContentLoaded', () => {
                         const fd = new FormData();
                         fd.append('action', 'push_github_backup');
-                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                        fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(res => {
                             if (res.success && typeof loadGithubBackups === 'function') loadGithubBackups();
                             console.log('GitHub Auto-backup:', res.message);
                         }).catch(e => console.error('GitHub Auto-backup failed', e));
@@ -15729,7 +15922,7 @@ var advancedFilters = null;
                     document.addEventListener('DOMContentLoaded', () => {
                         const fd = new FormData();
                         fd.append('action', 'push_telegram_backup');
-                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                        fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(res => {
                             console.log('Telegram Auto-backup:', res.message);
                             if (res.success) location.reload();
                         }).catch(e => console.error('Telegram Auto-backup failed', e));
@@ -15743,7 +15936,7 @@ var advancedFilters = null;
                     document.addEventListener('DOMContentLoaded', () => {
                         const fd = new FormData();
                         fd.append('action', 'send_telegram_health_report');
-                        fetchJson('?', { method: 'POST', body: fd }).then(res => {
+                        fetchJson(window.location.pathname, { method: 'POST', body: fd }).then(res => {
                             console.log('Daily Health Report:', res.message);
                         }).catch(e => console.error('Health Report failed', e));
                     });
