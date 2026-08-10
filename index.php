@@ -300,9 +300,11 @@ if ($current_page === 'index.php') {
     $tools = [
         'filemanager.php' => ['icon' => 'fa-folder-open', 'label' => 'File Manager', 'color' => '#ffc107'],
         'adminer.php' => ['icon' => 'fa-database', 'label' => 'Database', 'color' => '#28a745'],
+        'system.php' => ['icon' => 'fa-terminal', 'label' => 'System & Terminal', 'color' => '#0dcaf0'],
     ];
 
     $updateAlert = null;
+    
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_action'])) {
         $linkFileUrl = "https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/link.txt";
         
