@@ -7963,7 +7963,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                         </div>
                         <div class="modal-body p-4">
                             <div class="alert alert-info mb-3">
-                                <i class="fa fa-info-circle"></i> <strong>Format Instructions:</strong><br>
+                                <i class="fa fa-info-circle"></i>pada CMD tuliskan cpyall <strong>Format Instructions:</strong><br>
                                 Paste content in this format:<br>
                                 <code style="display: block; margin-top: 8px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
                                     ============ FILE: index.php ============<br>
