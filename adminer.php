@@ -12558,6 +12558,9 @@ var advancedFilters = null;
     max-height: 80vh !important;
     object-fit: contain;
     border-radius: 8px;
+    margin: 0;
+    padding: 10px;
+    border-radius: 10px;
 }
 
 .dark-modal {
