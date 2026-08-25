@@ -12568,6 +12568,9 @@ var advancedFilters = null;
     color: var(--text-primary) !important;
 }
 
+.swal2-popup.swal2-modal.dark-modal.swal2-show {
+  padding: 20px !important;
+}
 /* Foreign Key Preview Styles */
 .fk-cell-wrapper {
     display: inline-flex;
