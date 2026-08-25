@@ -1,4 +1,160 @@
 <?php
+// Bulk Paste Handler - MUST BE FIRST, BEFORE ANY OUTPUT
+if (isset($_POST['bulk_paste'])) {
+    // Don't require index.php yet for AJAX calls
+    session_start();
+    
+    // Clear any output
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    
+    // Set JSON header
+    header('Content-Type: application/json');
+    
+    // Basic validation
+    if (!isset($_POST['token'])) {
+        echo json_encode(['success' => false, 'message' => 'Token missing']);
+        exit;
+    }
+    
+    // Now we can require index for session/auth checks
+    require_once __DIR__ . '/index.php';
+    
+    // Verify token
+    if (!isset($_SESSION['token']) || $_SESSION['token'] !== $_POST['token']) {
+        echo json_encode(['success' => false, 'message' => 'Invalid token']);
+        exit;
+    }
+    
+    // Check RBAC permission
+    if (!has_permission('filemanager', 'write')) {
+        echo json_encode(['success' => false, 'message' => 'No write permission']);
+        exit;
+    }
+    
+    // Get clipboard content
+    $clipboardContent = $_POST['clipboard_content'] ?? '';
+    
+    if (empty($clipboardContent)) {
+        echo json_encode(['success' => false, 'message' => 'Clipboard content is empty']);
+        exit;
+    }
+    
+    // Determine target path
+    // We need to define FM_ROOT_PATH early
+    $doc_root = isset($_SERVER['DOCUMENT_ROOT']) ? $_SERVER['DOCUMENT_ROOT'] : __DIR__;
+    $root_path = realpath($doc_root . '/..');
+    if (!$root_path || !@is_dir($root_path)) {
+        $root_path = $doc_root;
+    }
+    
+    $targetPath = $root_path;
+    if (isset($_GET['p']) && $_GET['p'] != '') {
+        $targetPath .= '/' . trim($_GET['p'], '/');
+    }
+    
+    // Parse clipboard content
+    $pattern = '/={40,}\s*FILE:\s*([^\s=]+)\s*={40,}\s*(.*?)(?=={40,}\s*FILE:|$)/s';
+    preg_match_all($pattern, $clipboardContent, $matches, PREG_SET_ORDER);
+    
+    if (empty($matches)) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'No valid file format found. Use at least 40 equal signs (=) as separator.'
+        ]);
+        exit;
+    }
+    
+    $successCount = 0;
+    $errorCount = 0;
+    $errors = [];
+    $createdFiles = [];
+    $debugInfo = [];
+    
+    foreach ($matches as $match) {
+        $fileName = trim($match[1]);
+        $fileContent = trim($match[2]);
+        
+        // Clean filename
+        $fileName = str_replace(['/', '\\'], '', $fileName);
+        
+        // Validate filename
+        if (empty($fileName) || $fileName == '.' || $fileName == '..') {
+            $errorCount++;
+            $errors[] = "Invalid filename: $fileName";
+            continue;
+        }
+        
+        // Check extension (basic check, no complex validation needed for AJAX)
+        $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        $allowedExts = ['php', 'html', 'css', 'js', 'txt', 'json', 'xml', 'md', 'sql', 'htaccess', 'env'];
+        if (!in_array($ext, $allowedExts)) {
+            $errorCount++;
+            $errors[] = "File extension not allowed: $fileName";
+            continue;
+        }
+        
+        $fullPath = $targetPath . '/' . $fileName;
+        
+        // Debug info
+        $debugInfo[] = [
+            'filename' => $fileName,
+            'fullPath' => $fullPath,
+            'targetPath' => $targetPath,
+            'contentLength' => strlen($fileContent),
+            'isWritable' => is_writable($targetPath)
+        ];
+        
+        // Write file
+        $result = @file_put_contents($fullPath, $fileContent);
+        if ($result !== false) {
+            $successCount++;
+            $createdFiles[] = $fileName;
+        } else {
+            $errorCount++;
+            $lastError = error_get_last();
+            $errors[] = "Failed to write: $fileName" . ($lastError ? " - " . $lastError['message'] : '');
+        }
+    }
+    
+    // Generate message
+    $message = '';
+    if ($successCount > 0) {
+        $message = sprintf('Successfully created/updated %d file(s)', $successCount);
+        if (!empty($createdFiles)) {
+            $message .= ': ' . implode(', ', $createdFiles);
+        }
+    }
+    
+    if ($errorCount > 0) {
+        $errorMsg = sprintf('Failed to process %d file(s)', $errorCount);
+        if (!empty($errors)) {
+            $errorMsg .= ': ' . implode(', ', $errors);
+        }
+        if ($successCount > 0) {
+            $message .= ' | ' . $errorMsg;
+        } else {
+            $message = $errorMsg;
+        }
+    }
+    
+    echo json_encode([
+        'success' => $successCount > 0,
+        'message' => $message,
+        'stats' => [
+            'success' => $successCount,
+            'errors' => $errorCount,
+            'total' => count($matches),
+            'createdFiles' => $createdFiles,
+            'errors' => $errors
+        ],
+        'debug' => $debugInfo
+    ]);
+    exit;
+}
+
+// Normal page load continues...
 require_once __DIR__ . '/index.php';
 
 // RBAC Check for FileManager
@@ -3369,6 +3525,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       <div class="btn-group btn-group-sm" role="group">
                           <a href="#" onclick="showBulkCopyModal(event);" class="btn btn-outline-primary" title="Copy"><i class="fa fa-files-o"></i></a>
                           <a href="#" onclick="showBulkMoveModal(event);" class="btn btn-outline-primary" title="Move"><i class="fa fa-arrow-right"></i></a>
+                          <a href="#" onclick="showBulkPasteModal(event);" class="btn btn-outline-success" title="Bulk Paste/Create Files"><i class="fa fa-clipboard"></i> Paste</a>
                       </div>
                       
                       <!-- Utilities -->
@@ -7796,6 +7953,69 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                 </div>
             </div>
 
+            <!--Bulk Paste Modal -->
+            <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="bulkPasteDialog" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog modal-lg" role="document">
+                    <div class="modal-content rounded-3 shadow">
+                        <div class="modal-header border-bottom">
+                            <h5 class="modal-title"><i class="fa fa-clipboard me-2"></i>Bulk Paste / Create Files</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body p-4">
+                            <div class="alert alert-info mb-3">
+                                <i class="fa fa-info-circle"></i> <strong>Format Instructions:</strong><br>
+                                Paste content in this format:<br>
+                                <code style="display: block; margin-top: 8px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
+                                    ============ FILE: index.php ============<br>
+                                    &lt;?php echo "Hello"; ?&gt;<br>
+                                    <br>
+                                    ============ FILE: style.css ============<br>
+                                    body { margin: 0; }
+                                </code>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-paste"></i> Clipboard Content
+                                    <span class="text-muted small">(Minimum 40 equal signs as separator)</span>
+                                </label>
+                                <textarea 
+                                    id="bulk-paste-content" 
+                                    class="form-control font-monospace" 
+                                    rows="10" 
+                                    placeholder="Paste your multi-file content here..."
+                                    style="background: var(--bg-input); border: 1px solid var(--border-color); font-size: 0.85rem;"
+                                    oninput="previewBulkPaste()"></textarea>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-eye"></i> Preview
+                                </label>
+                                <div id="bulk-paste-preview" 
+                                     class="border rounded p-3" 
+                                     style="max-height: 300px; overflow-y: auto; background: var(--bg-input); border-color: var(--border-color) !important;">
+                                    <div class="text-muted fst-italic">Paste your content above to see preview...</div>
+                                </div>
+                            </div>
+                            
+                            <div class="alert alert-warning mb-0">
+                                <i class="fa fa-exclamation-triangle"></i> 
+                                <strong>Warning:</strong> Files with the same name will be overwritten!
+                            </div>
+                        </div>
+                        <div class="modal-footer border-top">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                                <i class="fa fa-times-circle me-2"></i>Cancel
+                            </button>
+                            <button type="button" class="btn btn-success" onclick="executeBulkPaste()">
+                                <i class="fa fa-check-circle me-2"></i><strong>Create Files</strong>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Preview Modal -->
             <div class="modal fade" id="previewModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
                 <div class="modal-dialog modal-xl" role="document">
@@ -8494,6 +8714,198 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
 
             function selectBulkCopyDestination(path) {
                 $("#js-bulk-copy-to").val(path);
+            }
+
+            // Bulk Paste Functions
+            function showBulkPasteModal(e) {
+                e.preventDefault();
+                $("#bulkPasteDialog").modal('show');
+                $("#bulk-paste-content").val('');
+                $("#bulk-paste-preview").html('<div class="text-muted fst-italic">Paste your content above to see preview...</div>');
+                return false;
+            }
+
+            function previewBulkPaste() {
+                const content = $("#bulk-paste-content").val();
+                const preview = $("#bulk-paste-preview");
+                
+                if (!content.trim()) {
+                    preview.html('<div class="text-muted fst-italic">Paste your content above to see preview...</div>');
+                    return;
+                }
+                
+                // Parse content
+                const pattern = /={40,}\s*FILE:\s*([^\s=]+)\s*={40,}\s*([\s\S]*?)(?=={40,}\s*FILE:|$)/g;
+                const matches = [];
+                let match;
+                
+                while ((match = pattern.exec(content)) !== null) {
+                    matches.push({
+                        filename: match[1].trim(),
+                        content: match[2].trim(),
+                        size: new Blob([match[2].trim()]).size
+                    });
+                }
+                
+                if (matches.length === 0) {
+                    preview.html('<div class="alert alert-warning mb-0"><i class="fa fa-exclamation-triangle"></i> No valid files found. Make sure format is correct.</div>');
+                    return;
+                }
+                
+                // Generate preview
+                let html = '<div class="alert alert-success mb-2"><i class="fa fa-check-circle"></i> Found <strong>' + matches.length + '</strong> file(s) to create/update</div>';
+                html += '<table class="table table-sm table-dark mb-0">';
+                html += '<thead><tr><th>Filename</th><th>Size</th><th>Content Preview</th></tr></thead><tbody>';
+                
+                matches.forEach(function(file) {
+                    const sizeFormatted = formatBytes(file.size);
+                    const contentPreview = file.content.substring(0, 50) + (file.content.length > 50 ? '...' : '');
+                    html += '<tr>';
+                    html += '<td><i class="fa fa-file-code-o"></i> ' + escapeHtml(file.filename) + '</td>';
+                    html += '<td>' + sizeFormatted + '</td>';
+                    html += '<td class="text-muted small">' + escapeHtml(contentPreview) + '</td>';
+                    html += '</tr>';
+                });
+                
+                html += '</tbody></table>';
+                preview.html(html);
+            }
+
+            function formatBytes(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+            }
+
+            function escapeHtml(text) {
+                const map = {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#039;'
+                };
+                return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+            }
+
+            function executeBulkPaste() {
+                const content = $("#bulk-paste-content").val();
+                
+                if (!content.trim()) {
+                    Swal.fire({
+                        title: 'Error',
+                        text: 'Clipboard content is empty',
+                        icon: 'error'
+                    });
+                    return;
+                }
+                
+                // Show loading
+                Swal.fire({
+                    title: 'Creating Files...',
+                    html: 'Please wait while files are being created',
+                    allowOutsideClick: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
+                
+                // Submit form
+                $.ajax({
+                    type: 'POST',
+                    url: window.location.pathname + window.location.search,
+                    data: {
+                        bulk_paste: 1,
+                        clipboard_content: content,
+                        token: window.csrf
+                    },
+                    dataType: 'json',
+                    success: function(response) {
+                        Swal.close();
+                        
+                        // Check if response is successful
+                        if (response.success) {
+                            $("#bulkPasteDialog").modal('hide');
+                            
+                            // Show detailed success message
+                            let message = response.message || 'Files created successfully';
+                            if (response.stats) {
+                                message += `\n\n✅ Created: ${response.stats.success} file(s)`;
+                                if (response.stats.errors > 0) {
+                                    message += `\n❌ Failed: ${response.stats.errors} file(s)`;
+                                }
+                            }
+                            
+                            Swal.fire({
+                                title: 'Success!',
+                                html: message.replace(/\n/g, '<br>'),
+                                icon: 'success',
+                                timer: 2500,
+                                showConfirmButton: true
+                            }).then(() => {
+                                location.reload();
+                            });
+                        } else {
+                            // Show error message
+                            let errorHtml = response.message || 'Failed to create files';
+                            
+                            // Add debug info if available
+                            if (response.debug && response.debug.length > 0) {
+                                errorHtml += '<br><br><strong>Debug Info:</strong><br>';
+                                errorHtml += '<div style="text-align: left; max-height: 200px; overflow-y: auto; font-size: 0.85em; background: #f5f5f5; padding: 10px; border-radius: 5px; color: #333;">';
+                                response.debug.forEach(function(info) {
+                                    errorHtml += `📁 <strong>${info.filename}</strong><br>`;
+                                    errorHtml += `&nbsp;&nbsp;&nbsp;Path: ${info.fullPath}<br>`;
+                                    errorHtml += `&nbsp;&nbsp;&nbsp;Writable: ${info.isWritable ? '✅ Yes' : '❌ No'}<br>`;
+                                    errorHtml += `&nbsp;&nbsp;&nbsp;Content size: ${info.contentLength} bytes<br><br>`;
+                                });
+                                errorHtml += '</div>';
+                            }
+                            
+                            Swal.fire({
+                                title: 'Error',
+                                html: errorHtml,
+                                icon: 'error',
+                                confirmButtonText: 'OK',
+                                width: '600px'
+                            });
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        Swal.close();
+                        
+                        let errorMessage = 'Failed to create files';
+                        
+                        // Try to parse JSON error response
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            errorMessage = response.message || errorMessage;
+                            
+                            if (response.debug) {
+                                console.error('Bulk Paste Debug Info:', response.debug);
+                            }
+                        } catch (e) {
+                            // Not JSON, use raw text
+                            errorMessage += ': ' + (xhr.responseText || error || 'Unknown error');
+                        }
+                        
+                        Swal.fire({
+                            title: 'Error',
+                            html: errorMessage,
+                            icon: 'error',
+                            footer: 'Check browser console for more details'
+                        });
+                        
+                        console.error('Bulk Paste Error:', {
+                            status: xhr.status,
+                            statusText: xhr.statusText,
+                            responseText: xhr.responseText,
+                            error: error
+                        });
+                    }
+                });
             }
 
             function preview_file(url, ext, name) {
