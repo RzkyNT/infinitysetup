@@ -13648,6 +13648,13 @@ padding: 20px !important;
                         let vizActiveNode = null;
                         let vizDragX = 0, vizDragY = 0;
                         let sqlPanelCollapsed = false;
+                        
+                        // Canvas panning variables
+                        let isPanningCanvas = false;
+                        let canvasStartX = 0;
+                        let canvasStartY = 0;
+                        let canvasOffsetX = 0;
+                        let canvasOffsetY = 0;
 
                         function toggleSqlPanel() {
                             const container = document.getElementById('viz-main-container');
@@ -13802,6 +13809,7 @@ padding: 20px !important;
                         function renderERD() {
                             const container = document.getElementById('viz-nodes');
                             const svg = document.getElementById('viz-svg');
+                            const canvas = document.getElementById('viz-erd-canvas');
                             container.innerHTML = '';
                             svg.innerHTML = '';
 
@@ -13825,11 +13833,59 @@ padding: 20px !important;
                                 container.appendChild(node);
                             });
 
+                            // Setup canvas panning
+                            setupCanvasPanning();
+                            
                             setTimeout(drawVizLines, 100);
+                        }
+                        
+                        function setupCanvasPanning() {
+                            const canvas = document.getElementById('viz-erd-canvas');
+                            const nodesContainer = document.getElementById('viz-nodes');
+                            const svgContainer = document.getElementById('viz-svg');
+                            
+                            // Remove existing listeners (if any)
+                            canvas.onmousedown = null;
+                            
+                            canvas.onmousedown = function(e) {
+                                // Only pan on middle mouse button or when clicking on canvas background
+                                if (e.target === canvas || e.target === nodesContainer || e.target === svgContainer) {
+                                    isPanningCanvas = true;
+                                    canvasStartX = e.clientX - canvasOffsetX;
+                                    canvasStartY = e.clientY - canvasOffsetY;
+                                    canvas.style.cursor = 'grabbing';
+                                    e.preventDefault();
+                                }
+                            };
+                            
+                            document.addEventListener('mousemove', handleCanvasPan);
+                            document.addEventListener('mouseup', stopCanvasPan);
+                        }
+                        
+                        function handleCanvasPan(e) {
+                            if (!isPanningCanvas) return;
+                            
+                            canvasOffsetX = e.clientX - canvasStartX;
+                            canvasOffsetY = e.clientY - canvasStartY;
+                            
+                            const nodesContainer = document.getElementById('viz-nodes');
+                            const svgContainer = document.getElementById('viz-svg');
+                            
+                            nodesContainer.style.transform = `translate(${canvasOffsetX}px, ${canvasOffsetY}px)`;
+                            svgContainer.style.transform = `translate(${canvasOffsetX}px, ${canvasOffsetY}px)`;
+                        }
+                        
+                        function stopCanvasPan() {
+                            if (isPanningCanvas) {
+                                isPanningCanvas = false;
+                                const canvas = document.getElementById('viz-erd-canvas');
+                                if (canvas) canvas.style.cursor = 'grab';
+                            }
                         }
 
                         function startVizDrag(e, name) {
                             if(e.button !== 0) return;
+                            e.stopPropagation(); // Prevent canvas panning when dragging nodes
                             vizActiveNode = document.getElementById(`viz-node-${name}`);
                             vizDragX = e.clientX - vizActiveNode.offsetLeft;
                             vizDragY = e.clientY - vizActiveNode.offsetTop;
@@ -13933,6 +13989,10 @@ padding: 20px !important;
                             const data = vizData[name];
                             const gridCont = document.getElementById('viz-data-grid');
                             
+                            // Store current focused element
+                            const activeElement = document.activeElement;
+                            const wasSearchFocused = activeElement && activeElement.id === 'viz-search-input';
+                            
                             // 1. Filter Data
                             const filteredRows = data.rows.filter(row => {
                                 if(!vizSearchQuery) return true;
@@ -13951,8 +14011,8 @@ padding: 20px !important;
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; gap:10px; background:rgba(255,255,255,0.02); padding:10px; border-radius:8px;">
                                     <div style="position:relative; flex:1;">
                                         <i class="fas fa-search" style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:#666;"></i>
-                                        <input type="text" placeholder="Search in ${name}..." value="${vizSearchQuery}" 
-                                            oninput="showVizTable('${name}', this.value, 1)" 
+                                        <input type="text" id="viz-search-input" placeholder="Search in ${name}..." value="${vizSearchQuery}" 
+                                            oninput="handleVizSearch('${name}', this.value)" 
                                             style="width:100%; background:#000; border:1px solid #333; border-radius:20px; padding:8px 15px 8px 35px; color:#fff; font-size:0.85rem; outline:none; transition:border-color 0.2s;"
                                             onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='#333'">
                                     </div>
@@ -14027,6 +14087,28 @@ padding: 20px !important;
                             }
                             
                             gridCont.innerHTML = html;
+                            
+                            // Restore focus if search was focused before
+                            if(wasSearchFocused) {
+                                const searchInput = document.getElementById('viz-search-input');
+                                if(searchInput) {
+                                    setTimeout(() => {
+                                        searchInput.focus();
+                                        // Set cursor to end of text
+                                        const len = searchInput.value.length;
+                                        searchInput.setSelectionRange(len, len);
+                                    }, 0);
+                                }
+                            }
+                        }
+
+                        // Debounce search to prevent too many re-renders
+                        let vizSearchTimeout = null;
+                        function handleVizSearch(name, value) {
+                            clearTimeout(vizSearchTimeout);
+                            vizSearchTimeout = setTimeout(() => {
+                                showVizTable(name, value, 1);
+                            }, 150);
                         }
 
                         function toggleVizColMenu() {
