@@ -528,6 +528,67 @@ if ($current_page === 'index.php') {
             }
         }
     }
+
+    // Handle Cleanup Temp Files
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cleanup_temp'])) {
+        $cleaned = 0;
+        $errors = [];
+        $cleanedFiles = [];
+        
+        $tempPatterns = [
+            __DIR__ . '/*.tmp',
+            __DIR__ . '/*.restore_tmp',
+            __DIR__ . '/*_backup',
+            __DIR__ . '/.*.swp',
+            __DIR__ . '/*~'
+        ];
+        
+        foreach ($tempPatterns as $pattern) {
+            $files = glob($pattern);
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    $filename = basename($file);
+                    if (@unlink($file)) {
+                        $cleaned++;
+                        $cleanedFiles[] = $filename;
+                    } else {
+                        $errors[] = $filename;
+                    }
+                }
+            }
+        }
+        
+        if ($cleaned > 0) {
+            $_SESSION['cleanup_msg'] = "Cleaned up $cleaned temporary file(s)";
+            if (count($cleanedFiles) <= 5) {
+                $_SESSION['cleanup_msg'] .= ": " . implode(', ', $cleanedFiles);
+            }
+        } else {
+            $_SESSION['cleanup_msg'] = "No temporary files found to clean";
+        }
+        
+        if (!empty($errors)) {
+            $_SESSION['cleanup_msg'] .= " (Failed to delete: " . implode(', ', $errors) . ")";
+        }
+        
+        header("Location: index.php?cleanup_done=1");
+        exit;
+    }
+
+    // Auto-cleanup old temp files (older than 7 days)
+    $autoCleanupPatterns = [
+        __DIR__ . '/*.tmp',
+        __DIR__ . '/*.restore_tmp'
+    ];
+    
+    foreach ($autoCleanupPatterns as $pattern) {
+        $files = glob($pattern);
+        foreach ($files as $file) {
+            if (is_file($file) && (time() - filemtime($file)) > (7 * 24 * 3600)) {
+                @unlink($file); // Silent cleanup
+            }
+        }
+    }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -665,6 +726,26 @@ if ($current_page === 'index.php') {
             cursor: pointer; transition: 0.2s;
         }
         .toggle-backups:hover { background: rgba(99, 102, 241, 0.1); }
+        .btn-cleanup {
+            background: #8b5cf6; color: white; border: none; border-radius: 6px;
+            padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer;
+            display: flex; align-items: center; gap: 0.4rem; transition: 0.2s;
+        }
+        .btn-cleanup:hover { background: #7c3aed; transform: translateY(-1px); }
+        .temp-files-section {
+            margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #333;
+        }
+        .temp-info {
+            background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem;
+        }
+        .temp-info-title {
+            font-weight: 600; color: #8b5cf6; margin-bottom: 0.5rem;
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .temp-info-desc {
+            font-size: 0.8rem; color: #aaa; line-height: 1.5;
+        }
     </style>
 </head>
 <body>
@@ -759,6 +840,71 @@ if ($current_page === 'index.php') {
                 </div>
                 <?php endforeach; ?>
             <?php endif; ?>
+        </div>
+        
+        <!-- Temp Files Cleanup Section -->
+        <div class="temp-files-section">
+            <div class="temp-info">
+                <div class="temp-info-title">
+                    <i class="fas fa-broom"></i> Temporary Files Cleanup
+                </div>
+                <div class="temp-info-desc">
+                    Clean up temporary files that may be left behind from updates or failed operations.<br>
+                    <strong>Auto-cleanup:</strong> Files older than 7 days are automatically removed on page load.
+                </div>
+            </div>
+            
+            <?php
+            // Scan for temp files
+            $tempPatterns = [
+                __DIR__ . '/*.tmp',
+                __DIR__ . '/*.restore_tmp',
+                __DIR__ . '/*_backup',
+                __DIR__ . '/.*.swp',
+                __DIR__ . '/*~'
+            ];
+            
+            $tempFiles = [];
+            foreach ($tempPatterns as $pattern) {
+                $files = glob($pattern);
+                foreach ($files as $file) {
+                    if (is_file($file)) {
+                        $tempFiles[] = [
+                            'name' => basename($file),
+                            'size' => filesize($file),
+                            'age' => time() - filemtime($file),
+                            'path' => $file
+                        ];
+                    }
+                }
+            }
+            
+            if (!empty($tempFiles)):
+            ?>
+                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem;">
+                    <div style="font-weight: 600; color: #ef4444; margin-bottom: 0.5rem;">
+                        <i class="fas fa-exclamation-triangle"></i> Found <?= count($tempFiles) ?> temporary file(s)
+                    </div>
+                    <div style="font-size: 0.75rem; color: #aaa; max-height: 100px; overflow-y: auto;">
+                        <?php foreach ($tempFiles as $tf): 
+                            $ageStr = $tf['age'] < 3600 ? floor($tf['age']/60) . 'm' : floor($tf['age']/3600) . 'h';
+                            if ($tf['age'] >= 86400) $ageStr = floor($tf['age']/86400) . 'd';
+                        ?>
+                            <div style="padding: 2px 0;">
+                                📄 <?= htmlspecialchars($tf['name']) ?> 
+                                <span style="color: #666;">(<?= number_format($tf['size']/1024, 1) ?> KB, <?= $ageStr ?> old)</span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+            
+            <form method="POST" onsubmit="return confirm('Clean up all temporary files?');">
+                <input type="hidden" name="cleanup_temp" value="1">
+                <button type="submit" class="btn-cleanup">
+                    <i class="fas fa-broom"></i> Clean Temporary Files<?= !empty($tempFiles) ? ' (' . count($tempFiles) . ')' : '' ?>
+                </button>
+            </form>
         </div>
     </div>
     
@@ -880,6 +1026,13 @@ if ($current_page === 'index.php') {
         window.history.replaceState({}, document.title, window.location.pathname);
     </script>
     <?php unset($_SESSION['delete_msg']); endif; ?>
+    
+    <?php if (isset($_GET['cleanup_done']) && isset($_SESSION['cleanup_msg'])): ?>
+    <script>
+        showToast('<?= addslashes($_SESSION['cleanup_msg']) ?>', 'success');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    </script>
+    <?php unset($_SESSION['cleanup_msg']); endif; ?>
 </body>
 </html>
 <?php 
