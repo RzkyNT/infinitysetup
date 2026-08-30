@@ -467,6 +467,67 @@ if ($current_page === 'index.php') {
             exit;
         }
     }
+
+    // Handle Rollback
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rollback_action'])) {
+        $backupName = $_POST['backup_folder'] ?? '';
+        $backupPath = __DIR__ . '/temp_backups/' . basename($backupName);
+        
+        if (is_dir($backupPath)) {
+            $restored = 0;
+            $errors = [];
+            
+            $files = glob($backupPath . '/*');
+            foreach ($files as $backupFile) {
+                $filename = basename($backupFile);
+                $targetFile = __DIR__ . '/' . $filename;
+                
+                // Atomic restore
+                $tempPath = $targetFile . '.restore_tmp';
+                if (@copy($backupFile, $tempPath)) {
+                    if (@rename($tempPath, $targetFile)) {
+                        $restored++;
+                    } else {
+                        $errors[] = $filename;
+                        @unlink($tempPath);
+                    }
+                } else {
+                    $errors[] = $filename;
+                }
+            }
+            
+            if ($restored > 0) {
+                $_SESSION['rollback_msg'] = "Successfully restored $restored files from " . basename($backupName);
+                if (!empty($errors)) {
+                    $_SESSION['rollback_msg'] .= " (Failed: " . implode(", ", $errors) . ")";
+                }
+                header("Location: index.php?rolled_back=1");
+                exit;
+            } else {
+                $updateAlert = "Rollback failed: " . implode(", ", $errors);
+            }
+        } else {
+            $updateAlert = "Backup folder not found!";
+        }
+    }
+
+    // Handle Delete Backup
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_backup'])) {
+        $backupName = $_POST['backup_folder'] ?? '';
+        $backupPath = __DIR__ . '/temp_backups/' . basename($backupName);
+        
+        if (is_dir($backupPath)) {
+            $files = glob($backupPath . '/*');
+            foreach ($files as $file) {
+                @unlink($file);
+            }
+            if (@rmdir($backupPath)) {
+                $_SESSION['delete_msg'] = "Backup deleted: " . basename($backupName);
+                header("Location: index.php?backup_deleted=1");
+                exit;
+            }
+        }
+    }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -485,6 +546,8 @@ if ($current_page === 'index.php') {
         .logout:hover { background: rgba(255, 107, 107, 0.1); }
         .btn-update { background: #0d6efd; color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: 0.2s; }
         .btn-update:hover { background: #0b5ed7; }
+        .btn-rollback { background: #f59e0b; color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: 0.2s; }
+        .btn-rollback:hover { background: #d97706; }
         .container { flex: 1; display: flex; align-items: center; justify-content: center; padding: 2rem; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; width: 100%; max-width: 900px; }
         .card { background: var(--card); border: 1px solid #333; border-radius: 12px; padding: 2rem; text-align: center; text-decoration: none; color: var(--text); transition: transform 0.2s, background 0.2s; display: flex; flex-direction: column; align-items: center; gap: 1rem; }
@@ -554,6 +617,54 @@ if ($current_page === 'index.php') {
             opacity: 0; transform: scale(0.9) translateY(10px);
             transition: 0.4s;
         }
+        
+        /* Rollback Panel Styles */
+        .rollback-panel {
+            background: var(--card); border: 1px solid #333; border-radius: 12px;
+            padding: 1.5rem; margin: 1rem 2rem;
+        }
+        .rollback-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid #333;
+        }
+        .rollback-header h3 {
+            margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem;
+        }
+        .backup-list {
+            display: flex; flex-direction: column; gap: 0.75rem;
+        }
+        .backup-item {
+            background: rgba(255,255,255,0.02); border: 1px solid #333; border-radius: 8px;
+            padding: 1rem; display: flex; justify-content: space-between; align-items: center;
+            transition: 0.2s;
+        }
+        .backup-item:hover { background: rgba(255,255,255,0.05); border-color: #444; }
+        .backup-info { flex: 1; }
+        .backup-name { font-weight: 600; color: #f59e0b; margin-bottom: 0.25rem; }
+        .backup-meta { font-size: 0.75rem; color: #888; display: flex; gap: 1rem; }
+        .backup-actions { display: flex; gap: 0.5rem; }
+        .btn-restore {
+            background: #10b981; color: white; border: none; border-radius: 6px;
+            padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer;
+            display: flex; align-items: center; gap: 0.4rem; transition: 0.2s;
+        }
+        .btn-restore:hover { background: #059669; transform: translateY(-1px); }
+        .btn-delete {
+            background: #ef4444; color: white; border: none; border-radius: 6px;
+            padding: 0.5rem 0.75rem; font-size: 0.85rem; cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn-delete:hover { background: #dc2626; transform: translateY(-1px); }
+        .no-backups {
+            text-align: center; padding: 2rem; color: #666;
+            background: rgba(255,255,255,0.02); border-radius: 8px;
+        }
+        .toggle-backups {
+            background: transparent; border: 1px solid #6366f1; color: #6366f1;
+            padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.8rem;
+            cursor: pointer; transition: 0.2s;
+        }
+        .toggle-backups:hover { background: rgba(99, 102, 241, 0.1); }
     </style>
 </head>
 <body>
@@ -569,9 +680,88 @@ if ($current_page === 'index.php') {
                 <input type="hidden" name="update_action" value="1">
                 <button type="submit" class="btn-update"><i class="fas fa-rotate"></i> Update</button>
             </form>
+            <button class="toggle-backups" onclick="toggleRollbackPanel()">
+                <i class="fas fa-clock-rotate-left"></i> Backups
+            </button>
             <a href="?logout=1" class="logout"><i class="fas fa-sign-out-alt"></i> Logout</a>
         </div>
     </nav>
+    
+    <!-- Rollback Panel (Collapsible) -->
+    <div id="rollbackPanel" class="rollback-panel" style="display:none;">
+        <div class="rollback-header">
+            <h3><i class="fas fa-clock-rotate-left"></i> Available Backups</h3>
+            <button class="toggle-backups" onclick="toggleRollbackPanel()">
+                <i class="fas fa-times"></i> Close
+            </button>
+        </div>
+        
+        <div class="backup-list">
+            <?php 
+            $backupDir = __DIR__ . '/temp_backups';
+            $backups = [];
+            
+            if (is_dir($backupDir)) {
+                $backups = glob($backupDir . '/backup_*');
+                usort($backups, function($a, $b) {
+                    return filemtime($b) - filemtime($a); // Newest first
+                });
+            }
+            
+            if (empty($backups)): ?>
+                <div class="no-backups">
+                    <i class="fas fa-folder-open" style="font-size:3rem; color:#444; margin-bottom:1rem;"></i>
+                    <p style="margin:0;">No backups available</p>
+                    <p style="margin:0.5rem 0 0; font-size:0.8rem;">Backups will appear here after you run an update.</p>
+                </div>
+            <?php else: ?>
+                <?php foreach ($backups as $backup): 
+                    $backupName = basename($backup);
+                    $timestamp = str_replace('backup_', '', $backupName);
+                    $date = DateTime::createFromFormat('YmdHis', $timestamp);
+                    $dateFormatted = $date ? $date->format('M d, Y H:i:s') : $timestamp;
+                    
+                    $files = glob($backup . '/*');
+                    $fileCount = count($files);
+                    $fileNames = array_map('basename', $files);
+                    $fileList = implode(', ', array_slice($fileNames, 0, 3));
+                    if ($fileCount > 3) $fileList .= '...';
+                ?>
+                <div class="backup-item">
+                    <div class="backup-info">
+                        <div class="backup-name">
+                            <i class="fas fa-archive"></i> <?= htmlspecialchars($backupName) ?>
+                        </div>
+                        <div class="backup-meta">
+                            <span><i class="fas fa-calendar"></i> <?= $dateFormatted ?></span>
+                            <span><i class="fas fa-file"></i> <?= $fileCount ?> files</span>
+                            <span title="<?= htmlspecialchars(implode(', ', $fileNames)) ?>">
+                                <i class="fas fa-list"></i> <?= htmlspecialchars($fileList) ?>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="backup-actions">
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('Restore this backup? Current files will be replaced.');">
+                            <input type="hidden" name="rollback_action" value="1">
+                            <input type="hidden" name="backup_folder" value="<?= htmlspecialchars($backupName) ?>">
+                            <button type="submit" class="btn-restore">
+                                <i class="fas fa-undo"></i> Restore
+                            </button>
+                        </form>
+                        <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this backup? This cannot be undone.');">
+                            <input type="hidden" name="delete_backup" value="1">
+                            <input type="hidden" name="backup_folder" value="<?= htmlspecialchars($backupName) ?>">
+                            <button type="submit" class="btn-delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+    
     <div class="container">
         <div class="grid">
             <?php foreach($tools as $file => $data): $exists = file_exists($file); ?>
@@ -644,6 +834,17 @@ if ($current_page === 'index.php') {
                 setTimeout(() => toast.remove(), 400);
             }, 4000);
         }
+        
+        function toggleRollbackPanel() {
+            const panel = document.getElementById('rollbackPanel');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                panel.style.animation = 'modalPop 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28)';
+            } else {
+                panel.style.animation = 'none';
+                panel.style.display = 'none';
+            }
+        }
     </script>
 
     <?php if (isset($_SESSION['must_change_password']) && $_SESSION['must_change_password'] == 1): ?>
@@ -665,6 +866,20 @@ if ($current_page === 'index.php') {
         window.history.replaceState({}, document.title, window.location.pathname);
     </script>
     <?php unset($_SESSION['update_msg']); endif; ?>
+    
+    <?php if (isset($_GET['rolled_back']) && isset($_SESSION['rollback_msg'])): ?>
+    <script>
+        showToast('<?= addslashes($_SESSION['rollback_msg']) ?>', 'success');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    </script>
+    <?php unset($_SESSION['rollback_msg']); endif; ?>
+    
+    <?php if (isset($_GET['backup_deleted']) && isset($_SESSION['delete_msg'])): ?>
+    <script>
+        showToast('<?= addslashes($_SESSION['delete_msg']) ?>', 'success');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    </script>
+    <?php unset($_SESSION['delete_msg']); endif; ?>
 </body>
 </html>
 <?php 
