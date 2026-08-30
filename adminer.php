@@ -7954,7 +7954,7 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
                 </div>';
             }
             ?>
-            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit • Enter to save • Escape to cancel"<?php endif; ?> style="position:relative;" class="adminer-data-cell">
+            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?> style="position:relative;" class="adminer-data-cell">
                 <div class="cell-value-wrapper" style="padding-right:25px;">
                     <?=$displayVal?>
                 </div>
@@ -8840,6 +8840,388 @@ if (!empty($tables)) {
         }
     </style>
     <script>
+        // === GLOBAL FUNCTION DEFINITIONS (Must be first!) ===
+        
+        // Helper to init TomSelect with correct settings (Unified)
+        // Make it global so it can be accessed from anywhere
+        window.initTomSelect = function(target, options = {}) {
+            // Wait for TomSelect to be available
+            if (typeof TomSelect === 'undefined') {
+                console.warn("TomSelect not yet loaded, retrying in 100ms...");
+                setTimeout(() => window.initTomSelect(target, options), 100);
+                return;
+            }
+            
+            const defaults = {
+                create: false,
+                sortField: { field: "text", direction: "asc" },
+                dropdownParent: 'body',
+                plugins: ['clear_button'],
+                maxOptions: 100,
+                onDropdownOpen: function() {
+                    const wrapper = this.dropdown;
+                    if(wrapper) wrapper.style.zIndex = "99999";
+                }
+            };
+            const settings = Object.assign({}, defaults, options);
+            const elements = (typeof target === 'string') ? document.querySelectorAll(target) : (target instanceof NodeList ? target : [target]);
+            
+            elements.forEach(el => {
+                if (!el || el.nodeType !== 1 || el.tagName !== 'SELECT') return;
+                if (el.tomselect) el.tomselect.destroy();
+                try {
+                    new TomSelect(el, settings);
+                } catch (e) { console.warn("TS init failed:", e); }
+            });
+        };
+
+        // Make initFlatpickr global too
+        window.initFlatpickr = function(el) {
+            if (!el || el._flatpickr) return;
+            
+            // Wait for flatpickr to be available
+            if (typeof flatpickr === 'undefined') {
+                console.warn("Flatpickr not yet loaded, retrying in 100ms...");
+                setTimeout(() => window.initFlatpickr(el), 100);
+                return;
+            }
+            
+            const config = {
+                theme: 'dark',
+                dateFormat: "Y-m-d",
+                allowInput: true
+            };
+            if (el.classList.contains('flatpickr-datetime')) {
+                config.enableTime = true;
+                config.enableSeconds = true;
+                config.dateFormat = "Y-m-d H:i:S";
+            }
+            flatpickr(el, config);
+        };
+
+        // --- INLINE EDITING (TomSelect Edition) ---
+        // Make it global so it can be accessed from anywhere
+        window.makeCellEditable = function(td) {
+            if (td.querySelector('.editing') || td.querySelector('select')) return; 
+            
+            // Trim whitespace from original content
+            const originalContent = td.innerText.trim();
+            const pk = td.getAttribute('data-pk');
+            const col = td.getAttribute('data-col');
+            const type = td.getAttribute('data-type') || '';
+            const table = td.getAttribute('data-table') || td.closest('table').getAttribute('data-table');
+            
+            if(!pk || !col) return;
+
+            // Preserve scroll position and cell dimensions
+            const rect = td.getBoundingClientRect();
+            const computedStyle = window.getComputedStyle(td);
+            const originalWidth = td.offsetWidth;
+            const originalHeight = td.offsetHeight;
+            
+            td.style.width = originalWidth + 'px';
+            td.style.minWidth = originalWidth + 'px';
+            td.style.height = originalHeight + 'px';
+
+            td.classList.add('editing');
+            
+            // Create a hidden input for TomSelect
+            const hiddenInput = document.createElement('input');
+            hiddenInput.type = 'text';
+            hiddenInput.className = 'inline-edit-input';
+            hiddenInput.style.width = '100%';
+            
+            td.innerHTML = '';
+            td.style.overflow = 'hidden';
+            td.appendChild(hiddenInput);
+
+            // Initialize TomSelect in "input mode" (not select mode)
+            // Key: Use create mode without pre-selecting the value as an item
+            const ts = new TomSelect(hiddenInput, {
+                valueField: 'value',
+                labelField: 'text',
+                searchField: 'text',
+                create: true,  // Allow creating new values
+                createOnBlur: true,
+                maxItems: 1,
+                maxOptions: 20,
+                persist: false,
+                hideSelected: true,
+                closeAfterSelect: true,
+                selectOnTab: false,
+                preload: 'focus',
+                dropdownParent: 'body',
+                placeholder: 'Type to search or edit...',
+                load: function(query, callback) {
+                    const sugFormData = new FormData();
+                    sugFormData.append('action', 'get_column_suggestions');
+                    sugFormData.append('table', table);
+                    sugFormData.append('column', col);
+                    
+                    fetch('?', { method: 'POST', body: sugFormData })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success && data.suggestions) {
+                            callback(data.suggestions.map(s => ({ 
+                                value: s.trim(), 
+                                text: s.trim() 
+                            })));
+                        } else {
+                            callback();
+                        }
+                    })
+                    .catch(() => callback());
+                }
+            });
+
+            // Set the initial value as TEXT in the input field (not as selected item)
+            // This makes Backspace delete characters, not the whole value
+            if (ts.control_input) {
+                ts.control_input.value = originalContent;
+            }
+
+            // Create confirm and cancel buttons
+            const confirmBtn = document.createElement('button');
+            confirmBtn.innerHTML = '<i class="fas fa-check"></i>';
+            confirmBtn.style.cssText = 'background:#10b981; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:8px; font-size:0.8rem; transition:all 0.2s;';
+            confirmBtn.title = 'Save changes (Enter)';
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.innerHTML = '<i class="fas fa-times"></i>';
+            cancelBtn.style.cssText = 'background:#ef4444; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:4px; font-size:0.8rem; transition:all 0.2s;';
+            cancelBtn.title = 'Cancel (Escape)';
+
+            // Container untuk tombol
+            const btnContainer = document.createElement('div');
+            btnContainer.id = 'inline-edit-buttons';
+            btnContainer.style.cssText = 'position:absolute; right:8px; top:50%; transform:translateY(-50%); display:flex; gap:4px; opacity:0; transition:opacity 0.2s; z-index:10;';
+            btnContainer.appendChild(cancelBtn);
+            btnContainer.appendChild(confirmBtn);
+            td.appendChild(btnContainer);
+
+            // Tampilkan tombol saat mouse over
+            td.addEventListener('mouseenter', () => {
+                if (td.classList.contains('editing')) {
+                    btnContainer.style.opacity = '1';
+                }
+            });
+            td.addEventListener('mouseleave', () => {
+                if (td.classList.contains('editing') && !td.classList.contains('confirming')) {
+                    btnContainer.style.opacity = '0';
+                }
+            });
+
+            // Event listener untuk tombol confirm (Save)
+            confirmBtn.onclick = () => {
+                const newVal = ts.getValue() || (ts.control_input ? ts.control_input.value : '');
+                if (newVal && newVal !== originalContent) {
+                    saveCellData({value: newVal, parentElement: td}, table, col, pk, originalContent, ts);
+                } else {
+                    // Restore original content
+                    td.innerHTML = '';
+                    td.innerText = originalContent;
+                    td.classList.remove('editing', 'confirming');
+                    
+                    // Reset styles
+                    td.style.overflow = 'auto';
+                    td.style.width = '';
+                    td.style.minWidth = '';
+                    td.style.height = '';
+                    
+                    // Remove buttons
+                    const existingBtns = td.querySelector('#inline-edit-buttons');
+                    if (existingBtns) {
+                        existingBtns.remove();
+                    }
+                    
+                    ts.destroy();
+                }
+            };
+
+            // Event listener untuk tombol cancel
+            cancelBtn.onclick = () => {
+                // Restore original content
+                td.innerHTML = '';
+                td.innerText = originalContent;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) {
+                    existingBtns.remove();
+                }
+                
+                ts.destroy();
+            };
+
+            // Event listener untuk keyboard
+            if (ts.control_input) {
+                ts.control_input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        confirmBtn.click();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // Direct cleanup for Escape
+                        td.innerHTML = '';
+                        td.innerText = originalContent;
+                        td.classList.remove('editing', 'confirming');
+                        td.style.overflow = 'auto';
+                        td.style.width = '';
+                        td.style.minWidth = '';
+                        td.style.height = '';
+                        const existingBtns = td.querySelector('#inline-edit-buttons');
+                        if (existingBtns) existingBtns.remove();
+                        ts.destroy();
+                    }
+                    // Let Backspace work normally - delete character by character
+                });
+
+                // Handle blur to close editor without saving
+                ts.control_input.addEventListener('blur', () => {
+                    setTimeout(() => {
+                        if (document.activeElement !== confirmBtn && document.activeElement !== cancelBtn) {
+                            if (!td.classList.contains('confirming')) {
+                                // Restore original content
+                                td.innerHTML = '';
+                                td.innerText = originalContent;
+                                td.classList.remove('editing', 'confirming');
+                                
+                                // Reset styles
+                                td.style.overflow = 'auto';
+                                td.style.width = '';
+                                td.style.minWidth = '';
+                                td.style.height = '';
+                                
+                                // Remove buttons
+                                const existingBtns = td.querySelector('#inline-edit-buttons');
+                                if (existingBtns) {
+                                    existingBtns.remove();
+                                }
+                                
+                                ts.destroy();
+                            }
+                        }
+                    }, 150);
+                });
+                
+                // Set focus ke input
+                setTimeout(() => {
+                    if (ts.control_input) {
+                        ts.control_input.focus();
+                        // Select all text for easy editing
+                        ts.control_input.select();
+                    }
+                }, 10);
+            } else {
+                ts.focus();
+            }
+        };
+
+        // === SAVE CELL DATA (Global) ===
+        window.saveCellData = function(input, table, col, pk, originalContent, tsInstance) {
+            const newVal = input.value;
+            const td = input.parentElement;
+            
+            const formData = new FormData();
+            formData.append('action', 'update_cell');
+            formData.append('table', table);
+            formData.append('column', col);
+            formData.append('id', pk);
+            formData.append('value', newVal);
+
+            td.classList.add('confirming');
+
+            fetch('?', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                td.classList.remove('confirming');
+                if (data.success) {
+                    // Update cell content
+                    td.innerHTML = '';
+                    td.innerText = newVal;
+                    td.classList.remove('editing', 'confirming');
+                    
+                    // Reset styles
+                    td.style.overflow = 'auto';
+                    td.style.width = '';
+                    td.style.minWidth = '';
+                    td.style.height = '';
+                    
+                    // Remove buttons
+                    const existingBtns = td.querySelector('#inline-edit-buttons');
+                    if (existingBtns) existingBtns.remove();
+                    
+                    // Destroy TomSelect if provided
+                    if (tsInstance && tsInstance.destroy) {
+                        tsInstance.destroy();
+                    }
+                    
+                    // Show success toast
+                    const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
+                    toast.fire({ icon: 'success', title: 'Updated successfully' });
+                } else {
+                    // Revert on error
+                    td.innerHTML = '';
+                    td.innerText = originalContent;
+                    td.classList.remove('editing', 'confirming');
+                    
+                    // Reset styles
+                    td.style.overflow = 'auto';
+                    td.style.width = '';
+                    td.style.minWidth = '';
+                    td.style.height = '';
+                    
+                    // Remove buttons
+                    const existingBtns = td.querySelector('#inline-edit-buttons');
+                    if (existingBtns) existingBtns.remove();
+                    
+                    // Destroy TomSelect if provided
+                    if (tsInstance && tsInstance.destroy) {
+                        tsInstance.destroy();
+                    }
+                    
+                    // Show error toast
+                    Swal.fire('Error', data.message || 'Failed to update cell', 'error');
+                }
+            })
+            .catch(err => {
+                td.classList.remove('confirming');
+                // Revert on error
+                td.innerHTML = '';
+                td.innerText = originalContent;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) existingBtns.remove();
+                
+                // Destroy TomSelect if provided
+                if (tsInstance && tsInstance.destroy) {
+                    tsInstance.destroy();
+                }
+                
+                console.error('Save error:', err);
+                Swal.fire('Error', 'Network error while saving', 'error');
+            });
+        };
+
+        // === END GLOBAL FUNCTION DEFINITIONS ===
+
         function toggleBoolean(checkbox) {
             const td = checkbox.closest('td');
             const table = td.getAttribute('data-table') || new URLSearchParams(window.location.search).get('table');
@@ -10448,32 +10830,6 @@ var advancedFilters = null;
         }
     });
 
-    // Helper to init TomSelect with correct settings (Unified)
-    function initTomSelect(target, options = {}) {
-        if (typeof TomSelect === 'undefined') return;
-        const defaults = {
-            create: false,
-            sortField: { field: "text", direction: "asc" },
-            dropdownParent: 'body',
-            plugins: ['clear_button'],
-            maxOptions: 100,
-            onDropdownOpen: function() {
-                const wrapper = this.dropdown;
-                if(wrapper) wrapper.style.zIndex = "99999";
-            }
-        };
-        const settings = Object.assign({}, defaults, options);
-        const elements = (typeof target === 'string') ? document.querySelectorAll(target) : (target instanceof NodeList ? target : [target]);
-        
-        elements.forEach(el => {
-            if (!el || el.nodeType !== 1 || el.tagName !== 'SELECT') return;
-            if (el.tomselect) el.tomselect.destroy();
-            try {
-                new TomSelect(el, settings);
-            } catch (e) { console.warn("TS init failed:", e); }
-        });
-    }
-
     // --- COPY STRUCTURE FUNCTIONS ---
     function copyAllTablesStructure() {
         const formData = new FormData();
@@ -10524,15 +10880,26 @@ var advancedFilters = null;
     // Initialize TomSelect and Flatpickr for Global Components
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('form select.form-select').forEach((el) => {
-            initTomSelect(el);
+            window.initTomSelect(el);
         });
         document.querySelectorAll('.flatpickr-date, .flatpickr-datetime').forEach((el) => {
-            initFlatpickr(el);
+            window.initFlatpickr(el);
         });
     });
 
+    // --- Searchable Select Logic ---
+    document.addEventListener('DOMContentLoaded', () => window.initTomSelect('.searchable-select'));
+
     function initFlatpickr(el) {
         if (!el || el._flatpickr) return;
+        
+        // Wait for flatpickr to be available
+        if (typeof flatpickr === 'undefined') {
+            console.warn("Flatpickr not yet loaded, retrying in 100ms...");
+            setTimeout(() => initFlatpickr(el), 100);
+            return;
+        }
+        
         const config = {
             theme: 'dark',
             dateFormat: "Y-m-d",
@@ -10545,354 +10912,6 @@ var advancedFilters = null;
         }
         flatpickr(el, config);
     }
-
-    // --- INLINE EDITING (TomSelect Edition) ---
-    function makeCellEditable(td) {
-        if (td.querySelector('.editing') || td.querySelector('select')) return; 
-        
-        const originalContent = td.innerText.trim();
-        const pk = td.getAttribute('data-pk');
-        const col = td.getAttribute('data-col');
-        const type = td.getAttribute('data-type') || '';
-        const table = td.getAttribute('data-table') || td.closest('table').getAttribute('data-table');
-        
-        if(!pk || !col) return;
-
-        // Preserve scroll position and cell dimensions
-        const rect = td.getBoundingClientRect();
-        const computedStyle = window.getComputedStyle(td);
-        const originalWidth = td.offsetWidth;
-        const originalHeight = td.offsetHeight;
-        
-        td.style.width = originalWidth + 'px';
-        td.style.minWidth = originalWidth + 'px';
-        td.style.height = originalHeight + 'px';
-
-        td.classList.add('editing');
-        const select = document.createElement('select');
-        select.className = 'inline-edit-select';
-        select.style.width = '100%';
-        
-        // Add current value as an option if it's not NULL
-        if (originalContent !== 'NULL' && originalContent !== '') {
-            const opt = new Option(originalContent, originalContent, true, true);
-            select.add(opt);
-        }
-
-        td.innerHTML = '';
-        td.style.overflow = 'hidden';
-        td.appendChild(select);
-
-        // Initialize TomSelect with Create option
-        const ts = new TomSelect(select, {
-            valueField: 'value',
-            labelField: 'text',
-            searchField: 'text',
-            create: true, 
-            placeholder: 'Select or type new...',
-            maxItems: 1,
-            dropdownParent: 'body',
-            load: function(query, callback) {
-                const sugFormData = new FormData();
-                sugFormData.append('action', 'get_column_suggestions');
-                sugFormData.append('table', table);
-                sugFormData.append('column', col);
-
-                fetch('?', { method: 'POST', body: sugFormData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success && data.suggestions) {
-                        callback(data.suggestions.map(s => ({ value: s, text: s })));
-                    } else {
-                        callback();
-                    }
-                })
-                .catch(() => callback());
-            },
-            // Blur tidak auto-save lagi - hanya close jika tidak ada perubahan
-            onBlur: () => {
-                setTimeout(() => {
-                    if (document.activeElement !== ts.control_input) {
-                        // Close tanpa save jika user tidak klik tombol
-                        if (!td.classList.contains('confirming')) {
-                            cleanup();
-                        }
-                    }
-                }, 200);
-            }
-        });
-
-        // Create confirm and cancel buttons
-        const confirmBtn = document.createElement('button');
-        confirmBtn.innerHTML = '<i class="fas fa-check"></i>';
-        confirmBtn.style.cssText = 'background:#10b981; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:8px; font-size:0.8rem; transition:all 0.2s;';
-        confirmBtn.title = 'Save changes (Enter)';
-        
-        const cancelBtn = document.createElement('button');
-        cancelBtn.innerHTML = '<i class="fas fa-times"></i>';
-        cancelBtn.style.cssText = 'background:#ef4444; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:4px; font-size:0.8rem; transition:all 0.2s;';
-        cancelBtn.title = 'Cancel (Escape)';
-
-        // Container untuk tombol
-        const btnContainer = document.createElement('div');
-        btnContainer.id = 'inline-edit-buttons';
-        btnContainer.style.cssText = 'position:absolute; right:8px; top:50%; transform:translateY(-50%); display:flex; gap:4px; opacity:0; transition:opacity 0.2s; z-index:10;';
-        btnContainer.appendChild(cancelBtn);
-        btnContainer.appendChild(confirmBtn);
-        td.appendChild(btnContainer);
-
-        // Tampilkan tombol saat mouse over
-        td.addEventListener('mouseenter', () => {
-            if (td.classList.contains('editing')) {
-                btnContainer.style.opacity = '1';
-            }
-        });
-        td.addEventListener('mouseleave', () => {
-            if (td.classList.contains('editing') && !td.classList.contains('confirming')) {
-                btnContainer.style.opacity = '0';
-            }
-        });
-
-        // Event listener untuk tombol confirm (Save)
-        confirmBtn.onclick = () => {
-            const newVal = ts.getValue();
-            if (newVal !== originalContent) {
-                saveCellData({value: newVal, parentElement: td}, table, col, pk, originalContent, ts);
-            } else {
-                // Restore original content
-                td.innerHTML = '';
-                td.innerText = originalContent;
-                td.classList.remove('editing', 'confirming');
-                
-                // Reset styles
-                td.style.overflow = 'auto';
-                td.style.width = '';
-                td.style.minWidth = '';
-                td.style.height = '';
-                
-                // Remove buttons
-                const existingBtns = td.querySelector('#inline-edit-buttons');
-                if (existingBtns) {
-                    existingBtns.remove();
-                }
-                
-                ts.destroy();
-            }
-        };
-
-        // Event listener untuk tombol cancel
-        cancelBtn.onclick = () => {
-            // Restore original content
-            td.innerHTML = '';
-            td.innerText = originalContent;
-            td.classList.remove('editing', 'confirming');
-            
-            // Reset styles
-            td.style.overflow = 'auto';
-            td.style.width = '';
-            td.style.minWidth = '';
-            td.style.height = '';
-            
-            // Remove buttons
-            const existingBtns = td.querySelector('#inline-edit-buttons');
-            if (existingBtns) {
-                existingBtns.remove();
-            }
-            
-            ts.destroy();
-        };
-
-        // Event listener untuk keyboard
-        if (ts.control_input) {
-            ts.control_input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    confirmBtn.click();
-                } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    cleanup();
-                }
-            });
-
-            // Set focus ke input
-            setTimeout(() => {
-                if (ts.control_input) {
-                    ts.control_input.focus({ preventScroll: true });
-                }
-            }, 10);
-        } else {
-            ts.focus();
-        }
-
-        // Cleanup function untuk close editor
-        function cleanup() {
-            // Restore original content
-            td.innerHTML = '';
-            td.innerText = originalContent;
-            td.classList.remove('editing', 'confirming');
-            
-            // Reset styles
-            td.style.overflow = 'auto';
-            td.style.width = '';
-            td.style.minWidth = '';
-            td.style.height = '';
-            
-            // Remove buttons
-            const existingBtns = td.querySelector('#inline-edit-buttons');
-            if (existingBtns) {
-                existingBtns.remove();
-            }
-            
-            ts.destroy();
-        }
-
-        // Handle click outside (dengan konfirmasi jika ada perubahan)
-        const closeHandler = (e) => {
-            if (!td.contains(e.target) && !btnContainer.contains(e.target)) {
-                // Restore original content
-                td.innerHTML = '';
-                td.innerText = originalContent;
-                td.classList.remove('editing', 'confirming');
-                
-                // Reset styles
-                td.style.overflow = 'auto';
-                td.style.width = '';
-                td.style.minWidth = '';
-                td.style.height = '';
-                
-                // Remove buttons
-                const existingBtns = td.querySelector('#inline-edit-buttons');
-                if (existingBtns) {
-                    existingBtns.remove();
-                }
-                
-                ts.destroy();
-                document.removeEventListener('click', closeHandler);
-            }
-        };
-
-        setTimeout(() => {
-            document.addEventListener('click', closeHandler);
-        }, 100);
-    }
-
-    function saveCellData(input, table, col, pk, original, ts) {
-        const newVal = input.value;
-        const td = input.parentElement;
-        
-        if (newVal === original) {
-            // Restore original content
-            td.innerHTML = '';
-            td.innerText = original;
-            td.classList.remove('editing', 'confirming');
-            
-            // Reset styles
-            td.style.overflow = 'auto';
-            td.style.width = '';
-            td.style.minWidth = '';
-            td.style.height = '';
-            
-            // Remove buttons
-            const existingBtns = td.querySelector('#inline-edit-buttons');
-            if (existingBtns) {
-                existingBtns.remove();
-            }
-            
-            if (ts) ts.destroy();
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('action', 'update_cell');
-        formData.append('table', table);
-        formData.append('column', col);
-        formData.append('id', pk);
-        formData.append('value', newVal);
-
-        fetch('?', {
-            method: 'POST',
-            body: formData
-        })
-        .then(res => res.json())
-        .then(data => {
-            if(data.success) {
-                // Restore original structure with new value
-                td.innerHTML = '';
-                td.innerText = newVal;
-                td.classList.remove('editing', 'confirming');
-                
-                // Reset styles
-                td.style.overflow = 'auto';
-                td.style.width = '';
-                td.style.minWidth = '';
-                td.style.height = '';
-                
-                // Remove buttons
-                const existingBtns = td.querySelector('#inline-edit-buttons');
-                if (existingBtns) {
-                    existingBtns.remove();
-                }
-                
-                if (ts) ts.destroy();
-                
-                td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
-                setTimeout(() => td.style.backgroundColor = '', 1000);
-                const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
-                toast.fire({ icon: 'success', title: 'Saved' });
-            } else {
-                // Revert to original
-                td.innerHTML = '';
-                td.innerText = original;
-                td.classList.remove('editing', 'confirming');
-                
-                // Reset styles
-                td.style.overflow = 'auto';
-                td.style.width = '';
-                td.style.minWidth = '';
-                td.style.height = '';
-                
-                // Remove buttons
-                const existingBtns = td.querySelector('#inline-edit-buttons');
-                if (existingBtns) {
-                    existingBtns.remove();
-                }
-                
-                if (ts) ts.destroy();
-                
-                Swal.fire('Error', data.message || 'Update failed', 'error');
-            }
-        })
-        .catch(err => {
-            td.innerHTML = '';
-            td.innerText = original;
-            td.classList.remove('editing', 'confirming');
-            
-            // Reset styles
-            td.style.overflow = 'auto';
-            td.style.width = '';
-            td.style.minWidth = '';
-            td.style.height = '';
-            
-            // Remove buttons
-            const existingBtns = td.querySelector('#inline-edit-buttons');
-            if (existingBtns) {
-                existingBtns.remove();
-            }
-            
-            if (ts) ts.destroy();
-            
-            Swal.fire('Error', 'Network error', 'error');
-        });
-    }
-            td.style.overflow = 'auto';
-            td.style.width = '';
-            td.style.minWidth = '';
-            td.style.height = '';
-        });
-    }
-
     function openJsonEditorInModal(td) {
         const pk = td.getAttribute('data-pk');
         const col = td.getAttribute('data-col');
@@ -11813,26 +11832,15 @@ var advancedFilters = null;
                 <div style="text-align:left;">
                     <label>Format:</label>
                     <select id="swal_exp_format" class="form-select" style="margin-bottom:10px;" onchange="document.getElementById('sql_mode_container').style.display = this.value === 'sql' ? 'block' : 'none'">
-                        <option value="sql" ${format==='sql'?'selected':''}>SQL</option>
-                        <option value="json" ${format==='json'?'selected':''}>JSON</option>
-                        <option value="csv" ${format==='csv'?'selected':''}>CSV</option>
-                        <option value="xlsx" ${format==='xlsx'?'selected':''}>XLSX</option>
+                        <option value="sql" ${format === 'sql' ? 'selected' : ''}>SQL</option>
+                        <option value="json" ${format === 'json' ? 'selected' : ''}>JSON</option>
+                        <option value="csv" ${format === 'csv' ? 'selected' : ''}>CSV</option>
+                        <option value="xlsx" ${format === 'xlsx' ? 'selected' : ''}>XLSX</option>
                     </select>
                     
-                    <div id="sql_mode_container" style="display:${format==='sql'?'block':'none'}">
+                    <div id="sql_mode_container" style="display:${format === 'sql' ? 'block' : 'none'}">
                         <label>SQL Mode:</label>
-                        <select id="swal_sql_mode" class="form-select" style="margin-bottom:10px;" onchange="
-                            const isUpdate = this.value === 'update';
-                            const wcc = document.getElementById('where_col_container');
-                            if(wcc) {
-                                wcc.style.display = isUpdate ? 'block' : 'none';
-                                if(isUpdate) {
-                                    document.getElementById('swal_where_col').dispatchEvent(new Event('change'));
-                                } else {
-                                    document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; });
-                                }
-                            }
-                        ">
+                        <select id="swal_sql_mode" class="form-select" style="margin-bottom:10px;" onchange="const isUpdate = this.value === 'update'; const wcc = document.getElementById('where_col_container'); if(wcc) { wcc.style.display = isUpdate ? 'block' : 'none'; if(isUpdate) { document.getElementById('swal_where_col').dispatchEvent(new Event('change')); } else { document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; }); } }">
                             <option value="insert">INSERT (Default)</option>
                             <option value="update">UPDATE</option>
                             <option value="upsert">UPSERT (On Duplicate Key Update)</option>
@@ -11842,11 +11850,7 @@ var advancedFilters = null;
                     ${window._currentTableStructure ? `
                     <div id="where_col_container" style="display:none;">
                         <label>Where Column (for UPDATE mode):</label>
-                        <select id="swal_where_col" class="form-select" style="margin-bottom:10px;" onchange="
-                            document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; });
-                            const cb = Array.from(document.querySelectorAll('.exp-col-cb')).find(el => el.value === this.value);
-                            if(cb) { cb.checked = false; cb.disabled = true; }
-                        ">
+                        <select id="swal_where_col" class="form-select" style="margin-bottom:10px;" onchange="document.querySelectorAll('.exp-col-cb').forEach(cb => { cb.disabled = false; }); const cb = Array.from(document.querySelectorAll('.exp-col-cb')).find(el => el.value === this.value); if(cb) { cb.checked = false; cb.disabled = true; }">
                             ${window._currentTableStructure.map(c => `<option value="${c.name}">${c.name}</option>`).join('')}
                         </select>
                     </div>
