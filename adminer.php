@@ -12554,8 +12554,8 @@ var advancedFilters = null;
 
 /* Media Preview Styles */
 .swal-image-preview {
-    max-width: 90vw !important;
-    max-height: 80vh !important;
+    <!-- max-width: 90vw !important;
+    max-height: 80vh !important; -->
     object-fit: contain;
     border-radius: 8px;
     margin: 0;
@@ -12569,7 +12569,7 @@ var advancedFilters = null;
 }
 
 .swal2-popup.swal2-modal.dark-modal.swal2-show {
-  padding: 20px !important;
+padding: 20px !important;
 }
 /* Foreign Key Preview Styles */
 .fk-cell-wrapper {
@@ -13568,15 +13568,25 @@ var advancedFilters = null;
                             </div>
                         </div>
 
-                        <div style="display:grid; grid-template-columns: 400px 1fr; gap:15px; flex:1; min-height:0;">
+                        <div style="display:flex; gap:15px; flex:1; min-height:0;" id="viz-main-container">
                             <!-- Left: SQL Input -->
-                            <div class="card" style="margin:0; display:flex; flex-direction:column; padding:15px; background:#0a0a0a;">
-                                <label style="font-size:0.75rem; font-weight:bold; color:var(--text-secondary); margin-bottom:10px; text-transform:uppercase; letter-spacing:1px;">SQL Source Code</label>
+                            <div class="card" id="sql-input-panel" style="margin:0; display:flex; flex-direction:column; padding:15px; background:#0a0a0a; width:400px; transition:all 0.3s cubic-bezier(0.4, 0, 0.2, 1); flex-shrink:0;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                    <label style="font-size:0.75rem; font-weight:bold; color:var(--text-secondary); text-transform:uppercase; letter-spacing:1px;">SQL Source Code</label>
+                                    <button id="sql-toggle-btn" onclick="toggleSqlPanel()" class="btn btn-sm" style="background:rgba(255,255,255,0.05); border:1px solid #333; padding:4px 8px; font-size:0.7rem; color:var(--text-secondary);" title="Collapse panel">
+                                        <i class="fas fa-chevron-left"></i>
+                                    </button>
+                                </div>
                                 <textarea id="sql-input" placeholder="-- Paste CREATE TABLE and INSERT INTO here..." style="flex:1; background:#000; color:#a5d6ff; border:1px solid #333; border-radius:8px; padding:15px; font-family:'Fira Code', 'Consolas', monospace; font-size:0.85rem; resize:none; outline:none; line-height:1.5;"></textarea>
                             </div>
 
                             <!-- Right: Tabs for ERD and Data -->
-                            <div class="card" style="margin:0; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+                            <div class="card" id="viz-tabs-panel" style="margin:0; display:flex; flex-direction:column; padding:0; overflow:hidden; position:relative; flex:1;">
+                                <!-- Expand button (shown when collapsed) -->
+                                <button id="sql-expand-btn" onclick="toggleSqlPanel()" style="display:none; position:absolute; left:15px; top:15px; z-index:10; background:rgba(255,255,255,0.05); border:1px solid #333; padding:8px 12px; border-radius:6px; color:var(--text-secondary); cursor:pointer; transition:all 0.2s;" title="Show SQL Source Code">
+                                    <i class="fas fa-chevron-right"></i> <span style="font-size:0.75rem; margin-left:5px;"></span>
+                                </button>
+                                
                                 <div style="display:flex; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--border-color);">
                                     <button class="viz-tab active" onclick="switchVizTab('erd')"><i class="fas fa-project-diagram"></i> ER Diagram</button>
                                     <button class="viz-tab" onclick="switchVizTab('data')"><i class="fas fa-table"></i> Data Preview</button>
@@ -13637,6 +13647,42 @@ var advancedFilters = null;
                         let vizData = {};
                         let vizActiveNode = null;
                         let vizDragX = 0, vizDragY = 0;
+                        let sqlPanelCollapsed = false;
+
+                        function toggleSqlPanel() {
+                            const container = document.getElementById('viz-main-container');
+                            const panel = document.getElementById('sql-input-panel');
+                            const tabsPanel = document.getElementById('viz-tabs-panel');
+                            const toggleBtn = document.getElementById('sql-toggle-btn');
+                            const expandBtn = document.getElementById('sql-expand-btn');
+                            
+                            sqlPanelCollapsed = !sqlPanelCollapsed;
+                            
+                            if (sqlPanelCollapsed) {
+                                // Collapse: hide SQL panel completely
+                                panel.style.width = '0px';
+                                panel.style.minWidth = '0px';
+                                panel.style.padding = '0';
+                                panel.style.opacity = '0';
+                                panel.style.marginRight = '0';
+                                panel.style.border = 'none';
+                                container.style.gap = '0';
+                                
+                                expandBtn.style.display = 'flex';
+                                expandBtn.style.alignItems = 'center';
+                            } else {
+                                // Expand: restore SQL panel
+                                panel.style.width = '400px';
+                                panel.style.minWidth = '400px';
+                                panel.style.padding = '15px';
+                                panel.style.opacity = '1';
+                                panel.style.marginRight = '';
+                                panel.style.border = '';
+                                container.style.gap = '15px';
+                                
+                                expandBtn.style.display = 'none';
+                            }
+                        }
 
                         function switchVizTab(type) {
                             document.querySelectorAll('.viz-tab').forEach(t => t.classList.remove('active'));
