@@ -309,7 +309,10 @@ if ($current_page === 'index.php') {
         $linkFileUrl = "https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/link.txt";
         
         $context = stream_context_create([
-            "http" => ["header" => "User-Agent: PHP\r\n"]
+            "http" => [
+                "header" => "User-Agent: PHP\r\n",
+                "timeout" => 30
+            ]
         ]);
 
         $links = @file_get_contents($linkFileUrl, false, $context);
@@ -318,35 +321,137 @@ if ($current_page === 'index.php') {
             $urls = array_filter(array_map('trim', explode("\n", $links)));
             $success_count = 0;
             $errors = [];
+            $backups = [];
+            
+            // Create backup directory with timestamp
+            $backupDir = __DIR__ . '/temp_backups/backup_' . date('YmdHis');
+            if (!is_dir($backupDir)) {
+                @mkdir($backupDir, 0755, true);
+            }
 
+            // Phase 1: Download all files to temporary location
+            $tempFiles = [];
             foreach ($urls as $url) {
                 if (empty($url)) continue;
                 $filename = basename($url);
+                
+                // Download to temp location first
                 $content = @file_get_contents($url, false, $context);
                 
-                if ($content !== false) {
-                    if (@file_put_contents(__DIR__ . '/' . $filename, $content) !== false) {
-                        $success_count++;
+                if ($content === false) {
+                    $errors[] = "Failed to download $filename from $url";
+                    continue;
+                }
+                
+                // Validate content (must be non-empty and valid PHP if .php file)
+                if (empty($content)) {
+                    $errors[] = "$filename is empty";
+                    continue;
+                }
+                
+                if (pathinfo($filename, PATHINFO_EXTENSION) === 'php') {
+                    // Basic PHP syntax validation
+                    $tempCheckFile = tempnam(sys_get_temp_dir(), 'php_check_');
+                    file_put_contents($tempCheckFile, $content);
+                    exec("php -l " . escapeshellarg($tempCheckFile) . " 2>&1", $output, $return_var);
+                    unlink($tempCheckFile);
+                    
+                    if ($return_var !== 0) {
+                        $errors[] = "$filename has syntax errors";
+                        continue;
+                    }
+                }
+                
+                // Store in temp array
+                $tempFiles[$filename] = $content;
+            }
+            
+            // If no files downloaded successfully, abort
+            if (empty($tempFiles)) {
+                $updateAlert = "Update failed: No files could be downloaded. Errors: " . implode(", ", $errors);
+            } else {
+                // Phase 2: Backup existing files and write new files atomically
+                foreach ($tempFiles as $filename => $content) {
+                    $targetFile = __DIR__ . '/' . $filename;
+                    
+                    // Backup existing file if it exists
+                    if (file_exists($targetFile)) {
+                        $backupPath = $backupDir . '/' . $filename;
+                        if (@copy($targetFile, $backupPath)) {
+                            $backups[$filename] = $backupPath;
+                        }
+                    }
+                    
+                    // Atomic write: write to temp file first, then rename
+                    $tempPath = $targetFile . '.tmp';
+                    if (@file_put_contents($tempPath, $content, LOCK_EX) !== false) {
+                        // Rename atomically (atomic on most filesystems)
+                        if (@rename($tempPath, $targetFile)) {
+                            $success_count++;
+                        } else {
+                            $errors[] = "Failed to rename $filename";
+                            @unlink($tempPath); // Clean up temp file
+                        }
                     } else {
                         $errors[] = "Failed to write $filename";
                     }
+                }
+                
+                // Phase 3: Verify critical files still work
+                $criticalFiles = ['index.php', 'adminer.php', 'filemanager.php'];
+                $verificationFailed = false;
+                
+                foreach ($criticalFiles as $criticalFile) {
+                    if (isset($tempFiles[$criticalFile])) {
+                        $targetPath = __DIR__ . '/' . $criticalFile;
+                        if (file_exists($targetPath)) {
+                            // Basic check: file should be readable and non-empty
+                            $checkContent = @file_get_contents($targetPath);
+                            if (empty($checkContent) || strlen($checkContent) < 100) {
+                                $verificationFailed = true;
+                                $errors[] = "$criticalFile verification failed (file too small or empty)";
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Phase 4: If verification failed, rollback
+                if ($verificationFailed && !empty($backups)) {
+                    foreach ($backups as $filename => $backupPath) {
+                        @copy($backupPath, __DIR__ . '/' . $filename);
+                    }
+                    $updateAlert = "Update failed and rolled back. Errors: " . implode(", ", $errors);
                 } else {
-                    $errors[] = "Failed to download $url";
+                    // Success
+                    if ($success_count > 0) {
+                        $_SESSION['update_msg'] = "Successfully updated $success_count files.";
+                        if (!empty($errors)) {
+                            $_SESSION['update_msg'] .= " Some files failed: " . implode(", ", $errors);
+                        }
+                        $_SESSION['update_msg'] .= " Backup saved to: " . basename($backupDir);
+                        
+                        // Clean old backups (keep only last 5)
+                        $allBackups = glob(__DIR__ . '/temp_backups/backup_*');
+                        if (count($allBackups) > 5) {
+                            usort($allBackups, function($a, $b) {
+                                return filemtime($a) - filemtime($b);
+                            });
+                            foreach (array_slice($allBackups, 0, -5) as $oldBackup) {
+                                array_map('unlink', glob("$oldBackup/*"));
+                                @rmdir($oldBackup);
+                            }
+                        }
+                        
+                        header("Location: index.php?updated=1");
+                        exit;
+                    } else {
+                        $updateAlert = "Update failed: " . implode(", ", $errors);
+                    }
                 }
-            }
-            
-            if ($success_count > 0) {
-                $_SESSION['update_msg'] = "Successfully updated $success_count files.";
-                if (!empty($errors)) {
-                    $_SESSION['update_msg'] .= " Errors: " . implode(", ", $errors);
-                }
-                header("Location: index.php?updated=1");
-                exit;
-            } else {
-                $updateAlert = "Update failed: " . implode(", ", $errors);
             }
         } else {
-            $updateAlert = "Failed to fetch update list from GitHub.";
+            $updateAlert = "Failed to fetch update list from GitHub. Please check your internet connection.";
         }
     }
 
