@@ -12554,8 +12554,8 @@ var advancedFilters = null;
 
 /* Media Preview Styles */
 .swal-image-preview {
-    <!-- max-width: 90vw !important;
-    max-height: 80vh !important; -->
+    width: 100%;
+    max-height: 80vh !important;
     object-fit: contain;
     border-radius: 8px;
     margin: 0;
@@ -13621,8 +13621,9 @@ padding: 20px !important;
                         .viz-col { padding:4px 12px; display:flex; justify-content:space-between; font-size:0.75rem; color:#cbd5e1; border-bottom:1px solid rgba(255,255,255,0.02); }
                         .viz-col .type { color:#64748b; font-family:monospace; font-size:0.65rem; }
                         
-                        .media-prev { max-width:100px; max-height:60px; border-radius:4px; cursor:pointer; transition:0.2s; border:1px solid #444; }
+                        .media-prev { max-width:100px; max-height:60px; border-radius:4px; cursor:pointer; transition:0.2s; border:1px solid #444; object-fit:cover; }
                         .media-prev:hover { transform:scale(1.1); border-color:var(--accent); z-index:100; position:relative; }
+                        .media-prev[alt*="failed"] { border:2px solid #f87171 !important; opacity:0.5; }
                     </style>
 
                     <style>
@@ -13787,7 +13788,17 @@ padding: 20px !important;
                                         const rowRegex = /\(([\s\S]*?)\)(?:\s*,\s*|\s*;|$)/g;
                                         let rowMatch;
                                         while((rowMatch = rowRegex.exec(valuesStr)) !== null) {
-                                            const rowVals = rowMatch[1].split(/,(?=(?:(?:[^']*'){2})*[^']*$)/).map(v => v.trim().replace(/^'|'$/g, '').replace(/^"|"$/g, ''));
+                                            const rowVals = rowMatch[1].split(/,(?=(?:(?:[^']*'){2})*[^']*$)/).map(v => {
+                                                let cleaned = v.trim().replace(/^'|'$/g, '').replace(/^"|"$/g, '');
+                                                // Unescape common SQL escapes
+                                                cleaned = cleaned.replace(/\\'/g, "'")
+                                                                 .replace(/\\"/g, '"')
+                                                                 .replace(/\\n/g, '\n')
+                                                                 .replace(/\\r/g, '\r')
+                                                                 .replace(/\\t/g, '\t')
+                                                                 .replace(/\\\\/g, '\\');
+                                                return cleaned;
+                                            });
                                             rows.push(rowVals);
                                         }
                                         
@@ -13968,11 +13979,58 @@ padding: 20px !important;
                         function isMedia(url) {
                             if(!url || typeof url !== 'string') return null;
                             const trimmed = url.trim();
-                            // Improved Regex: Search for extension BEFORE query parameters (for Firebase/Cloud storage)
+                            
+                            // Check for escaped HTML img tags (e.g., &quot; or \")
+                            const escapedImgMatch = trimmed.match(/<img[^>]+src=["']([^"']+)["']/i) || 
+                                                   trimmed.match(/&lt;img[^&]+src=&quot;([^&]+)&quot;/i) ||
+                                                   trimmed.match(/\\["']https?:\/\/[^\\]+\\["']/i);
+                            
+                            if (escapedImgMatch && escapedImgMatch[1]) {
+                                // Extract URL from HTML tag
+                                const extractedUrl = escapedImgMatch[1]
+                                    .replace(/\\"/g, '"')
+                                    .replace(/&quot;/g, '"')
+                                    .replace(/&lt;/g, '<')
+                                    .replace(/&gt;/g, '>');
+                                
+                                if(extractedUrl.match(/\.(jpeg|jpg|gif|png|webp|avif|svg)(?:\?.*)?$/i)) return 'img-html';
+                                if(extractedUrl.match(/\.(mp4|webm|ogg|mov)(?:\?.*)?$/i)) return 'video-html';
+                            }
+                            
+                            // Direct URL check
                             if(trimmed.match(/\.(jpeg|jpg|gif|png|webp|avif|svg)(?:\?.*)?$/i)) return 'img';
                             if(trimmed.match(/\.(mp4|webm|ogg|mov)(?:\?.*)?$/i)) return 'video';
                             if(trimmed.startsWith('data:image/')) return 'img';
+                            
                             return null;
+                        }
+                        
+                        function extractMediaUrl(content) {
+                            if(!content || typeof content !== 'string') return content;
+                            
+                            // Try to extract URL from HTML img tag
+                            const imgMatch = content.match(/<img[^>]+src=["']([^"']+)["']/i);
+                            if (imgMatch && imgMatch[1]) {
+                                return imgMatch[1]
+                                    .replace(/\\"/g, '"')
+                                    .replace(/&quot;/g, '"')
+                                    .replace(/&lt;/g, '<')
+                                    .replace(/&gt;/g, '>');
+                            }
+                            
+                            // Try escaped version
+                            const escapedMatch = content.match(/&lt;img[^&]+src=&quot;([^&]+)&quot;/i);
+                            if (escapedMatch && escapedMatch[1]) {
+                                return escapedMatch[1];
+                            }
+                            
+                            // Try backslash escaped quotes
+                            const backslashMatch = content.match(/\\["'](https?:\/\/[^\\]+)\\["']/i);
+                            if (backslashMatch && backslashMatch[1]) {
+                                return backslashMatch[1];
+                            }
+                            
+                            return content;
                         }
 
                         let vizCurrentTable = '';
@@ -14055,8 +14113,20 @@ padding: 20px !important;
                                             const val = row[idx];
                                             const mediaType = isMedia(val);
                                             let cellContent = val;
-                                            if(mediaType === 'img') cellContent = `<img src="${val}" class="media-prev" onclick="Swal.fire({imageUrl:'${val}', background:'#111', showConfirmButton:false, customClass:{image:'swal-image-preview'}})">`;
-                                            if(mediaType === 'video') cellContent = `<video src="${val}" class="media-prev" onclick="this.paused ? this.play() : this.pause()" muted></video>`;
+                                            
+                                            if(mediaType === 'img' || mediaType === 'img-html') {
+                                                const imgUrl = extractMediaUrl(val);
+                                                const escapedUrl = imgUrl.replace(/'/g, "\\'");
+                                                cellContent = `<img src="${imgUrl}" class="media-prev" onclick="Swal.fire({imageUrl:'${escapedUrl}', background:'#111', showConfirmButton:false, customClass:{image:'swal-image-preview'}})" onerror="this.style.border='2px solid #f87171'; this.alt='Image failed to load';">`;
+                                            } else if(mediaType === 'video' || mediaType === 'video-html') {
+                                                const videoUrl = extractMediaUrl(val);
+                                                cellContent = `<video src="${videoUrl}" class="media-prev" onclick="this.paused ? this.play() : this.pause()" muted></video>`;
+                                            } else if(val && typeof val === 'string' && val.includes('<')) {
+                                                // Display HTML content as truncated preview
+                                                const preview = val.length > 100 ? val.substring(0, 100) + '...' : val;
+                                                cellContent = `<span style="color:#7ee787; font-family:monospace; font-size:0.75rem;" title="${val.replace(/"/g, '&quot;')}">${preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+                                            }
+                                            
                                             html += `<td>${cellContent}</td>`;
                                         }
                                     });
