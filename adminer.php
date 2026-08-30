@@ -7954,7 +7954,7 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
                 </div>';
             }
             ?>
-            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit"<?php endif; ?> style="position:relative;" class="adminer-data-cell">
+            <td <?= $jsonAttr ?> data-col="<?=htmlspecialchars($key)?>" data-type="<?=htmlspecialchars($colTypes[$key] ?? '')?>" <?php if($primaryKey): ?>data-pk="<?=htmlspecialchars($row[$primaryKey])?>" ondblclick="makeCellEditable(this)" title="Double click to edit • Enter to save • Escape to cancel"<?php endif; ?> style="position:relative;" class="adminer-data-cell">
                 <div class="cell-value-wrapper" style="padding-right:25px;">
                     <?=$displayVal?>
                 </div>
@@ -10609,50 +10609,198 @@ var advancedFilters = null;
                 })
                 .catch(() => callback());
             },
+            // Blur tidak auto-save lagi - hanya close jika tidak ada perubahan
             onBlur: () => {
-                const newVal = ts.getValue();
-                if (newVal === originalContent) {
-                    td.innerText = originalContent;
-                    td.classList.remove('editing');
-                } else {
-                    saveCellData({value: newVal, parentElement: td}, table, col, pk, originalContent);
-                }
-                ts.destroy();
-            },
-            onDropdownClose: () => {
-                // Focus out to trigger blur if necessary
+                setTimeout(() => {
+                    if (document.activeElement !== ts.control_input) {
+                        // Close tanpa save jika user tidak klik tombol
+                        if (!td.classList.contains('confirming')) {
+                            cleanup();
+                        }
+                    }
+                }, 200);
             }
         });
+
+        // Create confirm and cancel buttons
+        const confirmBtn = document.createElement('button');
+        confirmBtn.innerHTML = '<i class="fas fa-check"></i>';
+        confirmBtn.style.cssText = 'background:#10b981; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:8px; font-size:0.8rem; transition:all 0.2s;';
+        confirmBtn.title = 'Save changes (Enter)';
         
-        // Prevent scroll reset on focus and form submission on Enter
-        setTimeout(() => {
-            if (ts.control_input) {
-                ts.control_input.focus({ preventScroll: true });
-                // Prevent Enter key from submitting the parent form
-                ts.control_input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        ts.blur();
-                    } else if (e.key === 'Escape') {
-                        td.innerText = originalContent;
-                        td.classList.remove('editing');
-                        ts.destroy();
-                    }
-                });
-            } else {
-                ts.focus();
+        const cancelBtn = document.createElement('button');
+        cancelBtn.innerHTML = '<i class="fas fa-times"></i>';
+        cancelBtn.style.cssText = 'background:#ef4444; border:none; color:#fff; padding:4px 10px; border-radius:4px; cursor:pointer; margin-left:4px; font-size:0.8rem; transition:all 0.2s;';
+        cancelBtn.title = 'Cancel (Escape)';
+
+        // Container untuk tombol
+        const btnContainer = document.createElement('div');
+        btnContainer.id = 'inline-edit-buttons';
+        btnContainer.style.cssText = 'position:absolute; right:8px; top:50%; transform:translateY(-50%); display:flex; gap:4px; opacity:0; transition:opacity 0.2s; z-index:10;';
+        btnContainer.appendChild(cancelBtn);
+        btnContainer.appendChild(confirmBtn);
+        td.appendChild(btnContainer);
+
+        // Tampilkan tombol saat mouse over
+        td.addEventListener('mouseenter', () => {
+            if (td.classList.contains('editing')) {
+                btnContainer.style.opacity = '1';
             }
-        }, 10);
+        });
+        td.addEventListener('mouseleave', () => {
+            if (td.classList.contains('editing') && !td.classList.contains('confirming')) {
+                btnContainer.style.opacity = '0';
+            }
+        });
+
+        // Event listener untuk tombol confirm (Save)
+        confirmBtn.onclick = () => {
+            const newVal = ts.getValue();
+            if (newVal !== originalContent) {
+                saveCellData({value: newVal, parentElement: td}, table, col, pk, originalContent, ts);
+            } else {
+                // Restore original content
+                td.innerHTML = '';
+                td.innerText = originalContent;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) {
+                    existingBtns.remove();
+                }
+                
+                ts.destroy();
+            }
+        };
+
+        // Event listener untuk tombol cancel
+        cancelBtn.onclick = () => {
+            // Restore original content
+            td.innerHTML = '';
+            td.innerText = originalContent;
+            td.classList.remove('editing', 'confirming');
+            
+            // Reset styles
+            td.style.overflow = 'auto';
+            td.style.width = '';
+            td.style.minWidth = '';
+            td.style.height = '';
+            
+            // Remove buttons
+            const existingBtns = td.querySelector('#inline-edit-buttons');
+            if (existingBtns) {
+                existingBtns.remove();
+            }
+            
+            ts.destroy();
+        };
+
+        // Event listener untuk keyboard
+        if (ts.control_input) {
+            ts.control_input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    confirmBtn.click();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    cleanup();
+                }
+            });
+
+            // Set focus ke input
+            setTimeout(() => {
+                if (ts.control_input) {
+                    ts.control_input.focus({ preventScroll: true });
+                }
+            }, 10);
+        } else {
+            ts.focus();
+        }
+
+        // Cleanup function untuk close editor
+        function cleanup() {
+            // Restore original content
+            td.innerHTML = '';
+            td.innerText = originalContent;
+            td.classList.remove('editing', 'confirming');
+            
+            // Reset styles
+            td.style.overflow = 'auto';
+            td.style.width = '';
+            td.style.minWidth = '';
+            td.style.height = '';
+            
+            // Remove buttons
+            const existingBtns = td.querySelector('#inline-edit-buttons');
+            if (existingBtns) {
+                existingBtns.remove();
+            }
+            
+            ts.destroy();
+        }
+
+        // Handle click outside (dengan konfirmasi jika ada perubahan)
+        const closeHandler = (e) => {
+            if (!td.contains(e.target) && !btnContainer.contains(e.target)) {
+                // Restore original content
+                td.innerHTML = '';
+                td.innerText = originalContent;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) {
+                    existingBtns.remove();
+                }
+                
+                ts.destroy();
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+
+        setTimeout(() => {
+            document.addEventListener('click', closeHandler);
+        }, 100);
     }
 
-    function saveCellData(input, table, col, pk, original) {
+    function saveCellData(input, table, col, pk, original, ts) {
         const newVal = input.value;
         const td = input.parentElement;
         
         if (newVal === original) {
+            // Restore original content
+            td.innerHTML = '';
             td.innerText = original;
-            td.classList.remove('editing');
+            td.classList.remove('editing', 'confirming');
+            
+            // Reset styles
+            td.style.overflow = 'auto';
+            td.style.width = '';
+            td.style.minWidth = '';
+            td.style.height = '';
+            
+            // Remove buttons
+            const existingBtns = td.querySelector('#inline-edit-buttons');
+            if (existingBtns) {
+                existingBtns.remove();
+            }
+            
+            if (ts) ts.destroy();
             return;
         }
 
@@ -10670,22 +10818,78 @@ var advancedFilters = null;
         .then(res => res.json())
         .then(data => {
             if(data.success) {
+                // Restore original structure with new value
+                td.innerHTML = '';
                 td.innerText = newVal;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) {
+                    existingBtns.remove();
+                }
+                
+                if (ts) ts.destroy();
+                
                 td.style.backgroundColor = 'rgba(16, 185, 129, 0.2)';
                 setTimeout(() => td.style.backgroundColor = '', 1000);
                 const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1500});
                 toast.fire({ icon: 'success', title: 'Saved' });
             } else {
-                td.innerHTML = original; // Revert
+                // Revert to original
+                td.innerHTML = '';
+                td.innerText = original;
+                td.classList.remove('editing', 'confirming');
+                
+                // Reset styles
+                td.style.overflow = 'auto';
+                td.style.width = '';
+                td.style.minWidth = '';
+                td.style.height = '';
+                
+                // Remove buttons
+                const existingBtns = td.querySelector('#inline-edit-buttons');
+                if (existingBtns) {
+                    existingBtns.remove();
+                }
+                
+                if (ts) ts.destroy();
+                
                 Swal.fire('Error', data.message || 'Update failed', 'error');
             }
         })
         .catch(err => {
-            td.innerHTML = original;
+            td.innerHTML = '';
+            td.innerText = original;
+            td.classList.remove('editing', 'confirming');
+            
+            // Reset styles
+            td.style.overflow = 'auto';
+            td.style.width = '';
+            td.style.minWidth = '';
+            td.style.height = '';
+            
+            // Remove buttons
+            const existingBtns = td.querySelector('#inline-edit-buttons');
+            if (existingBtns) {
+                existingBtns.remove();
+            }
+            
+            if (ts) ts.destroy();
+            
             Swal.fire('Error', 'Network error', 'error');
-        })
-        .finally(() => {
-            td.classList.remove('editing');
+        });
+    }
+            td.style.overflow = 'auto';
+            td.style.width = '';
+            td.style.minWidth = '';
+            td.style.height = '';
         });
     }
 
@@ -12296,6 +12500,21 @@ var advancedFilters = null;
         .quick-copy-btn:active {
             transform: translateY(-50%) scale(0.9) !important;
             color: var(--text-primary) !important;
+        }
+        /* Inline Edit Buttons */
+        #inline-edit-buttons {
+            z-index: 100 !important;
+        }
+        #inline-edit-buttons button {
+            font-family: 'Font Awesome 5 Free', sans-serif;
+            font-weight: 900;
+        }
+        #inline-edit-buttons button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #inline-edit-buttons button:active {
+            transform: scale(0.95);
         }
         .swal2-toast .swal2-icon {
             border-width: 2px !important;
