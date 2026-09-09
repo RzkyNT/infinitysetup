@@ -1,0 +1,914 @@
+<?php
+/**
+ * System Administration, Terminal, Process Manager & Network Utilities
+ * Improved UI/UX & Authentic CLI Feel
+ */
+ob_start();
+error_reporting(0);
+ini_set('display_errors', 0);
+require_once __DIR__ . '/index.php';
+
+// RBAC Check
+if (!has_permission('system', 'read')) {
+    die("<div style='background:#1e293b; color:#f87171; padding:2rem; text-align:center; height:100vh; font-family:Inter, sans-serif; display:flex; flex-direction:column; align-items:center; justify-content:center;'>
+            <i class='fas fa-lock' style='font-size:4rem; margin-bottom:1rem;'></i>
+            <h1 style='margin:0'>Access Denied</h1>
+            <p style='color:#94a3b8'>You do not have permission to access System Utilities.</p>
+            <a href='?logout=1' style='color:#0dcaf0; text-decoration:none; margin-top:1rem; font-weight:600'>Switch Account</a>
+         </div>");
+}
+
+if (!isset($_SESSION['terminal_cwd']) || empty($_SESSION['terminal_cwd'])) {
+    $_SESSION['terminal_cwd'] = str_replace('\\', '/', __DIR__);
+}
+
+ $isWindows = (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN');
+
+function execute_command($cmd, $cwd) {
+    global $isWindows;
+    $descriptors = [0 => ["pipe", "r"], 1 => ["pipe", "w"], 2 => ["pipe", "w"]];
+    $runCmd = $cmd;
+    
+    if ($isWindows) {
+        if (preg_match('/^ls(\s+.*)?$/i', trim($cmd), $matches)) {
+            $args = preg_replace('/-[a-zA-Z]+/', '', $matches[1] ?? '');
+            $runCmd = 'dir ' . trim($args);
+        }
+        $runCmd = 'cmd.exe /c ' . $runCmd;
+    }
+    
+    $process = proc_open($runCmd, $descriptors, $pipes, $cwd);
+    $output = "";
+    
+    if (is_resource($process)) {
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        proc_close($process);
+        
+        $output = $stdout;
+        if (!empty($stderr)) {
+            $output .= ($output ? "\n" : "") . "[Error]\n" . $stderr;
+        }
+    } else {
+        $output = "Error: Failed to open process execution.";
+    }
+    return $output;
+}
+
+// ----------------------------------------------------
+// AJAX API ENDPOINTS
+// ----------------------------------------------------
+if (isset($_GET['api'])) {
+    header('Content-Type: application/json');
+    
+    if ($_GET['api'] === 'terminal_execute') {
+        $command = trim($_POST['command'] ?? '');
+        $cwd = $_SESSION['terminal_cwd'];
+        
+        if (empty($command)) {
+            echo json_encode(['output' => '', 'cwd' => $cwd]);
+            exit;
+        }
+        
+        $isCd = preg_match('/^cd(\.[\.\\\/]*|[\\/].*|\s+.*)?$/i', $command, $cdMatch) ||
+                ($isWindows && preg_match('/^[A-Za-z]:[\\/\\\\]?$/', $command));
+        
+        if ($isCd) {
+            if ($isWindows && preg_match('/^[A-Za-z]:[\\/\\\\]?$/', $command)) {
+                $targetDir = rtrim($command, '/\\') . '\\';
+            } elseif (preg_match('/^cd\.\.(.*)$/i', $command, $m)) {
+                $targetDir = '..' . $m[1];
+            } elseif (preg_match('/^cd[\\/\\\\](.*)$/i', $command, $m)) {
+                $targetDir = '/' . $m[1];
+            } else {
+                $parts = preg_split('/\s+/', $command, 2);
+                $targetDir = isset($parts[1]) ? trim($parts[1]) : '';
+            }
+            
+            if (empty($targetDir)) {
+                $newCwd = str_replace('\\', '/', __DIR__);
+                $_SESSION['terminal_cwd'] = $newCwd;
+                echo json_encode(['output' => "", 'cwd' => $newCwd]); // Silent success like real terminal
+                exit;
+            }
+            
+            $targetDirNormalized = str_replace('/', '\\', $targetDir);
+            
+            if ($targetDir === '~') {
+                $resolvedPath = getenv('USERPROFILE') ?: getenv('HOME') ?: __DIR__;
+            } elseif ($isWindows && preg_match('/^[A-Za-z]:\\\\?$/', $targetDirNormalized)) {
+                $resolvedPath = rtrim($targetDirNormalized, '\\') . '\\';
+            } elseif ($isWindows && preg_match('/^[A-Za-z]:/', $targetDirNormalized)) {
+                $resolvedPath = realpath($targetDirNormalized);
+            } elseif (substr($targetDirNormalized, 0, 1) === '\\' || substr($targetDirNormalized, 0, 1) === '/') {
+                $driveLetter = substr(str_replace('/', '\\', $cwd), 0, 2);
+                $resolvedPath = realpath($driveLetter . $targetDirNormalized);
+            } else {
+                $cwdNative = str_replace('/', '\\', $cwd);
+                $resolvedPath = realpath($cwdNative . '\\' . $targetDirNormalized);
+            }
+            
+            if ($resolvedPath && is_dir($resolvedPath)) {
+                $newCwd = str_replace('\\', '/', $resolvedPath);
+                $_SESSION['terminal_cwd'] = $newCwd;
+                echo json_encode(['output' => "", 'cwd' => $newCwd]);
+            } else {
+                echo json_encode(['output' => "cd: no such file or directory: $targetDir\n", 'cwd' => $cwd]);
+            }
+            exit;
+        }
+        
+        $output = execute_command($command, str_replace('/', '\\', $cwd));
+        echo json_encode(['output' => $output, 'cwd' => $_SESSION['terminal_cwd']]);
+        exit;
+    }
+
+    if ($_GET['api'] === 'get_telemetry') {
+        $totalDisk = disk_total_space(__DIR__);
+        $freeDisk = disk_free_space(__DIR__);
+        $usedDisk = $totalDisk - $freeDisk;
+        $diskPercentage = $totalDisk > 0 ? round(($usedDisk / $totalDisk) * 100, 1) : 0;
+        $memLimit = ini_get('memory_limit');
+        $memUsed = memory_get_usage(true);
+        $ramTotal = 'Unknown'; $ramUsed = 'Unknown'; $ramFree = 'Unknown'; $ramPercentage = 0;
+        $cpuUsage = 0;
+        
+        if ($isWindows) {
+            $wmiRam = shell_exec('wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value');
+            if ($wmiRam) {
+                preg_match('/FreePhysicalMemory=(\d+)/', $wmiRam, $freeMatches);
+                preg_match('/TotalVisibleMemorySize=(\d+)/', $wmiRam, $totalMatches);
+                if (isset($freeMatches[1]) && isset($totalMatches[1])) {
+                    $totalKb = (float)$totalMatches[1]; $freeKb = (float)$freeMatches[1]; $usedKb = $totalKb - $freeKb;
+                    $ramTotal = round($totalKb / (1024 * 1024), 2) . ' GB';
+                    $ramUsed = round($usedKb / (1024 * 1024), 2) . ' GB';
+                    $ramPercentage = round(($usedKb / $totalKb) * 100, 1);
+                }
+            }
+            $wmiCpu = shell_exec('wmic cpu get LoadPercentage /Value');
+            if ($wmiCpu && preg_match('/LoadPercentage=(\d+)/', $wmiCpu, $matches)) {
+                $cpuUsage = (int)$matches[1];
+            }
+        } else {
+            if (file_exists('/proc/meminfo')) {
+                $meminfo = file_get_contents('/proc/meminfo');
+                preg_match('/MemTotal:\s+(\d+)/', $meminfo, $totalMatches);
+                preg_match('/MemAvailable:\s+(\d+)/', $meminfo, $availMatches);
+                if (isset($totalMatches[1]) && isset($availMatches[1])) {
+                    $totalKb = (float)$totalMatches[1]; $availKb = (float)$availMatches[1]; $usedKb = $totalKb - $availKb;
+                    $ramTotal = round($totalKb / (1024 * 1024), 2) . ' GB';
+                    $ramUsed = round($usedKb / (1024 * 1024), 2) . ' GB';
+                    $ramPercentage = round(($usedKb / $totalKb) * 100, 1);
+                }
+            }
+            if (file_exists('/proc/stat')) {
+                $stat1 = file_get_contents('/proc/stat'); usleep(100000);
+                $stat2 = file_get_contents('/proc/stat');
+                $info1 = explode("\n", $stat1)[0]; $info2 = explode("\n", $stat2)[0];
+                $cpu1 = array_slice(array_filter(explode(" ", $info1)), 1);
+                $cpu2 = array_slice(array_filter(explode(" ", $info2)), 1);
+                $total1 = array_sum($cpu1); $total2 = array_sum($cpu2);
+                $idle1 = $cpu1[3] + ($cpu1[4] ?? 0); $idle2 = $cpu2[3] + ($cpu2[4] ?? 0);
+                $diffTotal = $total2 - $total1; $diffIdle = $idle2 - $idle1;
+                if ($diffTotal > 0) $cpuUsage = round((($diffTotal - $diffIdle) / $diffTotal) * 100, 1);
+            }
+        }
+        
+        echo json_encode([
+            'disk' => ['total' => round($totalDisk / (1024*1024*1024), 2) . ' GB', 'used' => round($usedDisk / (1024*1024*1024), 2) . ' GB', 'percentage' => $diskPercentage],
+            'ram' => ['total' => $ramTotal, 'used' => $ramUsed, 'percentage' => $ramPercentage],
+            'cpu' => ['percentage' => $cpuUsage],
+            'php_memory' => ['used' => round($memUsed / (1024 * 1024), 2) . ' MB', 'limit' => $memLimit]
+        ]);
+        exit;
+    }
+    
+    if ($_GET['api'] === 'process_list') {
+        $processes = [];
+        if ($isWindows) {
+            $cmd = 'tasklist /FO CSV /NH';
+            $raw = execute_command($cmd, __DIR__);
+            $lines = explode("\n", trim($raw));
+            foreach ($lines as $line) {
+                $data = str_getcsv(trim($line), ',', '"', "\\");
+                if (count($data) >= 5) {
+                    $memVal = trim(str_replace(['K', ','], '', $data[4]));
+                    $processes[] = ['name' => $data[0], 'pid' => $data[1], 'session' => $data[2], 'mem' => round($memVal / 1024, 2) . ' MB', 'user' => 'N/A'];
+                }
+            }
+        } else {
+            $cmd = 'ps aux';
+            $raw = execute_command($cmd, __DIR__);
+            $lines = explode("\n", trim($raw));
+            for ($i = 1; $i < count($lines); $i++) {
+                $line = trim($lines[$i]);
+                if (empty($line)) continue;
+                $parts = preg_split('/\s+/', $line, 11);
+                if (count($parts) >= 11) {
+                    $processes[] = ['name' => basename($parts[10]), 'pid' => $parts[1], 'user' => $parts[0], 'mem' => round($parts[5] / 1024, 2) . ' MB', 'session' => 'CPU: ' . $parts[2] . '% | MEM: ' . $parts[3] . '%'];
+                }
+            }
+        }
+        // Sort by memory usage descending
+        usort($processes, function($a, $b) {
+            return (float)$b['mem'] <=> (float)$a['mem'];
+        });
+        echo json_encode(['processes' => $processes]);
+        exit;
+    }
+    
+    if ($_GET['api'] === 'process_kill') {
+        $pid = (int)($_POST['pid'] ?? 0);
+        if ($pid <= 0) { echo json_encode(['success' => false, 'message' => 'Invalid Process ID']); exit; }
+        $cmd = $isWindows ? "taskkill /F /PID $pid" : "kill -9 $pid";
+        $output = execute_command($cmd, __DIR__);
+        echo json_encode(['success' => true, 'output' => trim($output)]);
+        exit;
+    }
+    
+    if ($_GET['api'] === 'network_tool') {
+        $tool = $_POST['tool'] ?? '';
+        $target = escapeshellarg($_POST['target'] ?? '');
+        $output = '';
+        if (empty($tool) || empty($target)) { echo json_encode(['output' => 'Invalid parameters.']); exit; }
+        
+        switch ($tool) {
+            case 'ping':
+                $countFlag = $isWindows ? '-n 4' : '-c 4';
+                $output = execute_command("ping $countFlag $target", __DIR__);
+                break;
+            case 'nslookup':
+                $output = execute_command("nslookup $target", __DIR__);
+                break;
+            case 'port_check':
+                $port = (int)($_POST['port'] ?? 80);
+                $cleanTarget = $_POST['target'] ?? '';
+                $start = microtime(true);
+                $fp = @fsockopen($cleanTarget, $port, $errno, $errstr, 4);
+                $duration = round((microtime(true) - $start) * 1000, 2);
+                $output = $fp ? "Port $port is OPEN on $cleanTarget (Latency: {$duration}ms)" : "Port $port is CLOSED on $cleanTarget\nError: [$errno] $errstr";
+                if ($fp) fclose($fp);
+                break;
+        }
+        echo json_encode(['output' => trim($output)]);
+        exit;
+    }
+    
+    if ($_GET['api'] === 'netstat_list') {
+        $connections = [];
+        $raw = execute_command('netstat -an', __DIR__);
+        $lines = explode("\n", trim($raw));
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (empty($line)) continue;
+            $parts = preg_split('/\s+/', $line);
+            if (count($parts) >= 4) {
+                $proto = strtoupper($parts[0]);
+                if (in_array($proto, ['TCP', 'UDP'])) {
+                    $connections[] = ['proto' => $proto, 'local' => $parts[1], 'foreign' => $parts[2], 'state' => $parts[3] ?? 'LISTEN'];
+                }
+            }
+        }
+        echo json_encode(['connections' => $connections, 'raw' => $raw]);
+        exit;
+    }
+    
+    if ($_GET['api'] === 'read_logs') {
+        $logType = $_GET['log_type'] ?? '';
+        $output = '';
+        if ($logType === 'api') $logFile = __DIR__ . '/api_logs.json';
+        elseif ($logType === 'scheduler') $logFile = __DIR__ . '/scheduler_logs.json';
+        else $logFile = ini_get('error_log');
+        
+        if ($logFile && file_exists($logFile) && is_readable($logFile)) {
+            if (pathinfo($logFile, PATHINFO_EXTENSION) === 'json') {
+                $data = json_decode(file_get_contents($logFile), true);
+                $output = is_array($data) ? json_encode($data, JSON_PRETTY_PRINT) : file_get_contents($logFile);
+            } else {
+                $file = escapeshellarg($logFile);
+                $output = $isWindows ? execute_command("powershell -Command \"Get-Content $file -Tail 100\"", __DIR__) : execute_command("tail -n 100 $file", __DIR__);
+            }
+        } else {
+            $output = "Log file is empty or not readable.";
+        }
+        echo json_encode(['output' => $output]);
+        exit;
+    }
+}
+
+ $os_version = php_uname();
+ $php_version = PHP_VERSION;
+ $server_software = $_SERVER['SERVER_SOFTWARE'] ?? 'N/A';
+ $sys_user = get_current_user();
+ $sys_host = php_uname('n');
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System & Terminal - Infinity Portal</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0a;
+            --card: #111418;
+            --card-light: #181c22;
+            --card-border: #242b34;
+            --text: #e2e8f0;
+            --text-muted: #64748b;
+            --primary: #00ffcc;
+            --danger: #ff3b3b;
+            --warning: #ffcc00;
+            --terminal-green: #00ff41;
+        }
+        
+        body {
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif;
+            margin: 0;
+            min-height: 100vh;
+        }
+        
+        .navbar {
+            background: var(--card);
+            border-bottom: 1px solid var(--card-border);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .navbar-brand {
+            font-size: 1.25rem; font-weight: 700; color: var(--text);
+            text-decoration: none; display: flex; align-items: center; gap: 10px;
+        }
+        
+        .container-fluid { padding: 2rem; }
+        
+        /* Telemetry Circular Cards */
+        .telemetry-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .telemetry-card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        .gauge {
+            width: 80px; height: 80px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            position: relative;
+            background: conic-gradient(var(--gauge-color, var(--primary)) calc(var(--p)*1%), rgba(255,255,255,0.05) 0);
+            transition: background 0.5s;
+        }
+        
+        .gauge::before {
+            content: '';
+            position: absolute;
+            width: 62px; height: 62px;
+            background: var(--card);
+            border-radius: 50%;
+        }
+        
+        .gauge-val {
+            position: relative;
+            font-size: 1.2rem; font-weight: 700; z-index: 1;
+        }
+        
+        .telemetry-info h5 {
+            color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; margin-bottom: 0.25rem; letter-spacing: 0.05em;
+        }
+        
+        .telemetry-info h3 { font-size: 1.25rem; margin-bottom: 0; }
+        
+        /* Main Workspace */
+        .workspace-card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        
+        .nav-tabs {
+            border-bottom: 1px solid var(--card-border);
+            background: var(--card-light);
+            padding: 0.5rem 1rem 0;
+        }
+        
+        .nav-link {
+            color: var(--text-muted) !important;
+            border: none !important;
+            padding: 0.75rem 1.25rem;
+            font-weight: 500; border-radius: 8px 8px 0 0;
+            display: flex; align-items: center; gap: 8px;
+        }
+        
+        .nav-link:hover { color: var(--text) !important; background: rgba(255,255,255,0.03); }
+        .nav-link.active { color: var(--primary) !important; border-bottom: 2px solid var(--primary) !important; background: var(--card) !important; }
+        
+        .tab-content { padding: 2rem; min-height: 500px; }
+        
+        /* Authentic Terminal */
+        .terminal-container {
+            background: #000000;
+            border: 1px solid #2a2a2a;
+            border-radius: 10px;
+            overflow: hidden;
+            font-family: 'JetBrains Mono', monospace;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.05);
+        }
+        
+        .terminal-header {
+            background: #1a1a1a; padding: 0.6rem 1rem;
+            border-bottom: 1px solid #2a2a2a;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        
+        .terminal-dots { display: flex; gap: 6px; }
+        .terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
+        .dot-red { background: #ff5f56; }
+        .dot-yellow { background: #ffbd2e; }
+        .dot-green { background: #27c93f; }
+        
+        .terminal-body {
+            height: 380px; padding: 1rem; overflow-y: auto;
+            color: var(--terminal-green);
+            font-size: 0.9rem; line-height: 1.5;
+            white-space: pre-wrap; word-break: break-all;
+            scroll-behavior: smooth;
+        }
+        
+        .terminal-input-row {
+            display: flex; align-items: center;
+            padding: 0.75rem 1rem; border-top: 1px solid #1a1a1a;
+        }
+        
+        .terminal-prompt {
+            color: var(--primary);
+            margin-right: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .terminal-input {
+            flex: 1; background: transparent; border: none; outline: none;
+            color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; caret-color: var(--primary);
+        }
+        
+        /* Process Table */
+        .process-table th { color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--card-border); }
+        .process-table td { vertical-align: middle; border-bottom: 1px solid var(--card-border); }
+        .process-table tr:hover { background: rgba(255,255,255,0.02); }
+        .mem-high { color: var(--danger); font-weight: 600; }
+        .mem-med { color: var(--warning); }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+        
+        .btn-outline-info { border-color: var(--card-border); color: var(--text); }
+        .btn-outline-info:hover { background: var(--primary); color: #000; border-color: var(--primary); }
+        
+        .result-box {
+            background: #000; border: 1px solid var(--card-border);
+            border-radius: 8px; padding: 1rem;
+            font-family: 'JetBrains Mono', monospace; color: #a8ffb2;
+            min-height: 120px; max-height: 400px; overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar">
+        <a href="index.php" class="navbar-brand">
+            <i class="fas fa-infinity" style="color: var(--primary)"></i> Infinity Setup
+        </a>
+        <div class="d-flex gap-3 align-items-center">
+            <span class="text-muted small">
+                <i class="fas fa-user-circle"></i> <?= htmlspecialchars($_SESSION['username'] ?? 'Guest') ?> | 
+                <i class="fas fa-server"></i> <?= $sys_host ?>
+            </span>
+            <a href="index.php" class="btn btn-sm btn-outline-info"><i class="fas fa-arrow-left"></i> Dashboard</a>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <!-- Live Circular Telemetry -->
+        <div class="telemetry-row">
+            <div class="telemetry-card">
+                <div class="gauge" id="cpu-gauge" style="--p: 0; --gauge-color: #00ffcc;">
+                    <span class="gauge-val" id="cpu-gauge-val">0%</span>
+                </div>
+                <div class="telemetry-info">
+                    <h5>CPU Usage</h5>
+                    <h3 id="cpu-processes">Loading...</h3>
+                </div>
+            </div>
+            <div class="telemetry-card">
+                <div class="gauge" id="ram-gauge" style="--p: 0; --gauge-color: #a855f7;">
+                    <span class="gauge-val" id="ram-gauge-val">0%</span>
+                </div>
+                <div class="telemetry-info">
+                    <h5>Memory (RAM)</h5>
+                    <h3 id="ram-details">Loading...</h3>
+                </div>
+            </div>
+            <div class="telemetry-card">
+                <div class="gauge" id="disk-gauge" style="--p: 0; --gauge-color: #10b981;">
+                    <span class="gauge-val" id="disk-gauge-val">0%</span>
+                </div>
+                <div class="telemetry-info">
+                    <h5>Disk Storage</h5>
+                    <h3 id="disk-details">Loading...</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="workspace-card">
+            <ul class="nav nav-tabs" id="systemTabs" role="tablist">
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#terminal-pane"><i class="fas fa-terminal"></i> Terminal</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#process-pane"><i class="fas fa-tasks"></i> Processes</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#netstat-pane"><i class="fas fa-ethernet"></i> Connections</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#network-pane"><i class="fas fa-network-wired"></i> Network Tools</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs-pane"><i class="fas fa-file-lines"></i> Logs</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#telemetry-pane"><i class="fas fa-info-circle"></i> Host Info</button></li>
+            </ul>
+            
+            <div class="tab-content">
+                <!-- Terminal -->
+                <div class="tab-pane fade show active" id="terminal-pane">
+                    <div class="d-flex justify-content-between mb-2">
+                        <h5 class="mb-0"><i class="fas fa-terminal text-info"></i> Shell Console</h5>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearConsole()"><i class="fas fa-trash"></i> Clear</button>
+                    </div>
+                    <div class="terminal-container">
+                        <div class="terminal-header">
+                            <div class="terminal-dots">
+                                <span class="terminal-dot dot-red"></span><span class="terminal-dot dot-yellow"></span><span class="terminal-dot dot-green"></span>
+                            </div>
+                            <small style="color: #64748b; font-family: sans-serif;"><?= $sys_user ?>@<?= $sys_host ?></small>
+                        </div>
+                        <div class="terminal-body" id="console-body">Infinity Web Shell [Version 1.0.0]
+(c) Infinity Portal. All rights reserved.
+
+Type "help" or "ls/dir" to begin.
+
+</div>
+                        <div class="terminal-input-row">
+                            <span class="terminal-prompt" id="terminal-prompt">></span>
+                            <input type="text" class="terminal-input" id="console-input" autofocus autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Process Manager -->
+                <div class="tab-pane fade" id="process-pane">
+                    <div class="d-flex justify-content-between mb-3">
+                        <h5><i class="fas fa-tasks text-info"></i> Active Processes</h5>
+                        <button class="btn btn-sm btn-outline-info" onclick="refreshProcessList()"><i class="fas fa-rotate"></i> Refresh</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table process-table">
+                            <thead><tr><th>Process Name</th><th>PID</th><th>User</th><th>Memory</th><th>CPU/Extra</th><th class="text-center">Action</th></tr></thead>
+                            <tbody id="process-table-body">
+                                <tr><td colspan="6" class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm"></div> Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Network Tools -->
+                <div class="tab-pane fade" id="network-pane">
+                    <h5 class="mb-3 text-info"><i class="fas fa-network-wired"></i> Network Utilities</h5>
+                    <div class="row g-4">
+                        <div class="col-md-4">
+                            <div class="p-3 border border-secondary rounded h-100">
+                                <form id="network-form">
+                                    <div class="mb-3">
+                                        <label class="form-label small text-muted">Tool</label>
+                                        <select class="form-select bg-dark text-light border-secondary" id="net-tool">
+                                            <option value="ping">Ping Host</option><option value="nslookup">DNS Lookup</option><option value="port_check">Port Scanner</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label small text-muted">Target</label>
+                                        <input type="text" class="form-control bg-dark text-light border-secondary" id="net-target" placeholder="google.com" required>
+                                    </div>
+                                    <div class="mb-3 d-none" id="port-group">
+                                        <label class="form-label small text-muted">Port</label>
+                                        <input type="number" class="form-control bg-dark text-light border-secondary" id="net-port" value="80">
+                                    </div>
+                                    <button type="submit" class="btn btn-info w-100 text-dark fw-bold" id="net-submit-btn">Execute</button>
+                                </form>
+                            </div>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="result-box" id="network-output">Waiting for command execution...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Netstat -->
+                <div class="tab-pane fade" id="netstat-pane">
+                    <div class="d-flex justify-content-between mb-3">
+                        <h5><i class="fas fa-ethernet text-info"></i> Network Connections</h5>
+                        <div class="btn-group">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="toggleRawNetstat()">Toggle Raw</button>
+                            <button class="btn btn-sm btn-outline-info" onclick="refreshNetstat()"><i class="fas fa-rotate"></i> Refresh</button>
+                        </div>
+                    </div>
+                    <div id="netstat-parsed-view">
+                        <div class="table-responsive">
+                            <table class="table process-table">
+                                <thead><tr><th>Proto</th><th>Local Address</th><th>Foreign Address</th><th>State</th></tr></thead>
+                                <tbody id="netstat-table-body"><tr><td colspan="4" class="text-center text-muted py-4">Loading...</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="netstat-raw-view" class="d-none">
+                        <div class="result-box" id="netstat-raw-output" style="height: 400px;"></div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="tab-pane fade" id="logs-pane">
+                    <div class="d-flex justify-content-between mb-3">
+                        <h5 class="text-info"><i class="fas fa-file-lines"></i> System Logs</h5>
+                        <div class="d-flex gap-2">
+                            <select class="form-select form-select-sm bg-dark text-light border-secondary" id="log-select-type" onchange="loadLogs()">
+                                <option value="api">API Logs</option><option value="scheduler">Scheduler Logs</option><option value="php_error">PHP Error Log</option>
+                            </select>
+                            <button class="btn btn-sm btn-outline-info" onclick="loadLogs()"><i class="fas fa-rotate"></i></button>
+                        </div>
+                    </div>
+                    <div class="result-box" id="logs-output-box" style="height: 450px; color: #ffeb3b;"></div>
+                </div>
+                
+                <!-- Host Info -->
+                <div class="tab-pane fade" id="telemetry-pane">
+                    <h5 class="mb-4 text-info"><i class="fas fa-info-circle"></i> Environment Information</h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <table class="table">
+                                <tbody>
+                                    <tr><td class="text-muted" style="width:40%">OS</td><td class="fw-bold"><?= htmlspecialchars($os_version) ?></td></tr>
+                                    <tr><td class="text-muted">Host Type</td><td class="fw-bold"><?= $isWindows ? 'Windows' : 'Linux/Unix' ?></td></tr>
+                                    <tr><td class="text-muted">PHP Version</td><td class="fw-bold"><?= htmlspecialchars($php_version) ?></td></tr>
+                                    <tr><td class="text-muted">Server Software</td><td class="fw-bold"><?= htmlspecialchars($server_software) ?></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <table class="table">
+                                <tbody>
+                                    <tr><td class="text-muted">Max Exec Time</td><td class="fw-bold"><?= ini_get('max_execution_time') ?>s</td></tr>
+                                    <tr><td class="text-muted">Upload Max Size</td><td class="fw-bold"><?= ini_get('upload_max_filesize') ?></td></tr>
+                                    <tr><td class="text-muted">Post Max Size</td><td class="fw-bold"><?= ini_get('post_max_size') ?></td></tr>
+                                    <tr><td class="text-muted">Memory Limit</td><td class="fw-bold"><?= ini_get('memory_limit') ?></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const isWindows = <?= $isWindows ? 'true' : 'false' ?>;
+        const sysUser = '<?= $sys_user ?>';
+        const sysHost = '<?= $sys_host ?>';
+        let currentCwd = '<?= addslashes($_SESSION['terminal_cwd']) ?>';
+        let cmdHistory = [];
+        let histIndex = -1;
+        let processInterval, telemetryInterval;
+
+        // System Monitor Circular Gauges
+        function updateTelemetry() {
+            fetch('?api=get_telemetry').then(r => r.json()).then(data => {
+                // CPU
+                document.getElementById('cpu-gauge').style.setProperty('--p', data.cpu.percentage);
+                document.getElementById('cpu-gauge-val').innerText = Math.round(data.cpu.percentage) + '%';
+                document.getElementById('cpu-processes').innerText = data.cpu.percentage + '% Load';
+                
+                // RAM
+                if (data.ram.total !== 'Unknown') {
+                    document.getElementById('ram-gauge').style.setProperty('--p', data.ram.percentage);
+                    document.getElementById('ram-gauge-val').innerText = Math.round(data.ram.percentage) + '%';
+                    document.getElementById('ram-details').innerText = `${data.ram.used} / ${data.ram.total}`;
+                } else {
+                    document.getElementById('ram-details').innerText = 'PHP: ' + data.php_memory.used;
+                }
+                
+                // Disk
+                document.getElementById('disk-gauge').style.setProperty('--p', data.disk.percentage);
+                document.getElementById('disk-gauge-val').innerText = Math.round(data.disk.percentage) + '%';
+                document.getElementById('disk-details').innerText = `${data.disk.used} / ${data.disk.total}`;
+            }).catch(err => console.error("Telemetry error:", err));
+        }
+        updateTelemetry();
+        telemetryInterval = setInterval(updateTelemetry, 4000);
+
+        // Terminal Logic
+        const consoleBody = document.getElementById('console-body');
+        const consoleInput = document.getElementById('console-input');
+        const promptLabel = document.getElementById('terminal-prompt');
+
+        function updateCwdDisplays(path) {
+            currentCwd = path;
+            if (isWindows) {
+                promptLabel.innerText = `${path.replace(/\//g, '\\')}>`;
+            } else {
+                let displayPath = path.replace('<?= str_replace('\\', '/', __DIR__) ?>', '~');
+                promptLabel.innerText = `${sysUser}@${sysHost}:${displayPath}$`;
+            }
+            consoleBody.scrollTop = consoleBody.scrollHeight;
+        }
+        updateCwdDisplays(currentCwd);
+
+        function clearConsole() {
+            consoleBody.innerHTML = '';
+            consoleInput.focus();
+        }
+
+        consoleInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (histIndex < cmdHistory.length - 1) {
+                    histIndex++;
+                    consoleInput.value = cmdHistory[cmdHistory.length - 1 - histIndex];
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (histIndex > 0) {
+                    histIndex--;
+                    consoleInput.value = cmdHistory[cmdHistory.length - 1 - histIndex];
+                } else {
+                    histIndex = -1;
+                    consoleInput.value = '';
+                }
+            } else if (e.key === 'Enter') {
+                const command = this.value.trim();
+                if (command === '') return;
+                
+                cmdHistory.push(command);
+                histIndex = -1;
+                this.value = '';
+                
+                // Print executed command
+                consoleBody.innerHTML += `<span style="color:#aaa;">${promptLabel.innerText} ${command}</span>\n`;
+                
+                if (command === 'clear' || command === 'cls') {
+                    clearConsole();
+                    return;
+                }
+                
+                const formData = new FormData();
+                formData.append('command', command);
+                
+                fetch('?api=terminal_execute', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.output) {
+                        consoleBody.innerHTML += `<span style="color:#fff;">${data.output}</span>\n`;
+                    }
+                    updateCwdDisplays(data.cwd);
+                })
+                .catch(err => {
+                    consoleBody.innerHTML += `<span style="color:#ff3b3b;">Execution failed. Connection error.</span>\n`;
+                    consoleBody.scrollTop = consoleBody.scrollHeight;
+                });
+            }
+        });
+
+        // Process Manager Logic
+        function refreshProcessList() {
+            const tableBody = document.getElementById('process-table-body');
+            tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm"></div> Scanning...</td></tr>';
+            
+            fetch('?api=process_list').then(r => r.json()).then(data => {
+                if (!data.processes.length) {
+                    tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">No processes found.</td></tr>';
+                    return;
+                }
+                
+                let html = '';
+                data.processes.forEach(p => {
+                    let memClass = '';
+                    let memVal = parseFloat(p.mem);
+                    if (memVal > 500) memClass = 'mem-high';
+                    else if (memVal > 100) memClass = 'mem-med';
+                    
+                    html += `<tr>
+                        <td><i class="fas fa-cog text-muted"></i> <strong>${p.name}</strong></td>
+                        <td class="font-monospace text-info">${p.pid}</td>
+                        <td>${p.user || '-'}</td>
+                        <td class="${memClass} font-monospace">${p.mem}</td>
+                        <td class="small text-muted">${p.session || '-'}</td>
+                        <td class="text-center"><button class="btn btn-sm btn-outline-danger py-0 px-2" onclick="killProcess(${p.pid}, '${p.name}')"><i class="fas fa-times"></i></button></td>
+                    </tr>`;
+                });
+                tableBody.innerHTML = html;
+            }).catch(() => {
+                tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">Failed to fetch processes.</td></tr>';
+            });
+        }
+        
+        function killProcess(pid, name) {
+            if (confirm(`Kill ${name} (PID: ${pid})?`)) {
+                const formData = new FormData();
+                formData.append('pid', pid);
+                fetch('?api=process_kill', { method: 'POST', body: formData })
+                .then(r => r.json()).then(() => refreshProcessList());
+            }
+        }
+
+        // Auto-refresh processes when tab is active
+        document.querySelector('[data-bs-target="#process-pane"]').addEventListener('shown.bs.tab', () => {
+            refreshProcessList();
+            processInterval = setInterval(refreshProcessList, 5000);
+        });
+        document.querySelector('[data-bs-target="#process-pane"]').addEventListener('hidden.bs.tab', () => {
+            clearInterval(processInterval);
+        });
+
+        // Network Tools
+        document.getElementById('net-tool').addEventListener('change', function() {
+            document.getElementById('port-group').classList.toggle('d-none', this.value !== 'port_check');
+        });
+        
+        document.getElementById('network-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const btn = document.getElementById('net-submit-btn');
+            const out = document.getElementById('network-output');
+            btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+            out.innerHTML = `<span style="color:#aaa;">Executing ${document.getElementById('net-tool').value} on ${document.getElementById('net-target').value}...</span>`;
+            
+            const fd = new FormData(this);
+            fetch('?api=network_tool', { method: 'POST', body: fd })
+            .then(r => r.json()).then(data => {
+                out.textContent = data.output || 'Done.';
+                btn.disabled = false; btn.innerText = 'Execute';
+            }).catch(() => {
+                out.innerHTML = '<span style="color:#ff3b3b;">Request Failed</span>';
+                btn.disabled = false; btn.innerText = 'Execute';
+            });
+        });
+
+        // Netstat
+        function refreshNetstat() {
+            const tb = document.getElementById('netstat-table-body');
+            tb.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">Scanning...</td></tr>';
+            fetch('?api=netstat_list').then(r => r.json()).then(data => {
+                document.getElementById('netstat-raw-output').textContent = data.raw;
+                if (!data.connections.length) { tb.innerHTML = '<tr><td colspan="4" class="text-center py-4">No active connections</td></tr>'; return; }
+                let html = '';
+                data.connections.forEach(c => {
+                    let stateColor = c.state.includes('LISTEN') ? 'text-info' : (c.state.includes('ESTABLISHED') ? 'text-success' : 'text-muted');
+                    html += `<tr><td>${c.proto}</td><td class="font-monospace">${c.local}</td><td class="font-monospace">${c.foreign}</td><td class="${stateColor} fw-bold">${c.state}</td></tr>`;
+                });
+                tb.innerHTML = html;
+            });
+        }
+        document.querySelector('[data-bs-target="#netstat-pane"]').addEventListener('shown.bs.tab', refreshNetstat);
+
+        function toggleRawNetstat() {
+            document.getElementById('netstat-parsed-view').classList.toggle('d-none');
+            document.getElementById('netstat-raw-view').classList.toggle('d-none');
+        }
+
+        // Logs
+        function loadLogs() {
+            const type = document.getElementById('log-select-type').value;
+            const box = document.getElementById('logs-output-box');
+            box.innerHTML = '<div class="spinner-border spinner-border-sm"></div> Reading...';
+            fetch(`?api=read_logs&log_type=${type}`).then(r => r.json()).then(data => {
+                box.textContent = data.output || 'Log is empty.';
+                box.scrollTop = box.scrollHeight;
+            });
+        }
+        document.querySelector('[data-bs-target="#logs-pane"]').addEventListener('shown.bs.tab', loadLogs);
+    </script>
+</body>
+</html>
+<?php ob_end_flush(); ?>

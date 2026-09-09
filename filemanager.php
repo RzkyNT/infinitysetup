@@ -147,7 +147,7 @@ if (isset($_POST['bulk_paste'])) {
             'errors' => $errorCount,
             'total' => count($matches),
             'createdFiles' => $createdFiles,
-            'errors' => $errors
+            'errorDetails' => $errors
         ],
         'debug' => $debugInfo
     ]);
@@ -600,6 +600,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
   }
 
   // update root path
+    $root_path = isset($root_path) ? $root_path : __DIR__;
   if ($use_auth && isset($_SESSION[FM_SESSION_ID]['logged'])) {
       $root_path = isset($directories_users[$_SESSION[FM_SESSION_ID]['logged']]) ? $directories_users[$_SESSION[FM_SESSION_ID]['logged']] : $root_path;
   }
@@ -855,6 +856,101 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       }
 
       
+      // CopyAll: Scan files in directory
+      if (isset($_POST['type']) && $_POST['type'] == "copyall_scan") {
+          header('Content-Type: application/json');
+          
+          $dir = isset($_POST['path']) ? $_POST['path'] : '';
+          $filter = isset($_POST['filter']) ? $_POST['filter'] : '';
+          $path = FM_ROOT_PATH;
+          if ($dir != '') {
+              $path .= '/' . fm_clean_path($dir);
+          }
+          
+          $files = array();
+          
+          if (is_dir($path)) {
+              $objects = scandir($path);
+              foreach ($objects as $file) {
+                  if ($file != '.' && $file != '..' && is_file($path . '/' . $file)) {
+                      if (!FM_SHOW_HIDDEN && substr($file, 0, 1) === '.') continue;
+                      
+                      // Apply filter if provided
+                      if (!empty($filter)) {
+                          // Convert glob pattern to regex
+                          $pattern = str_replace('*', '.*', preg_quote($filter, '/'));
+                          $pattern = str_replace('\.\*', '.*', $pattern);
+                          if (!preg_match('/^' . $pattern . '$/i', $file)) continue;
+                      }
+                      
+                      // Only allow text-based files (same as allowed extensions for paste)
+                      $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+                      $allowedExts = array('php', 'html', 'css', 'js', 'txt', 'json', 'xml', 'md', 'sql', 'htaccess', 'env', 'yml', 'yaml', 'ini', 'sh', 'bat', 'py', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'go', 'rs', 'swift', 'kt', 'ts', 'tsx', 'jsx', 'vue', 'svelte', 'scss', 'sass', 'less', 'svg', 'gitignore', 'dockerfile', 'conf', 'log');
+                      if (!in_array($ext, $allowedExts)) continue;
+                      
+                      $filesize = filesize($path . '/' . $file);
+                      $files[] = array(
+                          "name" => $file,
+                          "size" => $filesize
+                      );
+                  }
+              }
+          }
+          
+          // Sort by name
+          usort($files, function($a, $b) {
+              return strcasecmp($a['name'], $b['name']);
+          });
+          
+          echo json_encode(array(
+              'success' => true,
+              'files' => $files
+          ));
+          exit();
+      }
+      
+      // CopyAll: Read file contents
+      if (isset($_POST['type']) && $_POST['type'] == "copyall_read") {
+          header('Content-Type: application/json');
+          
+          $dir = isset($_POST['path']) ? $_POST['path'] : '';
+          $selectedFiles = isset($_POST['files']) ? $_POST['files'] : array();
+          $path = FM_ROOT_PATH;
+          if ($dir != '') {
+              $path .= '/' . fm_clean_path($dir);
+          }
+          
+          $contents = array();
+          $errors = array();
+          
+          foreach ($selectedFiles as $file) {
+              $file = fm_clean_path($file);
+              $filePath = $path . '/' . $file;
+              
+              if (file_exists($filePath) && is_file($filePath)) {
+                  $content = @file_get_contents($filePath);
+                  if ($content !== false) {
+                      $contents[] = array(
+                          'name' => $file,
+                          'content' => $content
+                      );
+                  } else {
+                      $errors[] = 'Failed to read: ' . $file;
+                  }
+              } else {
+                  $errors[] = 'File not found: ' . $file;
+              }
+          }
+          
+          echo json_encode(array(
+              'success' => count($contents) > 0,
+              'contents' => $contents,
+              'errors' => $errors,
+              'message' => count($errors) > 0 ? implode(', ', $errors) : ''
+          ));
+          exit();
+      }
+
       // Find Duplicates
       if (isset($_POST['type']) && $_POST['type'] == "find_duplicates") {
           $dir = $_POST['path'] == "." ? '' : $_POST['path'];
@@ -996,7 +1092,7 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                       $subFile = $parentDir . '/' . $baseName . '.' . $sExt;
                       if (file_exists($subFile)) {
                           $meta['subtitles'][] = [
-                              'url' => window_location_url($subFile), // We need a helper for this
+                              'url' => '',
                               'ext' => $sExt,
                               'name' => $baseName . '.' . $sExt
                           ];
@@ -2063,6 +2159,9 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       $unzip = fm_clean_path($unzip);
       $unzip = str_replace('/', '', $unzip);
       $isValid = false;
+    $zip_path = '';
+    $ext = '';
+    $res = false;
 
       $path = FM_ROOT_PATH;
       if (FM_PATH != '') {
@@ -2396,8 +2495,10 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               }
           }
       </script>
+            <?php } ?>
+        <?php $copy_files = [];
   if (isset($_POST['copy']) && !FM_READONLY) {
-      $copy_files = isset($_POST['file']) ? $_POST['file'] : null;
+      $copy_files = isset($_POST['file']) ? $_POST['file'] : [];
       if (!is_array($copy_files) || empty($copy_files)) {
           fm_set_msg(lng('Nothing selected'), 'alert');
           $FM_PATH = FM_PATH;
@@ -3104,6 +3205,23 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
   echo '</div>';
 
   // Bottom Sidebar - Disk Usage
+  $total = 0;
+  $free = 0;
+  $total_size = '';
+  $free_size = '';
+  $total_used_size = '';
+  if ($show_disk_usage && function_exists('disk_total_space') && function_exists('disk_free_space')) {
+      $disk_path = FM_ROOT_PATH . '/' . FM_PATH;
+      $total = @disk_total_space($disk_path);
+      $free = @disk_free_space($disk_path);
+      if ($total !== false && $free !== false && $total > 0) {
+          $total_size = fm_get_filesize($total);
+          $free_size = fm_get_filesize($free);
+          $total_used_size = fm_get_filesize($total - $free);
+      } else {
+          $show_disk_usage = false;
+      }
+  }
   if ($show_disk_usage && isset($total) && $total > 0) {
       $used_pct = round((($total - $free) / $total) * 100, 1);
       echo '<div class="disk-usage-sidebar">';
@@ -3364,21 +3482,6 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               <?php
               } else { ?>
                     <?php
-            // Check if show_disk_usage is true before getting disk size
-                if ($show_disk_usage) {
-                    if (function_exists('disk_total_space') && function_exists('disk_free_space')) {
-                        // Get total and free space
-                        $total = disk_total_space(FM_ROOT_PATH.'/'.FM_PATH);
-                        $free = disk_free_space(FM_ROOT_PATH.'/'.FM_PATH);
-
-                        // Format sizes
-                        $total_size = fm_get_filesize($total);
-                        $free_size = fm_get_filesize($free);
-                        $total_used_size = fm_get_filesize($total - $free);
-                    } else {
-                        $show_disk_usage = false;
-                    }
-                }
             ?>
                   <tfoot>
                       <tr>
@@ -3525,6 +3628,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                       <div class="btn-group btn-group-sm" role="group">
                           <a href="#" onclick="showBulkCopyModal(event);" class="btn btn-outline-primary" title="Copy"><i class="fa fa-files-o"></i></a>
                           <a href="#" onclick="showBulkMoveModal(event);" class="btn btn-outline-primary" title="Move"><i class="fa fa-arrow-right"></i></a>
+                          <a href="#" onclick="showCopyAllModal(event);" class="btn btn-outline-info" title="Copy All Files to Clipboard"><i class="fa fa-copy"></i> CopyAll</a>
                           <a href="#" onclick="showBulkPasteModal(event);" class="btn btn-outline-success" title="Bulk Paste/Create Files"><i class="fa fa-clipboard"></i> Paste</a>
                       </div>
                       
@@ -4100,7 +4204,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   /**
    * It prints the css/js files into html
-   * @param key The key of the external file to print.
+    * @param string $key The key of the external file to print.
    */
   function print_external($key)
   {
@@ -4226,7 +4330,7 @@ function fm_foldersize($path) {
 
   /**
    * Check the file extension which is allowed or not
-   * @param string $filename
+    * @param string $filename
    * @return bool
    */
   function fm_is_valid_ext($filename)
@@ -4301,7 +4405,7 @@ function fm_foldersize($path) {
   {
       if (file_exists($dir)) {
           if (is_dir($dir)) {
-              return $dir;
+              return true;
           } elseif (!$force) {
               return false;
           }
@@ -4454,7 +4558,8 @@ function fm_foldersize($path) {
 
   /**
    * Check the file extension which is allowed or not
-   * @param string $filename
+    * @param string $name
+    * @param string $path
    * @return bool
    */
   function fm_is_exclude_items($name, $path)
@@ -4476,7 +4581,7 @@ function fm_foldersize($path) {
 
   /**
    * get language translations from json file
-   * @param int $tr
+    * @param array $tr
    * @return array
    */
   function fm_get_translations($tr)
@@ -4497,6 +4602,7 @@ function fm_foldersize($path) {
       } catch (Exception $e) {
           echo $e;
       }
+      return $tr;
   }
 
   /**
@@ -4836,7 +4942,6 @@ function fm_foldersize($path) {
           case 'csv':
               $img = 'fa fa-file-text-o';
               break;
-          case 'bak':
           case 'swp':
               $img = 'fa fa-clipboard';
               break;
@@ -5057,7 +5162,7 @@ function fm_foldersize($path) {
 
   /**
    * It returns the mime type of a file based on its extension.
-   * @param extension The file extension of the file you want to get the mime type for.
+    * @param string $extension The file extension of the file you want to get the mime type for.
    * @return string|string[] The mime type of the file.
    */
   function fm_get_file_mimes($extension)
@@ -7773,7 +7878,11 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           <div class="modal-body">
                                <p><label for="fileInput">Select Files to Upload:</label></p>
                                <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files...">
-                               <small class="form-text text-muted mt-2">You can select multiple files to upload</small>
+                               <div class="mt-3">
+                                   <label for="folderInput">Or select a folder to upload:</label>
+                                   <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple>
+                               </div>
+                               <small class="form-text text-muted mt-2">You can select multiple files or upload an entire folder with its subfolders.</small>
                           </div>
                           <div class="modal-footer">
                                <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
@@ -7963,8 +8072,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                         </div>
                         <div class="modal-body p-4">
                             <div class="alert alert-info mb-3">
-                                <i class="fa fa-info-circle"></i>pada CMD tuliskan cpyall <strong>Format Instructions:</strong><br>
-                                Paste content in this format:<br>
+                                <i class="fa fa-info-circle"></i> <strong>Format Instructions:</strong><br>
+                                Use <strong>CopyAll</strong> button to generate content, or paste content manually in this format:<br>
                                 <code style="display: block; margin-top: 8px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;">
                                     ============ FILE: index.php ============<br>
                                     &lt;?php echo "Hello"; ?&gt;<br>
@@ -8010,6 +8119,76 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                             </button>
                             <button type="button" class="btn btn-success" onclick="executeBulkPaste()">
                                 <i class="fa fa-check-circle me-2"></i><strong>Create Files</strong>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CopyAll Modal -->
+            <div class="modal modal-alert" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" role="dialog" id="copyAllDialog" data-bs-theme="<?php echo FM_THEME; ?>">
+                <div class="modal-dialog modal-lg" role="document">
+                    <div class="modal-content rounded-3 shadow">
+                        <div class="modal-header border-bottom">
+                            <h5 class="modal-title"><i class="fa fa-copy me-2"></i>Copy All Files to Clipboard</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body p-4">
+                            <div class="alert alert-info mb-3">
+                                <i class="fa fa-info-circle"></i> <strong>Feature Info:</strong><br>
+                                This tool will copy ALL files from the current directory to your clipboard in a special format.<br>
+                                You can then paste it using the <strong>Paste</strong> button in another directory or use <code>cpyall</code> command in CMD.
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-folder-open"></i> Current Directory
+                                </label>
+                                <input type="text" id="copyall-current-path" class="form-control" readonly 
+                                       style="background: var(--bg-input); border: 1px solid var(--border-color);">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-filter"></i> File Filter <span class="text-muted small">(optional)</span>
+                                </label>
+                                <input type="text" id="copyall-filter" class="form-control" 
+                                       placeholder="e.g., *.php, *.js, *.css or leave empty for all files"
+                                       style="background: var(--bg-input); border: 1px solid var(--border-color);">
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-file-text"></i> Files to Copy
+                                </label>
+                                <div id="copyall-file-list" 
+                                     class="border rounded p-3" 
+                                     style="max-height: 250px; overflow-y: auto; background: var(--bg-input); border-color: var(--border-color) !important;">
+                                    <div class="text-muted fst-italic">Click "Scan Files" to see file list...</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">
+                                    <i class="fa fa-file-code-o"></i> Generated Output
+                                </label>
+                                <textarea id="copyall-output" 
+                                    class="form-control font-monospace" 
+                                    rows="8" 
+                                    readonly
+                                    placeholder="Generated content will appear here..."
+                                    style="background: var(--bg-input); border: 1px solid var(--border-color); font-size: 0.85rem;"></textarea>
+                            </div>
+                        </div>
+                        <div class="modal-footer border-top">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                                <i class="fa fa-times-circle me-2"></i>Cancel
+                            </button>
+                            <button type="button" class="btn btn-info" onclick="scanCopyAllFiles()">
+                                <i class="fa fa-search me-2"></i>Scan Files
+                            </button>
+                            <button type="button" class="btn btn-primary" onclick="executeCopyAll()">
+                                <i class="fa fa-copy me-2"></i><strong>Generate & Copy to Clipboard</strong>
                             </button>
                         </div>
                     </div>
@@ -8714,6 +8893,158 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
 
             function selectBulkCopyDestination(path) {
                 $("#js-bulk-copy-to").val(path);
+            }
+
+            // CopyAll Functions
+            function showCopyAllModal(e) {
+                e.preventDefault();
+                $("#copyAllDialog").modal('show');
+                $("#copyall-current-path").val('<?php echo addslashes(FM_ROOT_PATH . '/' . FM_PATH); ?>');
+                $("#copyall-filter").val('');
+                $("#copyall-file-list").html('<div class="text-muted fst-italic">Click "Scan Files" to see file list...</div>');
+                $("#copyall-output").val('');
+                return false;
+            }
+
+            function scanCopyAllFiles() {
+                const filter = $("#copyall-filter").val().trim();
+                const currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                
+                // Show loading
+                $("#copyall-file-list").html('<div class="text-center p-3"><div class="spinner-border spinner-border-sm text-primary" role="status"></div> Scanning files...</div>');
+                
+                $.ajax({
+                    type: 'POST',
+                    url: window.location.pathname + window.location.search,
+                    data: {
+                        ajax: true,
+                        type: 'copyall_scan',
+                        path: currentPath,
+                        filter: filter,
+                        token: window.csrf
+                    },
+                    dataType: 'json',
+                    success: function(response) {
+                        if (response.success) {
+                            let html = '<div class="alert alert-success mb-2"><i class="fa fa-check-circle"></i> Found <strong>' + response.files.length + '</strong> file(s)</div>';
+                            
+                            if (response.files.length > 0) {
+                                html += '<table class="table table-sm table-dark mb-0">';
+                                html += '<thead><tr><th><input type="checkbox" id="copyall-select-all" checked onchange="toggleCopyAllFiles()"></th><th>Filename</th><th>Size</th></tr></thead><tbody>';
+                                
+                                response.files.forEach(function(file) {
+                                    html += '<tr>';
+                                    html += '<td><input type="checkbox" class="copyall-file-check" value="' + escapeHtml(file.name) + '" data-size="' + file.size + '" checked></td>';
+                                    html += '<td><i class="fa fa-file-code-o"></i> ' + escapeHtml(file.name) + '</td>';
+                                    html += '<td>' + formatBytes(file.size) + '</td>';
+                                    html += '</tr>';
+                                });
+                                
+                                html += '</tbody></table>';
+                            }
+                            
+                            $("#copyall-file-list").html(html);
+                        } else {
+                            $("#copyall-file-list").html('<div class="alert alert-warning mb-0"><i class="fa fa-exclamation-triangle"></i> ' + escapeHtml(response.message || 'No files found') + '</div>');
+                        }
+                    },
+                    error: function() {
+                        $("#copyall-file-list").html('<div class="alert alert-danger mb-0"><i class="fa fa-times-circle"></i> Failed to scan files</div>');
+                    }
+                });
+            }
+
+            function toggleCopyAllFiles() {
+                const checked = $("#copyall-select-all").is(':checked');
+                $(".copyall-file-check").prop('checked', checked);
+            }
+
+            function executeCopyAll() {
+                const selectedFiles = [];
+                $(".copyall-file-check:checked").each(function() {
+                    selectedFiles.push($(this).val());
+                });
+                
+                if (selectedFiles.length === 0) {
+                    Swal.fire({
+                        title: 'No Files Selected',
+                        text: 'Please select at least one file to copy',
+                        icon: 'warning'
+                    });
+                    return;
+                }
+                
+                const currentPath = '<?php echo addslashes(FM_PATH); ?>';
+                
+                // Show loading
+                Swal.fire({
+                    title: 'Reading Files...',
+                    html: 'Please wait while files are being read',
+                    allowOutsideClick: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
+                
+                $.ajax({
+                    type: 'POST',
+                    url: window.location.pathname + window.location.search,
+                    data: {
+                        ajax: true,
+                        type: 'copyall_read',
+                        path: currentPath,
+                        files: selectedFiles,
+                        token: window.csrf
+                    },
+                    dataType: 'json',
+                    success: function(response) {
+                        Swal.close();
+                        
+                        if (response.success) {
+                            // Generate formatted output
+                            let output = '';
+                            response.contents.forEach(function(file) {
+                                output += '============================================ FILE: ' + file.name + ' ============================================\n';
+                                output += file.content + '\n\n';
+                            });
+                            
+                            $("#copyall-output").val(output.trim());
+                            
+                            // Copy to clipboard
+                            navigator.clipboard.writeText(output.trim()).then(function() {
+                                Swal.fire({
+                                    title: 'Success!',
+                                    html: '<strong>' + selectedFiles.length + '</strong> file(s) copied to clipboard!<br><small class="text-muted">Use Paste button or cpyall command to create files</small>',
+                                    icon: 'success',
+                                    timer: 2000,
+                                    showConfirmButton: true
+                                });
+                            }).catch(function(err) {
+                                Swal.fire({
+                                    title: 'Generated!',
+                                    html: '<strong>' + selectedFiles.length + '</strong> file(s) processed.<br><small class="text-muted">Click the textarea and copy manually (Ctrl+C)</small>',
+                                    icon: 'info',
+                                    timer: 3000,
+                                    showConfirmButton: true
+                                });
+                            });
+                        } else {
+                            Swal.fire({
+                                title: 'Error',
+                                text: response.message || 'Failed to read files',
+                                icon: 'error'
+                            });
+                        }
+                    },
+                    error: function() {
+                        Swal.close();
+                        Swal.fire({
+                            title: 'Error',
+                            text: 'Failed to read files',
+                            icon: 'error'
+                        });
+                    }
+                });
             }
 
             // Bulk Paste Functions
@@ -9538,7 +9869,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               // Handle Upload Files
               async function handleUploadFiles() {
                   var fileInput = document.getElementById('fileInput');
-                  var files = fileInput.files;
+                  var folderInput = document.getElementById('folderInput');
+                  var files = Array.from(fileInput.files || []).concat(Array.from(folderInput.files || []));
                   
                   if (files.length === 0) {
                       toast("Please select at least one file", "warning");
@@ -9559,9 +9891,12 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
 
                   for (let i = 0; i < files.length; i++) {
                       let formData = new FormData();
+                      let relativePath = files[i].webkitRelativePath || files[i].name;
                       formData.append('file', files[i]);
-                      formData.append('fullpath', files[i].name);
+                      formData.append('fullpath', relativePath);
                       formData.append('token', window.csrf);
+                      formData.append('dzchunkindex', '0');
+                      formData.append('dztotalchunkcount', '0');
                       
                       try {
                           let response = await fetch(window.location.href, {
