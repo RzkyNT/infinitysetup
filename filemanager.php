@@ -706,6 +706,38 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           die("Invalid Token.");
       }
 
+      // Server-side Favorites stored in the current user session
+      if (isset($_POST['type']) && $_POST['type'] === 'quick_access') {
+          $favorites = isset($_SESSION[FM_SESSION_ID]['quick_access']) && is_array($_SESSION[FM_SESSION_ID]['quick_access'])
+              ? $_SESSION[FM_SESSION_ID]['quick_access']
+              : [];
+          $favoritePath = fm_clean_path($_POST['path'] ?? '');
+          $favoriteName = basename($_POST['name'] ?? '');
+          $favoriteKey = trim($favoritePath . '/' . $favoriteName, '/');
+          $action = $_POST['action'] ?? 'list';
+
+          if ($action === 'pin' && $favoriteName !== '' && !isset($favorites[$favoriteKey])) {
+              $favorites[$favoriteKey] = ['path' => $favoriteKey, 'name' => $favoriteName];
+          } elseif ($action === 'unpin') {
+              unset($favorites[$favoriteKey]);
+          }
+
+          $_SESSION[FM_SESSION_ID]['quick_access'] = $favorites;
+          header('Content-Type: application/json');
+          echo json_encode(['success' => true, 'items' => array_values($favorites)]);
+          exit();
+      }
+
+      if (isset($_POST['type']) && $_POST['type'] === 'cancel_upload') {
+          $uploadPath = fm_clean_path($_POST['path'] ?? '');
+          $uploadBase = FM_ROOT_PATH . (FM_PATH !== '' ? '/' . FM_PATH : '');
+          $partialPath = $uploadBase . '/' . $uploadPath . '.part';
+          $removed = is_file($partialPath) ? @unlink($partialPath) : true;
+          header('Content-Type: application/json');
+          echo json_encode(['success' => $removed]);
+          exit();
+      }
+
       // get list of folders
       if (isset($_POST['type']) && $_POST['type'] == "get_folders") {
           $dir = isset($_POST['path']) ? $_POST['path'] : '';
@@ -2007,7 +2039,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   if ($chunkIndex == $chunkTotal - 1) {
                       if (file_exists($fullPath)) {
                           $ext_1 = $ext ? '.' . $ext : '';
-                          $fullPathTarget = $path . '/' . basename($fullPathInput, $ext_1) . '_' . date('ymdHis') . $ext_1;
+                          $fullPathTarget = dirname($fullPath) . '/' . basename($fullPathInput, $ext_1) . '_' . date('ymdHis') . $ext_1;
                       } else {
                           $fullPathTarget = $fullPath;
                       }
@@ -3692,9 +3724,67 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
 document.addEventListener('DOMContentLoaded', function() {
     // 1. Sidebar Tree Enhancement (Recursive)
     function expandFolder(path, element) {
-        // Simple mock for now, ideally this fetches via AJAX
-        console.log('Expanding', path);
+            let children = element.parentElement.querySelector(':scope > .tree-children');
+            if (children) {
+                children.classList.toggle('collapsed');
+                element.classList.toggle('expanded');
+                return;
+            }
+
+            children = document.createElement('div');
+            children.className = 'tree-children';
+            children.innerHTML = '<div class="tree-loading">Loading...</div>';
+            element.parentElement.appendChild(children);
+
+            const form = new URLSearchParams({
+                ajax: 'true',
+                type: 'get_folders',
+                path: path,
+                token: window.csrf || (document.querySelector('input[name="token"]') || {}).value || ''
+            });
+            fetch(window.location.pathname + window.location.search, {
+                method: 'POST',
+                body: form,
+                credentials: 'same-origin'
+            }).then(response => response.json()).then(folders => {
+                children.innerHTML = '';
+                if (!folders.length) {
+                    children.innerHTML = '<div class="tree-loading">Empty</div>';
+                    return;
+                }
+                folders.forEach(folder => {
+                    const item = document.createElement('div');
+                    item.className = 'tree-item';
+                    item.dataset.path = folder.path;
+                    item.innerHTML = '<div class="tree-header"><i class="fa fa-chevron-right tree-toggle"></i><i class="fa fa-folder"></i><span></span></div>';
+                    item.querySelector('span').textContent = folder.name;
+                    item.querySelector('.tree-header').addEventListener('click', event => {
+                        if (event.target.classList.contains('tree-toggle')) {
+                            expandFolder(folder.path, item.querySelector('.tree-header'));
+                            return;
+                        }
+                        window.location.href = '?p=' + encodeURIComponent(folder.path);
+                    });
+                    children.appendChild(item);
+                });
+                element.classList.add('expanded');
+            }).catch(() => {
+                children.innerHTML = '<div class="tree-loading">Failed to load</div>';
+            });
     }
+
+        document.querySelectorAll('#tree-root-children .tree-item').forEach(item => {
+            const header = item.querySelector('.tree-header');
+            if (!header || !item.dataset.path) return;
+            const toggle = document.createElement('i');
+            toggle.className = 'fa fa-chevron-right tree-toggle';
+            header.insertBefore(toggle, header.firstChild);
+            toggle.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                expandFolder(item.dataset.path, header);
+            });
+        });
 
     // 2. Details Pane Logic
     const items = document.querySelectorAll('tr[data-name], .grid-item[data-name]');
@@ -3923,16 +4013,10 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // 10. Quick Access Logic
-    const QA_KEY = 'fm_quick_access';
-    function renderQA() {
+    function renderQA(qas) {
         const list = document.getElementById('qa-list');
         if (!list) return;
-        let qas = [];
-        try { 
-            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
-            qas = Array.isArray(stored) ? stored : [];
-        } catch(e) { qas = []; }
-        
+
         list.innerHTML = qas.length === 0 ? '<div style="padding:10px 20px; font-size:0.75rem; opacity:0.4;">No pins yet</div>' : '';
         qas.forEach(qa => {
             const item = document.createElement('div');
@@ -3950,31 +4034,34 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    function requestQA(action, path, name) {
+        const token = window.csrf || (document.querySelector('input[name="token"]') || {}).value || '';
+        return fetch(window.location.pathname + window.location.search, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body: new URLSearchParams({ ajax: 'true', type: 'quick_access', action, path, name, token })
+        }).then(response => response.json());
+    }
+
     window.pinToQuickAccess = function(path, name) {
-        let qas = [];
-        try { 
-            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
-            qas = Array.isArray(stored) ? stored : [];
-        } catch(e) { qas = []; }
-        const fullPath = (path ? path + '/' : '') + name;
-        if (!qas.find(q => q.path === fullPath)) {
-           qas.push({ path: fullPath, name: name });
-           localStorage.setItem(QA_KEY, JSON.stringify(qas));
-           renderQA();
-           if (window.showToast) showToast('Pinned to Favorites');
-        }
+        requestQA('pin', path, name).then(function(response) {
+            if (response.success) {
+                renderQA(response.items || []);
+                if (window.showToast) showToast('Pinned to Favorites');
+            }
+        });
     }
 
     function removePin(path, name) {
-        let qas = [];
-        try { 
-            const stored = JSON.parse(localStorage.getItem(QA_KEY) || '[]'); 
-            qas = Array.isArray(stored) ? stored : [];
-        } catch(e) { qas = []; }
-        qas = qas.filter(q => q.path !== path);
-        localStorage.setItem(QA_KEY, JSON.stringify(qas));
-        renderQA();
+        requestQA('unpin', path, name).then(function(response) {
+            if (response.success) renderQA(response.items || []);
+        });
     }
+
+    requestQA('list', '', '').then(function(response) {
+        renderQA(response.items || []);
+    });
 
      // 11. Sorting Logic
      window.sortTable = function(n, type) {
@@ -4108,9 +4195,12 @@ document.addEventListener('DOMContentLoaded', function() {
           function uploadFilesToFolder(files, dest, token){
               Array.from(files).forEach(file=>{
                   const fd = new FormData();
+                  const relativePath = file.webkitRelativePath || file.name;
                   fd.append('file', file);
-                  fd.append('fullpath', dest + '/' + file.name);
+                  fd.append('fullpath', dest + '/' + relativePath);
                   fd.append('token', token);
+                  fd.append('dzchunkindex', '0');
+                  fd.append('dztotalchunkcount', '0');
                   const url = window.location.pathname + '?p=<?php echo urlencode(fm_enc(FM_PATH)); ?>';
                   fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' })
                   .then(r => r.json().catch(()=>false))
@@ -7883,10 +7973,23 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                    <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple>
                                </div>
                                <small class="form-text text-muted mt-2">You can select multiple files or upload an entire folder with its subfolders.</small>
+                               <div id="modal-upload-progress" class="mt-3" style="display:none;">
+                                   <div class="d-flex justify-content-between small mb-1">
+                                       <span id="modal-upload-summary">Preparing upload...</span>
+                                       <span id="modal-upload-percent">0%</span>
+                                   </div>
+                                   <div class="progress mb-2" role="progressbar" aria-label="Overall upload progress">
+                                       <div id="modal-upload-overall" class="progress-bar" style="width:0%">0%</div>
+                                   </div>
+                                   <div id="modal-upload-list" style="max-height:180px; overflow-y:auto;"></div>
+                               </div>
                           </div>
                           <div class="modal-footer">
                                <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal"><i class="fa fa-times-circle"></i> Cancel</button>
-                               <button type="button" class="btn btn-success" onclick="handleUploadFiles()"><i class="fa fa-check-circle"></i> Upload</button>
+                               <button type="button" id="modal-upload-pause" class="btn btn-outline-warning" onclick="pauseModalUpload()" style="display:none;"><i class="fa fa-pause"></i> Pause</button>
+                               <button type="button" id="modal-upload-resume" class="btn btn-outline-success" onclick="resumeModalUpload()" style="display:none;"><i class="fa fa-play"></i> Resume</button>
+                               <button type="button" id="modal-upload-cancel" class="btn btn-outline-danger" onclick="cancelModalUpload()" style="display:none;"><i class="fa fa-stop"></i> Cancel Upload</button>
+                               <button type="button" id="modal-upload-start" class="btn btn-success" onclick="handleUploadFiles()"><i class="fa fa-check-circle"></i> Upload</button>
                           </div>
                       </div>
                   </div>
@@ -8529,7 +8632,12 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                if (files.length) {
                                    Array.from(files).forEach(file => {
                                        const fd = new FormData();
-                                       fd.append('file', file); fd.append('fullpath', dest + '/' + file.name); fd.append('token', window.csrf);
+                                       const relativePath = file.webkitRelativePath || file.name;
+                                       fd.append('file', file);
+                                       fd.append('fullpath', dest + '/' + relativePath);
+                                       fd.append('token', window.csrf);
+                                       fd.append('dzchunkindex', '0');
+                                       fd.append('dztotalchunkcount', '0');
                                        fetch(window.location.pathname + '?p='+encodeURIComponent('<?php echo FM_PATH; ?>'), { method: 'POST', body: fd });
                                    });
                                    setTimeout(() => location.reload(), 1200);
@@ -9381,6 +9489,9 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           tableHtml += '</table></div>';
                           content.html(tableHtml);
                       });
+                  } else if (['doc', 'ppt', 'pptx', 'odt', 'ods'].includes(ext)) {
+                      const officeUrl = 'https://docs.google.com/gview?embedded=1&url=' + encodeURIComponent(url);
+                      content.html('<iframe src="' + officeUrl + '" style="width:100%; height:75vh; border:0;" title="Office document preview"></iframe>');
                   } else if (['xlsx', 'xls'].includes(ext)) {
                       content.html('<div class="spinner-border text-primary" role="status"></div>');
                       const script = document.createElement('script');
@@ -9866,8 +9977,168 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   }, n.send(a), !1
               }
 
+              // Chunked modal upload queue. Files run concurrently, chunks remain sequential per file.
+              let modalUploadJob = null;
+              const modalUploadChunkSize = <?php echo UPLOAD_CHUNK_SIZE; ?>;
+
+              function renderModalUpload() {
+                  if (!modalUploadJob) return;
+                  const list = document.getElementById('modal-upload-list');
+                  const totalBytes = modalUploadJob.items.reduce((sum, item) => sum + item.file.size, 0);
+                  const uploadedBytes = modalUploadJob.items.reduce((sum, item) => sum + item.loaded, 0);
+                  const percent = totalBytes ? Math.floor((uploadedBytes / totalBytes) * 100) : 100;
+                  const completed = modalUploadJob.items.filter(item => item.status === 'done').length;
+                  document.getElementById('modal-upload-summary').textContent = `${completed}/${modalUploadJob.items.length} files`;
+                  document.getElementById('modal-upload-percent').textContent = percent + '%';
+                  document.getElementById('modal-upload-overall').style.width = percent + '%';
+                  document.getElementById('modal-upload-overall').textContent = percent + '%';
+                  list.innerHTML = modalUploadJob.items.map((item, index) => {
+                      const filePercent = item.file.size ? Math.floor((item.loaded / item.file.size) * 100) : 100;
+                      const retry = item.status === 'failed' ? `<button type="button" class="btn btn-sm btn-link p-0" onclick="retryModalUpload(${index})">Retry</button>` : '';
+                      return `<div class="mb-2"><div class="d-flex justify-content-between small"><span class="text-truncate" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span><span>${item.status} ${retry}</span></div><div class="progress" style="height:5px"><div class="progress-bar" style="width:${filePercent}%"></div></div></div>`;
+                  }).join('');
+              }
+
+              function pumpModalUpload() {
+                  if (!modalUploadJob || modalUploadJob.paused || modalUploadJob.cancelled) return;
+                  while (modalUploadJob.active < modalUploadJob.limit) {
+                      const item = modalUploadJob.items.find(entry => entry.status === 'queued');
+                      if (!item) break;
+                      uploadModalItem(item);
+                  }
+                  renderModalUpload();
+              }
+
+              function uploadModalItem(item) {
+                  if (!modalUploadJob || modalUploadJob.paused || modalUploadJob.cancelled) return;
+                  modalUploadJob.active++;
+                  item.status = 'uploading';
+                  uploadModalChunk(item);
+              }
+
+              function uploadModalChunk(item) {
+                  if (!modalUploadJob || modalUploadJob.paused || modalUploadJob.cancelled) return;
+                  const totalChunks = Math.max(1, Math.ceil(item.file.size / modalUploadChunkSize));
+                  if (item.chunk >= totalChunks) {
+                      item.status = 'done';
+                      modalUploadJob.active--;
+                      pumpModalUpload();
+                      if (modalUploadJob.items.every(entry => ['done', 'cancelled'].includes(entry.status))) {
+                          toast('Upload selesai', 'success');
+                          setTimeout(() => window.location.reload(), 1000);
+                      }
+                      return;
+                  }
+
+                  const start = item.chunk * modalUploadChunkSize;
+                  const blob = item.file.slice(start, Math.min(start + modalUploadChunkSize, item.file.size));
+                  const formData = new FormData();
+                  formData.append('file', blob, item.file.name);
+                  formData.append('fullpath', item.path);
+                  formData.append('token', window.csrf);
+                  formData.append('dzchunkindex', String(item.chunk));
+                  formData.append('dztotalchunkcount', String(totalChunks));
+
+                  const xhr = new XMLHttpRequest();
+                  item.xhr = xhr;
+                  xhr.open('POST', window.location.href, true);
+                  xhr.upload.onprogress = event => {
+                      if (event.lengthComputable) {
+                          item.loaded = Math.min(item.file.size, start + event.loaded);
+                          renderModalUpload();
+                      }
+                  };
+                  xhr.onload = () => {
+                      item.xhr = null;
+                      if (!modalUploadJob || modalUploadJob.cancelled) return;
+                      if (xhr.status >= 200 && xhr.status < 300) {
+                          try {
+                              const response = JSON.parse(xhr.responseText);
+                              if (response.status !== 'success') throw new Error(response.info || 'Upload failed');
+                          } catch (error) {
+                              item.status = 'failed';
+                              modalUploadJob.active--;
+                              renderModalUpload();
+                              return;
+                          }
+                          item.chunk++;
+                          item.loaded = Math.min(item.file.size, item.chunk * modalUploadChunkSize);
+                          uploadModalChunk(item);
+                      } else {
+                          item.status = 'failed';
+                          modalUploadJob.active--;
+                          renderModalUpload();
+                      }
+                  };
+                  xhr.onerror = () => {
+                      item.xhr = null;
+                      if (modalUploadJob && !modalUploadJob.paused && !modalUploadJob.cancelled) {
+                          item.status = 'failed';
+                          modalUploadJob.active--;
+                          renderModalUpload();
+                      }
+                  };
+                  xhr.onabort = () => {
+                      item.xhr = null;
+                      if (modalUploadJob) modalUploadJob.active = Math.max(0, modalUploadJob.active - 1);
+                      renderModalUpload();
+                  };
+                  xhr.send(formData);
+              }
+
+              function pauseModalUpload() {
+                  if (!modalUploadJob) return;
+                  modalUploadJob.paused = true;
+                  modalUploadJob.items.forEach(item => {
+                      if (item.status === 'uploading') {
+                          item.status = 'paused';
+                          if (item.xhr) item.xhr.abort();
+                      } else if (item.status === 'queued') item.status = 'paused';
+                  });
+                  document.getElementById('modal-upload-pause').style.display = 'none';
+                  document.getElementById('modal-upload-resume').style.display = '';
+                  renderModalUpload();
+              }
+
+              function resumeModalUpload() {
+                  if (!modalUploadJob) return;
+                  modalUploadJob.paused = false;
+                  modalUploadJob.items.forEach(item => { if (item.status === 'paused') item.status = 'queued'; });
+                  document.getElementById('modal-upload-pause').style.display = '';
+                  document.getElementById('modal-upload-resume').style.display = 'none';
+                  pumpModalUpload();
+              }
+
+              function cancelModalUpload() {
+                  if (!modalUploadJob) return;
+                  modalUploadJob.cancelled = true;
+                  modalUploadJob.items.forEach(item => {
+                      if (item.xhr) item.xhr.abort();
+                      if (item.status !== 'done') item.status = 'cancelled';
+                      fetch(window.location.href, {
+                          method: 'POST',
+                          credentials: 'same-origin',
+                          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                          body: new URLSearchParams({ ajax: 'true', type: 'cancel_upload', path: item.path, token: window.csrf })
+                      }).catch(() => {});
+                  });
+                  document.getElementById('modal-upload-pause').style.display = 'none';
+                  document.getElementById('modal-upload-resume').style.display = 'none';
+                  document.getElementById('modal-upload-cancel').style.display = 'none';
+                  renderModalUpload();
+                  toast('Upload dibatalkan', 'warning');
+              }
+
+              function retryModalUpload(index) {
+                  if (!modalUploadJob) return;
+                  const item = modalUploadJob.items[index];
+                  if (!item || item.status !== 'failed') return;
+                  item.status = 'queued';
+                  pumpModalUpload();
+              }
+
               // Handle Upload Files
-              async function handleUploadFiles() {
+              function handleUploadFiles() {
                   var fileInput = document.getElementById('fileInput');
                   var folderInput = document.getElementById('folderInput');
                   var files = Array.from(fileInput.files || []).concat(Array.from(folderInput.files || []));
@@ -9877,53 +10148,20 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       return;
                   }
                   
-                  // Close the modal
-                  var modalEl = document.getElementById('uploadFiles');
-                  var modal = bootstrap.Modal.getInstance(modalEl);
-                  if (modal) {
-                      modal.hide();
-                  }
-
-                  let successCount = 0;
-                  let errorCount = 0;
-                  
-                  toast("Uploading " + files.length + " files...", "info");
-
-                  for (let i = 0; i < files.length; i++) {
-                      let formData = new FormData();
-                      let relativePath = files[i].webkitRelativePath || files[i].name;
-                      formData.append('file', files[i]);
-                      formData.append('fullpath', relativePath);
-                      formData.append('token', window.csrf);
-                      formData.append('dzchunkindex', '0');
-                      formData.append('dztotalchunkcount', '0');
-                      
-                      try {
-                          let response = await fetch(window.location.href, {
-                              method: 'POST',
-                              body: formData
-                          });
-                          
-                          let result = await response.json();
-                          if (result.status === 'success') {
-                              successCount++;
-                          } else {
-                              errorCount++;
-                              console.error(result.info);
-                          }
-                      } catch (error) {
-                          errorCount++;
-                          console.error(error);
-                      }
-                  }
-
-                  if (successCount > 0) {
-                      toast("Successfully uploaded " + successCount + " files", "success");
-                      setTimeout(() => window.location.reload(), 1500);
-                  }
-                  if (errorCount > 0) {
-                      toast("Failed to upload " + errorCount + " files", "error");
-                  }
+                  modalUploadJob = {
+                      items: files.map(file => ({ file, path: file.webkitRelativePath || file.name, chunk: 0, loaded: 0, status: 'queued', xhr: null })),
+                      active: 0,
+                      limit: 2,
+                      paused: false,
+                      cancelled: false
+                  };
+                  document.getElementById('modal-upload-progress').style.display = '';
+                  document.getElementById('modal-upload-start').style.display = 'none';
+                  document.getElementById('modal-upload-pause').style.display = '';
+                  document.getElementById('modal-upload-cancel').style.display = '';
+                  toast('Upload dimulai: ' + files.length + ' file', 'info');
+                  renderModalUpload();
+                  pumpModalUpload();
               }
 
               // Handle Upload from URL
