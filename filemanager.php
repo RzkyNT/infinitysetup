@@ -1932,6 +1932,40 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       exit;
   }
 
+  // Check which selected files are new or changed before uploading.
+  if (isset($_POST['type']) && $_POST['type'] === 'upload_check' && !FM_READONLY) {
+      if (!isset($_POST['token']) || !verifyToken($_POST['token'])) {
+          echo json_encode(array('status' => 'error', 'info' => 'Invalid Token.'));
+          exit();
+      }
+
+      $basePath = FM_ROOT_PATH . (FM_PATH != '' ? '/' . FM_PATH : '');
+      $requestedFiles = json_decode($_POST['files'] ?? '[]', true);
+      $fileStatus = array();
+
+      if (!is_array($requestedFiles)) {
+          echo json_encode(array('status' => 'error', 'info' => 'Invalid file list.'));
+          exit();
+      }
+
+      foreach ($requestedFiles as $requestedFile) {
+          $relativePath = fm_clean_path($requestedFile['path'] ?? '');
+          $clientHash = strtolower((string) ($requestedFile['hash'] ?? ''));
+          $fullPath = $basePath . '/' . $relativePath;
+          $isUnchanged = preg_match('/^[a-f0-9]{64}$/', $clientHash)
+              && is_file($fullPath)
+              && hash_file('sha256', $fullPath) === $clientHash;
+
+          $fileStatus[] = array(
+              'path' => $relativePath,
+              'unchanged' => $isUnchanged
+          );
+      }
+
+      echo json_encode(array('status' => 'success', 'files' => $fileStatus));
+      exit();
+  }
+
   // Upload
   if (!empty($_FILES) && !FM_READONLY) {
       if (isset($_POST['token'])) {
@@ -2037,13 +2071,17 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   }
 
                   if ($chunkIndex == $chunkTotal - 1) {
-                      if (file_exists($fullPath)) {
-                          $ext_1 = $ext ? '.' . $ext : '';
-                          $fullPathTarget = dirname($fullPath) . '/' . basename($fullPathInput, $ext_1) . '_' . date('ymdHis') . $ext_1;
+                      $partialPath = "{$fullPath}.part";
+                      if (file_exists($fullPath) && hash_file('sha256', $fullPath) === hash_file('sha256', $partialPath)) {
+                          @unlink($partialPath);
+                          $response['info'] = 'file unchanged, upload skipped';
+                          $response['skipped'] = true;
                       } else {
-                          $fullPathTarget = $fullPath;
+                          if (file_exists($fullPath)) {
+                              @unlink($fullPath);
+                          }
+                          rename($partialPath, $fullPath);
                       }
-                      rename("{$fullPath}.part", $fullPathTarget);
                   }
               } else if (move_uploaded_file($tmp_name, $fullPath)) {
                   // Be sure that the file has been uploaded
@@ -7967,12 +8005,12 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           </div>
                           <div class="modal-body">
                                <p><label for="fileInput">Select Files to Upload:</label></p>
-                               <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files...">
+                               <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files..." onchange="previewModalUploadFiles()">
                                <div class="mt-3">
                                    <label for="folderInput">Or select a folder to upload:</label>
-                                   <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple>
+                                   <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple onchange="previewModalUploadFiles()">
                                </div>
-                               <small class="form-text text-muted mt-2">You can select multiple files or upload an entire folder with its subfolders.</small>
+                               <small class="form-text text-muted mt-2">Select the files to upload below. Uncheck files you want to skip. Existing files are replaced only when their contents change.</small>
                                <div id="modal-upload-progress" class="mt-3" style="display:none;">
                                    <div class="d-flex justify-content-between small mb-1">
                                        <span id="modal-upload-summary">Preparing upload...</span>
@@ -9987,7 +10025,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   const totalBytes = modalUploadJob.items.reduce((sum, item) => sum + item.file.size, 0);
                   const uploadedBytes = modalUploadJob.items.reduce((sum, item) => sum + item.loaded, 0);
                   const percent = totalBytes ? Math.floor((uploadedBytes / totalBytes) * 100) : 100;
-                  const completed = modalUploadJob.items.filter(item => item.status === 'done').length;
+                  const completed = modalUploadJob.items.filter(item => ['done', 'skipped'].includes(item.status)).length;
                   document.getElementById('modal-upload-summary').textContent = `${completed}/${modalUploadJob.items.length} files`;
                   document.getElementById('modal-upload-percent').textContent = percent + '%';
                   document.getElementById('modal-upload-overall').style.width = percent + '%';
@@ -9995,18 +10033,32 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   list.innerHTML = modalUploadJob.items.map((item, index) => {
                       const filePercent = item.file.size ? Math.floor((item.loaded / item.file.size) * 100) : 100;
                       const retry = item.status === 'failed' ? `<button type="button" class="btn btn-sm btn-link p-0" onclick="retryModalUpload(${index})">Retry</button>` : '';
-                      return `<div class="mb-2"><div class="d-flex justify-content-between small"><span class="text-truncate" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</span><span>${item.status} ${retry}</span></div><div class="progress" style="height:5px"><div class="progress-bar" style="width:${filePercent}%"></div></div></div>`;
+                      const checked = item.selected ? 'checked' : '';
+                      const disabled = ['done', 'uploading', 'failed'].includes(item.status) ? 'disabled' : '';
+                      return `<div class="mb-2"><div class="d-flex justify-content-between small"><label class="text-truncate" title="${escapeHtml(item.path)}"><input type="checkbox" class="form-check-input me-1" ${checked} ${disabled} onchange="toggleModalUploadItem(${index}, this.checked)">${escapeHtml(item.path)}</label><span>${item.status} ${retry}</span></div><div class="progress" style="height:5px"><div class="progress-bar" style="width:${filePercent}%"></div></div></div>`;
                   }).join('');
+              }
+
+              function toggleModalUploadItem(index, selected) {
+                  if (!modalUploadJob || !modalUploadJob.items[index]) return;
+                  const item = modalUploadJob.items[index];
+                  item.selected = selected;
+                  if (!selected && item.status === 'queued') item.status = 'skipped';
+                  if (selected && item.status === 'skipped') item.status = 'queued';
+                  renderModalUpload();
               }
 
               function pumpModalUpload() {
                   if (!modalUploadJob || modalUploadJob.paused || modalUploadJob.cancelled) return;
                   while (modalUploadJob.active < modalUploadJob.limit) {
-                      const item = modalUploadJob.items.find(entry => entry.status === 'queued');
+                      const item = modalUploadJob.items.find(entry => entry.status === 'queued' && entry.selected);
                       if (!item) break;
                       uploadModalItem(item);
                   }
                   renderModalUpload();
+                  if (modalUploadJob.active === 0 && modalUploadJob.items.every(entry => ['skipped', 'cancelled'].includes(entry.status))) {
+                      toast('Tidak ada file yang dipilih untuk di-upload', 'info');
+                  }
               }
 
               function uploadModalItem(item) {
@@ -10023,7 +10075,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       item.status = 'done';
                       modalUploadJob.active--;
                       pumpModalUpload();
-                      if (modalUploadJob.items.every(entry => ['done', 'cancelled'].includes(entry.status))) {
+                      if (modalUploadJob.items.every(entry => ['done', 'skipped', 'cancelled'].includes(entry.status))) {
                           toast('Upload selesai', 'success');
                           setTimeout(() => window.location.reload(), 1000);
                       }
@@ -10103,7 +10155,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               function resumeModalUpload() {
                   if (!modalUploadJob) return;
                   modalUploadJob.paused = false;
-                  modalUploadJob.items.forEach(item => { if (item.status === 'paused') item.status = 'queued'; });
+                  modalUploadJob.items.forEach(item => { if (item.status === 'paused' && item.selected) item.status = 'queued'; });
                   document.getElementById('modal-upload-pause').style.display = '';
                   document.getElementById('modal-upload-resume').style.display = 'none';
                   pumpModalUpload();
@@ -10137,29 +10189,45 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   pumpModalUpload();
               }
 
-              // Handle Upload Files
-              function handleUploadFiles() {
+              function previewModalUploadFiles() {
                   var fileInput = document.getElementById('fileInput');
                   var folderInput = document.getElementById('folderInput');
                   var files = Array.from(fileInput.files || []).concat(Array.from(folderInput.files || []));
-                  
+
                   if (files.length === 0) {
-                      toast("Please select at least one file", "warning");
+                      modalUploadJob = null;
+                      document.getElementById('modal-upload-progress').style.display = 'none';
                       return;
                   }
-                  
+
+                  const uniqueFiles = new Map();
+                  files.forEach(file => uniqueFiles.set(file.webkitRelativePath || file.name, file));
                   modalUploadJob = {
-                      items: files.map(file => ({ file, path: file.webkitRelativePath || file.name, chunk: 0, loaded: 0, status: 'queued', xhr: null })),
+                      items: Array.from(uniqueFiles.values()).map(file => ({ file, path: file.webkitRelativePath || file.name, chunk: 0, loaded: 0, status: 'queued', selected: true, xhr: null })),
                       active: 0,
                       limit: 2,
                       paused: false,
                       cancelled: false
                   };
                   document.getElementById('modal-upload-progress').style.display = '';
+                  document.getElementById('modal-upload-start').style.display = '';
+                  renderModalUpload();
+              }
+
+              // Handle Upload Files
+              function handleUploadFiles() {
+                  if (!modalUploadJob || modalUploadJob.items.length === 0) {
+                      toast("Please select at least one file", "warning");
+                      return;
+                  }
+                  if (modalUploadJob.active > 0 || modalUploadJob.items.some(item => item.status === 'done')) return;
+                  modalUploadJob.items.forEach(item => {
+                      if (!item.selected && item.status === 'queued') item.status = 'skipped';
+                  });
                   document.getElementById('modal-upload-start').style.display = 'none';
                   document.getElementById('modal-upload-pause').style.display = '';
                   document.getElementById('modal-upload-cancel').style.display = '';
-                  toast('Upload dimulai: ' + files.length + ' file', 'info');
+                  toast('Upload dimulai: ' + modalUploadJob.items.filter(item => item.selected).length + ' file', 'info');
                   renderModalUpload();
                   pumpModalUpload();
               }
