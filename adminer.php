@@ -7716,6 +7716,18 @@ $searchColumn = $_GET['search_col'] ?? '';
 $searchOp = $_GET['search_op'] ?? 'LIKE';
 $searchVal = $_GET['search_val'] ?? '';
 
+function is_datetime_search_type($type) {
+    return preg_match('/(?:datetime|timestamp)/i', (string)$type) === 1;
+}
+
+function parse_search_date_range($value) {
+    if (!is_string($value) || !preg_match('/^\s*(.+?)\s+to\s+(.+?)\s*$/i', $value, $matches)) {
+        return null;
+    }
+
+    return [$matches[1], $matches[2]];
+}
+
 // Sort Params
 $orderBy = $_GET['order_by'] ?? null;
 $orderDir = $_GET['order_dir'] ?? 'ASC';
@@ -8019,7 +8031,17 @@ if ($is_logged_in && $currentTable) {
                     }
                     
                     if ($searchColumn && in_array($searchColumn, $tableColumns)) {
-                        $conditions[$searchColumn] = ['operator' => $op, 'value' => $val];
+                        $columnType = '';
+                        foreach ($tableStructure as $columnDefinition) {
+                            if (($columnDefinition['Field'] ?? '') === $searchColumn) {
+                                $columnType = $columnDefinition['Type'] ?? '';
+                                break;
+                            }
+                        }
+                        $dateRange = is_datetime_search_type($columnType) ? parse_search_date_range($searchVal) : null;
+                        $conditions[$searchColumn] = $dateRange !== null
+                            ? ['operator' => 'BETWEEN', 'value' => $dateRange]
+                            : ['operator' => $op, 'value' => $val];
                     }
                 }
                 
@@ -8074,8 +8096,22 @@ if ($is_logged_in && $currentTable) {
                 }
                 
                 if ($searchColumn && in_array($searchColumn, $tableColumns)) {
-                    $sql .= " WHERE `$searchColumn` $op ?";
-                    $params[] = $val;
+                    $columnType = '';
+                    foreach ($tableStructure as $columnDefinition) {
+                        if (($columnDefinition['name'] ?? '') === $searchColumn) {
+                            $columnType = $columnDefinition['type'] ?? '';
+                            break;
+                        }
+                    }
+                    $dateRange = is_datetime_search_type($columnType) ? parse_search_date_range($searchVal) : null;
+                    if ($dateRange !== null) {
+                        $sql .= " WHERE `$searchColumn` BETWEEN ? AND ?";
+                        $params[] = $dateRange[0];
+                        $params[] = $dateRange[1];
+                    } else {
+                        $sql .= " WHERE `$searchColumn` $op ?";
+                        $params[] = $val;
+                    }
                 } else {
                     $where = [];
                     foreach ($tableColumns as $col) {
@@ -8146,8 +8182,22 @@ if ($is_logged_in && $currentTable) {
                 }
                 
                 if ($searchColumn && in_array($searchColumn, $tableColumns)) {
-                    $sql .= " WHERE `$searchColumn` $op ?";
-                    $params[] = $val;
+                    $columnType = '';
+                    foreach ($tableStructure as $columnDefinition) {
+                        if (($columnDefinition['Field'] ?? '') === $searchColumn) {
+                            $columnType = $columnDefinition['Type'] ?? '';
+                            break;
+                        }
+                    }
+                    $dateRange = is_datetime_search_type($columnType) ? parse_search_date_range($searchVal) : null;
+                    if ($dateRange !== null) {
+                        $sql .= " WHERE `$searchColumn` BETWEEN ? AND ?";
+                        $params[] = $dateRange[0];
+                        $params[] = $dateRange[1];
+                    } else {
+                        $sql .= " WHERE `$searchColumn` $op ?";
+                        $params[] = $val;
+                    }
                 } else {
                     // Global search
                     $where = [];
@@ -16766,6 +16816,7 @@ padding: 20px !important;
                                     <option value="!=" <?=$searchOp==='!='?'selected':''?>>!=</option>
                                     <option value=">" <?=$searchOp==='>'?'selected':''?>>&gt;</option>
                                     <option value="<" <?=$searchOp==='<'?'selected':''?>>&lt;</option>
+                                    <option value="BETWEEN" <?=$searchOp==='BETWEEN'?'selected':''?>>BETWEEN</option>
                                 </select>
                                 <input type="text" name="search_val" class="form-control" placeholder="Server-side Search..." value="<?=htmlspecialchars($searchVal)?>" style="width: 100%;">
                             </div>
@@ -16775,6 +16826,44 @@ padding: 20px !important;
                                 ?><a href="?table=<?=htmlspecialchars($currentTable)?>&view=data" class="btn btn-danger"><i class="fas fa-times"></i> Clear</a><?php 
                             endif; ?>
                         </form>
+
+                        <script>
+                        (() => {
+                            const searchColumn = document.querySelector('select[name="search_col"]');
+                            const searchOperator = document.querySelector('select[name="search_op"]');
+                            const searchValue = document.querySelector('input[name="search_val"]');
+                            const columnTypes = <?= json_encode(array_reduce($tableStructure ?? [], function ($types, $column) {
+                                $name = $column['Field'] ?? $column['name'] ?? '';
+                                if ($name !== '') $types[$name] = $column['Type'] ?? $column['type'] ?? '';
+                                return $types;
+                            }, []), JSON_UNESCAPED_UNICODE) ?>;
+
+                            function updateServerSearchPicker() {
+                                if (!searchValue || typeof flatpickr === 'undefined') return;
+                                const type = String(columnTypes[searchColumn.value] || '').toLowerCase();
+                                const isDateTime = type.includes('datetime') || type.includes('timestamp');
+                                if (searchValue._flatpickr) searchValue._flatpickr.destroy();
+
+                                if (isDateTime) {
+                                    flatpickr(searchValue, {
+                                        theme: 'dark',
+                                        mode: 'range',
+                                        enableTime: true,
+                                        enableSeconds: true,
+                                        dateFormat: 'Y-m-d H:i:S',
+                                        allowInput: true,
+                                        rangeSeparator: ' to ',
+                                        onChange: (selectedDates) => {
+                                            if (selectedDates.length === 2) searchOperator.value = 'BETWEEN';
+                                        }
+                                    });
+                                }
+                            }
+
+                            searchColumn?.addEventListener('change', updateServerSearchPicker);
+                            updateServerSearchPicker();
+                        })();
+                        </script>
                         
                         <div id="advancedFiltersContainer" style="display:<?= !empty($_GET['advanced_filters']) ? 'block' : 'none' ?>; background:var(--bg-card); padding:15px; border-radius:6px; margin-bottom:15px; border:1px solid var(--border-color);">
                              <h4 style="margin-top:0; font-size:1rem; margin-bottom:10px;"><i class="fas fa-filter"></i> Visual Advanced Filters</h4>
