@@ -5073,6 +5073,23 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            // Match the current table layout when the browser provides visible columns.
+            $requestedColumns = json_decode($_POST['columns'] ?? '[]', true);
+            if (!is_array($requestedColumns)) $requestedColumns = [];
+            $availableColumns = array_keys($rows[0]);
+            $columns = $requestedColumns
+                ? array_values(array_intersect($requestedColumns, $availableColumns))
+                : $availableColumns;
+            if (empty($columns)) {
+                echo json_encode(['success' => false, 'message' => 'No visible columns selected']);
+                exit;
+            }
+            $rows = array_map(function ($row) use ($columns) {
+                $ordered = [];
+                foreach ($columns as $column) $ordered[$column] = $row[$column] ?? null;
+                return $ordered;
+            }, $rows);
+
             $content = '';
             if ($format === 'json') {
                 $content = json_encode($rows, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
@@ -5085,6 +5102,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 rewind($fp);
                 $content = stream_get_contents($fp);
                 fclose($fp);
+            } elseif ($format === 'excel') {
+                // TSV is understood by Excel and pastes directly into cells.
+                $excelValue = function ($value) {
+                    if ($value === null) return '';
+                    return str_replace(["\t", "\r", "\n"], [' ', ' ', ' '], (string)$value);
+                };
+                $lines = [implode("\t", array_map($excelValue, $columns))];
+                foreach ($rows as $row) {
+                    $lines[] = implode("\t", array_map($excelValue, array_values($row)));
+                }
+                $content = implode("\r\n", $lines);
             } elseif ($format === 'sql') {
                 foreach ($rows as $row) {
                     $keys = array_keys($row);
@@ -10575,111 +10603,156 @@ var advancedFilters = null;
             });
         }
         
-        // --- COLUMN VISIBILITY ---
+        // --- COLUMN VISIBILITY AND ORDER ---
         function initColumnVisibility() {
             const dropdown = document.getElementById('colToggleDropdown');
-            if (!dropdown) return;
-    
-            const urlParams = new URLSearchParams(window.location.search);
-            const tableName = urlParams.get('table');
-            if (!tableName) return;
-            
-            const storageKey = 'adminer_hidecols_' + tableName;
-            let hiddenCols = JSON.parse(localStorage.getItem(storageKey) || '[]');
+            const table = document.querySelector('table[data-table]');
+            if (!dropdown || !table) return;
 
-            // --- CONTROLS (Search + Bulk) ---
+            const tableName = table.getAttribute('data-table');
+            const storageKey = 'adminer_colprefs_' + encodeURIComponent(tableName);
+            const legacyKey = 'adminer_hidecols_' + tableName;
+            const headers = Array.from(table.querySelectorAll('th[data-col]'));
+            const defaultOrder = headers.map(header => header.getAttribute('data-col'));
+            let savedPrefs = null;
+
+            try {
+                savedPrefs = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            } catch (error) {
+                savedPrefs = null;
+            }
+
+            // Keep existing hide-only preferences when upgrading to the new format.
+            if (!savedPrefs) {
+                try {
+                    const legacyHidden = JSON.parse(localStorage.getItem(legacyKey) || '[]');
+                    if (Array.isArray(legacyHidden)) savedPrefs = { hidden: legacyHidden };
+                } catch (error) {
+                    savedPrefs = null;
+                }
+            }
+
+            const validColumns = new Set(defaultOrder);
+            let columnOrder = Array.isArray(savedPrefs?.order)
+                ? savedPrefs.order.filter(column => validColumns.has(column))
+                : [];
+            columnOrder = columnOrder.concat(defaultOrder.filter(column => !columnOrder.includes(column)));
+            let hiddenCols = Array.isArray(savedPrefs?.hidden)
+                ? savedPrefs.hidden.filter(column => validColumns.has(column))
+                : [];
+
+            const savePreferences = () => {
+                localStorage.setItem(storageKey, JSON.stringify({ order: columnOrder, hidden: hiddenCols }));
+            };
+
+            const findColumnCells = (column) => Array.from(table.querySelectorAll(`[data-col="${CSS.escape(column)}"]`));
+
+            const applyColumnOrder = () => {
+                const headerRow = table.querySelector('thead tr');
+                if (headerRow) columnOrder.forEach(column => {
+                    const header = headerRow.querySelector(`th[data-col="${CSS.escape(column)}"]`);
+                    if (header) headerRow.appendChild(header);
+                });
+
+                table.querySelectorAll('tbody tr').forEach(row => {
+                    const cells = Array.from(row.querySelectorAll('td[data-col]'));
+                    if (!cells.length) return;
+                    columnOrder.forEach(column => {
+                        const cell = cells.find(candidate => candidate.getAttribute('data-col') === column);
+                        if (cell) row.appendChild(cell);
+                    });
+                });
+            };
+
+            const setColumnVisibility = (column, show) => {
+                findColumnCells(column).forEach(cell => { cell.style.display = show ? '' : 'none'; });
+                if (show) {
+                    hiddenCols = hiddenCols.filter(item => item !== column);
+                } else if (!hiddenCols.includes(column)) {
+                    hiddenCols.push(column);
+                }
+                savePreferences();
+            };
+
+            applyColumnOrder();
+            hiddenCols.forEach(column => setColumnVisibility(column, false));
+
             const controls = document.createElement('div');
-            controls.style.cssText = 'margin: 5px 0 10px 0; display:flex; flex-direction:column; gap:8px; border-bottom:1px solid #333; padding-bottom:10px;';
+            controls.style.cssText = 'margin:5px 0 10px; display:flex; flex-direction:column; gap:8px; border-bottom:1px solid #333; padding-bottom:10px;';
             controls.innerHTML = `
                 <input type="text" id="colSearchInput" class="form-control" placeholder="Search columns..." style="font-size:0.8rem; height:30px; background:var(--bg-hover);">
                 <div style="display:flex; gap:8px;">
-                    <button type="button" id="btnSelectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">All</button>
-                    <button type="button" id="btnUnselectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">None</button>
+                    <button type="button" id="btnSelectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">Show All</button>
+                    <button type="button" id="btnUnselectAllCols" class="btn btn-sm" style="flex:1; font-size:0.75rem; background:#222; border:1px solid #444; padding:2px 5px;">Hide All</button>
                 </div>
+                <button type="button" id="btnResetCols" class="btn btn-sm" style="font-size:0.75rem; border-color:var(--accent); color:var(--accent); padding:3px 5px;"><i class="fas fa-undo"></i> Reset Default Order & Visibility</button>
+                <small style="color:var(--text-secondary); font-size:0.7rem;"><i class="fas fa-grip-vertical"></i> Drag items to arrange columns. Changes save automatically.</small>
             `;
             dropdown.appendChild(controls);
 
             const listContainer = document.createElement('div');
             listContainer.id = 'colToggleList';
+            listContainer.style.cssText = 'display:flex; flex-direction:column; gap:2px;';
             dropdown.appendChild(listContainer);
-    
-            const headers = document.querySelectorAll('th[data-col]');
-            headers.forEach(th => {
-                const colName = th.getAttribute('data-col');
-                const isHidden = hiddenCols.includes(colName);
-                
-                const div = document.createElement('div');
-                div.className = 'col-toggle-item';
-                div.style.padding = '4px 0';
-                div.innerHTML = `
-                    <label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary);">
-                        <input type="checkbox" value="${colName}" ${isHidden ? '' : 'checked'} style="width:auto; margin:0;"> 
-                        <span style="font-size:0.9rem;">${colName}</span>
-                    </label>
-                `;
-                listContainer.appendChild(div);
-                
-                const checkbox = div.querySelector('input');
-                checkbox.addEventListener('change', (e) => {
-                    toggleColumn(colName, e.target.checked);
-                });
-    
-                if (isHidden) {
-                    toggleColumn(colName, false);
-                }
-            });
 
-            // Search Logic
-            document.getElementById('colSearchInput').addEventListener('input', (e) => {
-                const q = e.target.value.toLowerCase();
-                document.querySelectorAll('.col-toggle-item').forEach(item => {
-                    const text = item.innerText.toLowerCase();
-                    item.style.display = text.includes(q) ? 'block' : 'none';
-                });
-            });
-
-            // Bulk Actions
-            document.getElementById('btnSelectAllCols').addEventListener('click', () => {
-                document.querySelectorAll('.col-toggle-item').forEach(item => {
-                    if (item.style.display !== 'none') {
-                        const cb = item.querySelector('input');
-                        if (!cb.checked) {
-                            cb.checked = true;
-                            cb.dispatchEvent(new Event('change'));
-                        }
+            columnOrder.forEach(column => {
+                const item = document.createElement('div');
+                item.className = 'col-toggle-item';
+                item.draggable = true;
+                item.dataset.col = column;
+                item.style.cssText = 'padding:5px 4px; display:flex; align-items:center; gap:7px; cursor:grab; border:1px solid transparent; border-radius:4px;';
+                item.innerHTML = `<i class="fas fa-grip-vertical" style="color:var(--text-secondary); font-size:0.75rem;"></i><label style="cursor:pointer; display:flex; align-items:center; gap:8px; white-space:nowrap; color:var(--text-primary); flex:1;"><input type="checkbox" style="width:auto; margin:0;"><span style="font-size:0.9rem;"></span></label>`;
+                item.querySelector('span').textContent = column;
+                const checkbox = item.querySelector('input');
+                checkbox.checked = !hiddenCols.includes(column);
+                checkbox.addEventListener('change', () => setColumnVisibility(column, checkbox.checked));
+                item.addEventListener('dragstart', () => item.classList.add('dragging'));
+                item.addEventListener('dragend', () => { item.classList.remove('dragging'); savePreferences(); });
+                item.addEventListener('dragover', (event) => {
+                    event.preventDefault();
+                    const dragging = listContainer.querySelector('.dragging');
+                    if (dragging && dragging !== item) {
+                        const rect = item.getBoundingClientRect();
+                        listContainer.insertBefore(dragging, event.clientY < rect.top + rect.height / 2 ? item : item.nextSibling);
                     }
                 });
+                listContainer.appendChild(item);
             });
 
-            document.getElementById('btnUnselectAllCols').addEventListener('click', () => {
-                document.querySelectorAll('.col-toggle-item').forEach(item => {
-                    if (item.style.display !== 'none') {
-                        const cb = item.querySelector('input');
-                        if (cb.checked) {
-                            cb.checked = false;
-                            cb.dispatchEvent(new Event('change'));
-                        }
-                    }
+            listContainer.addEventListener('drop', () => {
+                columnOrder = Array.from(listContainer.children).map(item => item.dataset.col);
+                applyColumnOrder();
+                savePreferences();
+            });
+
+            document.getElementById('colSearchInput').addEventListener('input', (event) => {
+                const query = event.target.value.toLowerCase();
+                listContainer.querySelectorAll('.col-toggle-item').forEach(item => {
+                    item.style.display = item.dataset.col.toLowerCase().includes(query) ? 'flex' : 'none';
                 });
             });
-    
-            function toggleColumn(colName, show) {
-                // Toggle Header
-                const th = document.querySelector(`th[data-col="${CSS.escape(colName)}"]`);
-                if (th) th.style.display = show ? '' : 'none';
-    
-                // Toggle Cells
-                const cells = document.querySelectorAll(`td[data-col="${CSS.escape(colName)}"]`);
-                cells.forEach(td => td.style.display = show ? '' : 'none');
-                
-                // Update Storage
-                if (show) {
-                    hiddenCols = hiddenCols.filter(c => c !== colName);
-                } else {
-                    if (!hiddenCols.includes(colName)) hiddenCols.push(colName);
+
+            const setAllVisible = (visible) => listContainer.querySelectorAll('.col-toggle-item').forEach(item => {
+                if (item.style.display !== 'none') {
+                    const checkbox = item.querySelector('input');
+                    checkbox.checked = visible;
+                    setColumnVisibility(item.dataset.col, visible);
                 }
-                localStorage.setItem(storageKey, JSON.stringify(hiddenCols));
-            }
+            });
+            document.getElementById('btnSelectAllCols').addEventListener('click', () => setAllVisible(true));
+            document.getElementById('btnUnselectAllCols').addEventListener('click', () => setAllVisible(false));
+            document.getElementById('btnResetCols').addEventListener('click', () => {
+                columnOrder = [...defaultOrder];
+                hiddenCols = [];
+                localStorage.removeItem(storageKey);
+                localStorage.removeItem(legacyKey);
+                applyColumnOrder();
+                listContainer.querySelectorAll('.col-toggle-item').forEach(item => {
+                    item.querySelector('input').checked = true;
+                    item.style.display = 'flex';
+                });
+                savePreferences();
+            });
         }
         initColumnVisibility();
     });
@@ -16819,6 +16892,7 @@ padding: 20px !important;
                                     <option value="export_sql">Copy to SQL</option>
                                     <option value="export_csv">Copy to CSV</option>
                                     <option value="export_json">Copy to JSON</option>
+                                    <option value="export_excel">Copy to Excel</option>
                                 </select>
                                 <button type="button" onclick="submitBulkAction()" class="btn btn-primary" id="bulkApplyBtn" style="display:none;">Apply</button>
                                 <a href="?table=<?=htmlspecialchars($currentTable)?>&view=form" class="btn btn-primary"><i class="fas fa-plus"></i> New Row</a>
@@ -19460,17 +19534,20 @@ var queryBuilder = null;
                 }).then((result) => {
                     if (result.isConfirmed) form.submit();
                 });
-            } else if (['export_sql', 'export_csv', 'export_json'].includes(action)) {
+            } else if (['export_sql', 'export_csv', 'export_json', 'export_excel'].includes(action)) {
                 // Bulk Export to Clipboard
                 const checkedIds = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
                 if (checkedIds.length === 0) return;
 
                 const format = action.replace('export_', '');
                 const table = new URLSearchParams(window.location.search).get('table');
+                const orderedVisibleColumns = Array.from(document.querySelectorAll('table[data-table] th[data-col]'))
+                    .filter(header => getComputedStyle(header).display !== 'none')
+                    .map(header => header.getAttribute('data-col'));
                 
                 Swal.fire({
                     title: 'Exporting...',
-                    text: `Processing ${checkedIds.length} rows to clipboard as ${format.toUpperCase()}`,
+                    text: `Processing ${checkedIds.length} rows to clipboard as ${format === 'excel' ? 'EXCEL' : format.toUpperCase()}`,
                     allowOutsideClick: false,
                     didOpen: () => {
                         Swal.showLoading();
@@ -19479,6 +19556,7 @@ var queryBuilder = null;
                         formData.append('table', table);
                         formData.append('ids', JSON.stringify(checkedIds));
                         formData.append('format', format);
+                        formData.append('columns', JSON.stringify(orderedVisibleColumns));
 
                         fetch('?', { method: 'POST', body: formData })
                         .then(res => res.json())
