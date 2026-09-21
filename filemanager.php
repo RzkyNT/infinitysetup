@@ -1187,6 +1187,57 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           echo json_encode(['success' => true, 'data' => $data]);
           exit();
       }
+      // ---- Codebase Visualizer: get file tree + code content ----
+      if (isset($_POST['type']) && $_POST['type'] == "get_codebase") {
+          $dir = isset($_POST['path']) ? fm_clean_path($_POST['path']) : '';
+          $absPath = FM_ROOT_PATH . ($dir ? '/' . $dir : '');
+          $absPath = rtrim($absPath, '/');
+          $maxSize = 200 * 1024; // skip files > 200 KB
+
+          $codeExts = ['php','js','ts','css','html','htm','py','java','c','cpp','h','rb','go','rs',
+                       'json','xml','yml','yaml','sh','bat','sql','md','txt','env','ini','conf','htaccess'];
+
+          function cv_scan_dir($path, $root, $maxSize, $codeExts, $depth = 0) {
+              if ($depth > 5) return [];
+              $result = [];
+              $items = @scandir($path);
+              if (!$items) return $result;
+              foreach ($items as $item) {
+                  if ($item === '.' || $item === '..') continue;
+                  if (!FM_SHOW_HIDDEN && substr($item, 0, 1) === '.') continue;
+                  $full = $path . '/' . $item;
+                  $rel  = ltrim(str_replace($root, '', $full), '/\\');
+                  if (is_dir($full)) {
+                      $children = cv_scan_dir($full, $root, $maxSize, $codeExts, $depth + 1);
+                      if (!empty($children)) {
+                          $result[] = ['type' => 'dir', 'name' => $item, 'path' => $rel, 'children' => $children];
+                      }
+                  } else {
+                      $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+                      if (!in_array($ext, $codeExts)) continue;
+                      $size = (int)@filesize($full);
+                      if ($size > $maxSize) continue;
+                      $content = @file_get_contents($full);
+                      $lines   = $content !== false ? substr_count($content, "\n") + 1 : 0;
+                      $result[] = [
+                          'type'    => 'file',
+                          'name'    => $item,
+                          'path'    => $rel,
+                          'ext'     => $ext,
+                          'size'    => $size,
+                          'lines'   => $lines,
+                          'content' => $content !== false ? $content : '',
+                      ];
+                  }
+              }
+              return $result;
+          }
+
+          $tree = cv_scan_dir($absPath, FM_ROOT_PATH, $maxSize, $codeExts);
+          header('Content-Type: application/json');
+          echo json_encode(['success' => true, 'tree' => $tree, 'root' => $dir ?: '/']);
+          exit();
+      }
 // save editor file
       if (isset($_POST['type']) && $_POST['type'] == "save") {
           // get current path
@@ -6049,6 +6100,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                            <ul class="dropdown-menu dropdown-menu-end shadow border-0" aria-labelledby="toolsDropdown" data-bs-theme="<?php echo FM_THEME; ?>" style="background: #1a1a1a !important;">
                                <li><a class="dropdown-item nav-link py-2" href="javascript:showDuplicateScanner();"><i class="fa fa-search-plus me-2 text-primary"></i> Find Duplicates</a></li>
                                <li><a class="dropdown-item nav-link py-2" href="javascript:showDiskAnalyzer();"><i class="fa fa-pie-chart me-2 text-warning"></i> Disk Analyzer</a></li>
+                               <li><a class="dropdown-item nav-link py-2" href="javascript:showCodebaseVisualizer();"><i class="fa fa-code me-2 text-info"></i> Codebase Visualizer</a></li>
                            </ul>
                        </li>
                        <?php if (FM_USE_AUTH): ?>
@@ -11471,6 +11523,412 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       <div class="d-flex align-items-center"><span class="type-other me-1" style="width:12px;height:12px;border-radius:2px;"></span> Others</div>
                   `);
               }
+          </script>
+
+          <!-- ============================================================ -->
+          <!-- CODEBASE VISUALIZER MODAL                                     -->
+          <!-- ============================================================ -->
+          <div class="modal fade" id="codebaseVisualizerModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+              <div class="modal-dialog modal-fullscreen" role="document">
+                  <div class="modal-content" style="background:#0a0a0f; border:none;">
+                      <div class="modal-header" style="background:#111118; border-bottom:1px solid #222; padding:10px 18px;">
+                          <span style="font-size:1rem; font-weight:700; color:#e0e0e0; display:flex; align-items:center; gap:10px;">
+                              <i class="fa fa-code" style="color:#38bdf8;"></i> Codebase Visualizer
+                              <span style="font-size:0.78rem; font-weight:400; color:#666;" id="cv-scan-label"></span>
+                          </span>
+                          <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+                              <input type="text" id="cv-search" placeholder="Search files..." style="background:#1a1a2e; border:1px solid #333; border-radius:6px; color:#e0e0e0; padding:4px 10px; font-size:0.82rem; width:180px;">
+                              <button class="btn btn-sm" style="background:#38bdf8; color:#000; font-weight:600;" onclick="cvRescan()"><i class="fa fa-refresh"></i> Rescan</button>
+                              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                          </div>
+                      </div>
+                      <div class="modal-body" style="padding:0; display:flex; height:calc(100vh - 56px); overflow:hidden;">
+
+                          <!-- LEFT PANEL: Treemap -->
+                          <div id="cv-left" style="width:42%; min-width:280px; display:flex; flex-direction:column; border-right:1px solid #222; background:#0a0a0f;">
+                              <!-- Stats -->
+                              <div id="cv-stats" style="display:flex; gap:0; border-bottom:1px solid #1a1a2e; flex-shrink:0;">
+                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
+                                      <div id="cv-stat-files" style="font-size:1.3rem; font-weight:700; color:#38bdf8;">0</div>
+                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Files</div>
+                                  </div>
+                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
+                                      <div id="cv-stat-lines" style="font-size:1.3rem; font-weight:700; color:#a78bfa;">0</div>
+                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Lines</div>
+                                  </div>
+                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
+                                      <div id="cv-stat-size" style="font-size:1.3rem; font-weight:700; color:#34d399;">—</div>
+                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Total Size</div>
+                                  </div>
+                                  <div style="flex:1; padding:10px 14px; text-align:center;">
+                                      <div id="cv-stat-langs" style="font-size:1.3rem; font-weight:700; color:#f59e0b;">0</div>
+                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Languages</div>
+                                  </div>
+                              </div>
+                              <!-- Treemap -->
+                              <div id="cv-treemap-wrap" style="flex:1; position:relative; background:#000; overflow:hidden;">
+                                  <div id="cv-treemap" style="position:relative; width:100%; height:100%;">
+                                      <div id="cv-loading" style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;gap:12px;">
+                                          <div style="width:28px;height:28px;border:3px solid #222;border-top-color:#38bdf8;border-radius:50%;animation:cvSpin 0.7s linear infinite;"></div>
+                                          <span>Scanning codebase...</span>
+                                      </div>
+                                  </div>
+                              </div>
+                              <!-- Lang bar -->
+                              <div id="cv-lang-bar" style="height:8px; display:flex; flex-shrink:0;"></div>
+                              <!-- Legend -->
+                              <div id="cv-legend" style="display:flex; flex-wrap:wrap; gap:8px; padding:10px 14px; border-top:1px solid #1a1a2e; font-size:0.72rem; color:#888; flex-shrink:0;"></div>
+                          </div>
+
+                          <!-- RIGHT PANEL: File browser + Code viewer -->
+                          <div id="cv-right" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+                              <!-- File list header -->
+                              <div id="cv-file-list-header" style="padding:8px 14px; border-bottom:1px solid #1a1a2e; font-size:0.78rem; color:#666; display:flex; justify-content:space-between; flex-shrink:0;">
+                                  <span>Click a block to view code &nbsp;·&nbsp; <span id="cv-selected-file" style="color:#38bdf8;"></span></span>
+                                  <span id="cv-file-info" style="color:#555;"></span>
+                              </div>
+                              <!-- Code viewer -->
+                              <div id="cv-code-wrap" style="flex:1; overflow:auto; background:#050508;">
+                                  <pre id="cv-code" style="margin:0; padding:18px; font-family:'Fira Code','Cascadia Code','Consolas',monospace; font-size:0.8rem; color:#cdd6f4; line-height:1.6; white-space:pre; tab-size:4; min-height:100%;"><span style="color:#444; font-style:italic;">← Select a file from the treemap to view its code</span></pre>
+                              </div>
+                              <!-- File tree -->
+                              <div id="cv-file-tree" style="height:220px; overflow-y:auto; border-top:1px solid #1a1a2e; background:#0a0a0f; flex-shrink:0; padding:8px 0;">
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+
+          <style>
+              @keyframes cvSpin { to { transform: rotate(360deg); } }
+              .cv-node { position:absolute; border:1px solid rgba(0,0,0,0.4); overflow:hidden; cursor:pointer; transition:filter 0.12s, box-shadow 0.12s; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+              .cv-node:hover { filter:brightness(1.4); z-index:20; box-shadow:0 0 0 2px rgba(56,189,248,0.6); }
+              .cv-node.cv-active { box-shadow:0 0 0 2px #38bdf8 !important; filter:brightness(1.5) !important; z-index:30; }
+              .cv-node .cv-lbl { font-size:0.65rem; font-weight:700; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:90%; text-align:center; text-shadow:0 1px 3px rgba(0,0,0,0.9); }
+              .cv-node .cv-sub { font-size:0.58rem; color:rgba(255,255,255,0.7); text-align:center; }
+              .cv-tree-item { display:flex; align-items:center; gap:8px; padding:4px 14px; cursor:pointer; font-size:0.78rem; color:#888; transition:background 0.1s; }
+              .cv-tree-item:hover { background:rgba(56,189,248,0.08); color:#e0e0e0; }
+              .cv-tree-item.cv-active { background:rgba(56,189,248,0.12); color:#38bdf8; }
+              .cv-tree-dir { padding:4px 14px; font-size:0.75rem; color:#555; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; border-top:1px solid #111; margin-top:4px; }
+              .cv-ext-badge { display:inline-block; padding:1px 5px; border-radius:3px; font-size:0.65rem; font-weight:700; margin-right:4px; }
+              #cv-search::placeholder { color:#444; }
+              /* Syntax highlight classes */
+              .cv-kw  { color:#c792ea; }
+              .cv-str { color:#c3e88d; }
+              .cv-cmt { color:#546e7a; font-style:italic; }
+              .cv-fn  { color:#82aaff; }
+              .cv-num { color:#f78c6c; }
+              .cv-tag { color:#f07178; }
+              .cv-atr { color:#ffcb6b; }
+          </style>
+
+          <script>
+          (function() {
+              var cvFiles = []; // flat list of all files
+              var cvCurrentPath = '';
+
+              var CV_COLORS = {
+                  'php': '#8b5cf6', 'js': '#f59e0b', 'ts': '#3b82f6',
+                  'css': '#06b6d4', 'html': '#ef4444', 'htm': '#ef4444',
+                  'py':  '#3b82f6', 'java':'#ef4444', 'c':'#6b7280',
+                  'cpp': '#6b7280', 'h':  '#6b7280', 'rb':'#ef4444',
+                  'go':  '#06b6d4', 'rs': '#f97316', 'json':'#10b981',
+                  'xml': '#10b981', 'yml':'#10b981', 'yaml':'#10b981',
+                  'sh':  '#4ade80', 'bat':'#4ade80', 'sql':'#a78bfa',
+                  'md':  '#94a3b8', 'txt':'#94a3b8', 'env':'#fbbf24',
+                  'ini': '#fbbf24', 'conf':'#fbbf24', 'htaccess':'#f472b6',
+                  'default': '#6b7280'
+              };
+
+              function cvColor(ext) { return CV_COLORS[ext] || CV_COLORS['default']; }
+
+              function cvFmtSize(b) {
+                  if (b >= 1048576) return (b/1048576).toFixed(1)+' MB';
+                  if (b >= 1024)    return (b/1024).toFixed(1)+' KB';
+                  return b+' B';
+              }
+
+              function cvFlattenTree(tree, result) {
+                  if (!result) result = [];
+                  tree.forEach(function(item) {
+                      if (item.type === 'file') result.push(item);
+                      else if (item.children) cvFlattenTree(item.children, result);
+                  });
+                  return result;
+              }
+
+              function cvBuildStats(files) {
+                  var totalLines = 0, totalSize = 0, langs = {};
+                  files.forEach(function(f) {
+                      totalLines += f.lines || 0;
+                      totalSize  += f.size  || 0;
+                      langs[f.ext] = (langs[f.ext] || 0) + 1;
+                  });
+                  document.getElementById('cv-stat-files').textContent = files.length;
+                  document.getElementById('cv-stat-lines').textContent = totalLines.toLocaleString();
+                  document.getElementById('cv-stat-size').textContent  = cvFmtSize(totalSize);
+                  document.getElementById('cv-stat-langs').textContent  = Object.keys(langs).length;
+                  return langs;
+              }
+
+              function cvBuildLangBar(files) {
+                  var totalSize = files.reduce(function(a,f){return a+f.size;},0);
+                  var byExt = {};
+                  files.forEach(function(f){ byExt[f.ext]=(byExt[f.ext]||0)+f.size; });
+                  var bar = document.getElementById('cv-lang-bar');
+                  bar.innerHTML = '';
+                  Object.keys(byExt).sort(function(a,b){return byExt[b]-byExt[a];}).forEach(function(ext) {
+                      var pct = (byExt[ext]/totalSize*100).toFixed(2);
+                      var seg = document.createElement('div');
+                      seg.style.cssText = 'width:'+pct+'%; background:'+cvColor(ext)+'; transition:width 0.4s;';
+                      seg.title = ext + ': ' + pct + '%';
+                      bar.appendChild(seg);
+                  });
+              }
+
+              function cvBuildLegend(langs) {
+                  var leg = document.getElementById('cv-legend');
+                  leg.innerHTML = '';
+                  Object.keys(langs).sort().forEach(function(ext) {
+                      var item = document.createElement('span');
+                      item.style.display = 'flex'; item.style.alignItems = 'center'; item.style.gap = '4px';
+                      item.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+cvColor(ext)+'"></span>'+
+                          '<span>.'+ext+' ('+langs[ext]+')</span>';
+                      leg.appendChild(item);
+                  });
+              }
+
+              // Treemap layout
+              function cvLayout(items, x, y, w, h) {
+                  if (!items.length) return;
+                  var total = items.reduce(function(a,b){return a+b.size;},0);
+                  var ratio = items[0].size / total;
+                  var nw,nh,nx,ny;
+                  if (w >= h) {
+                      nw=w*ratio; nh=h; nx=x+nw; ny=y;
+                      cvDrawNode(items[0], x, y, nw, nh);
+                      cvLayout(items.slice(1), nx, ny, w-nw, h);
+                  } else {
+                      nw=w; nh=h*ratio; nx=x; ny=y+nh;
+                      cvDrawNode(items[0], x, y, nw, nh);
+                      cvLayout(items.slice(1), nx, ny, w, h-nh);
+                  }
+              }
+
+              function cvDrawNode(file, x, y, w, h) {
+                  if (w < 4 || h < 4) return;
+                  var node = document.createElement('div');
+                  node.className = 'cv-node';
+                  node.dataset.path = file.path;
+                  node.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+cvColor(file.ext)+';opacity:0.85;';
+                  node.title = file.path + '\n' + (file.lines||0)+' lines · '+cvFmtSize(file.size);
+                  if (w > 36 && h > 24) {
+                      var nm = document.createElement('div'); nm.className='cv-lbl';
+                      nm.textContent = file.name;
+                      node.appendChild(nm);
+                  }
+                  if (w > 50 && h > 40) {
+                      var sub = document.createElement('div'); sub.className='cv-sub';
+                      sub.textContent = (file.lines||0)+' lines';
+                      node.appendChild(sub);
+                  }
+                  node.addEventListener('click', function(e) {
+                      e.stopPropagation();
+                      cvShowFile(file);
+                  });
+                  document.getElementById('cv-treemap').appendChild(node);
+              }
+
+              function cvRenderTreemap(files) {
+                  var tm = document.getElementById('cv-treemap');
+                  tm.innerHTML = '';
+                  if (!files.length) {
+                      tm.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;">No code files found</div>';
+                      return;
+                  }
+                  var wrap = document.getElementById('cv-treemap-wrap');
+                  var W = wrap.offsetWidth, H = wrap.offsetHeight;
+                  tm.style.width = W+'px'; tm.style.height = H+'px';
+                  var sorted = files.slice().sort(function(a,b){return b.size-a.size;});
+                  cvLayout(sorted, 0, 0, W, H);
+              }
+
+              function cvBuildFileTree(tree) {
+                  var container = document.getElementById('cv-file-tree');
+                  container.innerHTML = '';
+                  function renderNode(items, indent) {
+                      items.forEach(function(item) {
+                          if (item.type === 'dir') {
+                              var dirEl = document.createElement('div');
+                              dirEl.className = 'cv-tree-dir';
+                              dirEl.style.paddingLeft = (14 + indent*12)+'px';
+                              dirEl.innerHTML = '<i class="fa fa-folder" style="color:#f59e0b;margin-right:5px;"></i>' + item.name;
+                              container.appendChild(dirEl);
+                              if (item.children) renderNode(item.children, indent+1);
+                          } else {
+                              var el = document.createElement('div');
+                              el.className = 'cv-tree-item';
+                              el.dataset.path = item.path;
+                              el.style.paddingLeft = (14 + indent*12)+'px';
+                              el.innerHTML = '<span class="cv-ext-badge" style="background:'+cvColor(item.ext)+'20;color:'+cvColor(item.ext)+'">'+item.ext+'</span>' +
+                                  '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.name+'</span>' +
+                                  '<span style="color:#444;font-size:0.7rem;margin-left:4px;">'+(item.lines||0)+'L</span>';
+                              el.addEventListener('click', function() { cvShowFile(item); });
+                              container.appendChild(el);
+                          }
+                      });
+                  }
+                  renderNode(tree, 0);
+              }
+
+              // Simple syntax highlighter
+              function cvHighlight(code, ext) {
+                  var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+                  if (['php','js','ts','py','java','c','cpp','h','rb','go','rs','sh','bat'].includes(ext)) {
+                      // Comments
+                      escaped = escaped.replace(/(\/\/[^\n]*|#[^\n]*)/g, '<span class="cv-cmt">$1</span>');
+                      escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="cv-cmt">$1</span>');
+                      // Strings
+                      escaped = escaped.replace(/(&quot;[^&]*?&quot;|&#039;[^&]*?&#039;)/g, '<span class="cv-str">$1</span>');
+                      escaped = escaped.replace(/(`[^`]*?`)/g, '<span class="cv-str">$1</span>');
+                      // Keywords
+                      var kws = ext === 'php'
+                          ? 'function|class|return|if|else|elseif|foreach|for|while|echo|print|new|public|private|protected|static|extends|implements|namespace|use|require|include|try|catch|throw|null|true|false|array'
+                          : 'function|class|return|if|else|for|while|const|let|var|new|import|export|from|async|await|try|catch|throw|null|true|false|undefined|type|interface|extends';
+                      escaped = escaped.replace(new RegExp('\\b('+kws+')\\b', 'g'), '<span class="cv-kw">$1</span>');
+                      // Numbers
+                      escaped = escaped.replace(/\b(\d+\.?\d*)\b/g, '<span class="cv-num">$1</span>');
+                  } else if (['html','htm','xml'].includes(ext)) {
+                      escaped = escaped.replace(/(&lt;\/?[\w:.-]+)/g, '<span class="cv-tag">$1</span>');
+                      escaped = escaped.replace(/([\w-]+=)/g, '<span class="cv-atr">$1</span>');
+                      escaped = escaped.replace(/(&quot;[^&]*?&quot;)/g, '<span class="cv-str">$1</span>');
+                      escaped = escaped.replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="cv-cmt">$1</span>');
+                  } else if (ext === 'css') {
+                      escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="cv-cmt">$1</span>');
+                      escaped = escaped.replace(/(#[0-9a-fA-F]{3,8})\b/g, '<span style="color:$1">$1</span>');
+                      escaped = escaped.replace(/([a-z-]+\s*:)/g, '<span class="cv-atr">$1</span>');
+                  } else if (['json','yml','yaml'].includes(ext)) {
+                      escaped = escaped.replace(/(&quot;[^&]*?&quot;)\s*:/g, '<span class="cv-kw">$1</span>:');
+                      escaped = escaped.replace(/:\s*(&quot;[^&]*?&quot;)/g, ': <span class="cv-str">$1</span>');
+                      escaped = escaped.replace(/\b(true|false|null)\b/g, '<span class="cv-num">$1</span>');
+                  } else if (ext === 'sql') {
+                      escaped = escaped.replace(/\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|INDEX|JOIN|ON|AND|OR|NOT|NULL|PRIMARY|KEY|AUTO_INCREMENT|DEFAULT|INNER|LEFT|RIGHT|OUTER|GROUP BY|ORDER BY|LIMIT|OFFSET)\b/gi,
+                          '<span class="cv-kw">$1</span>');
+                  }
+                  return '<span style="color:#555;user-select:none;margin-right:12px;display:inline-block;min-width:3em;text-align:right;font-size:0.75rem;">' +
+                      '${LINE}</span>' + escaped; // line numbers added below
+              }
+
+              function cvAddLineNumbers(code, ext) {
+                  var lines = code.split('\n');
+                  var highlighted = lines.map(function(line, i) {
+                      var escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                      var lnSpan = '<span style="color:#333;user-select:none;margin-right:12px;display:inline-block;min-width:3em;text-align:right;font-size:0.75rem;">'+(i+1)+'</span>';
+                      return lnSpan + escaped;
+                  });
+                  return highlighted.join('\n');
+              }
+
+              window.cvShowFile = function(file) {
+                  // Highlight active node
+                  document.querySelectorAll('.cv-node').forEach(function(n){n.classList.remove('cv-active');});
+                  var activeNode = document.querySelector('.cv-node[data-path="'+CSS.escape(file.path)+'"]');
+                  if (activeNode) activeNode.classList.add('cv-active');
+
+                  // Highlight active tree item
+                  document.querySelectorAll('.cv-tree-item').forEach(function(n){n.classList.remove('cv-active');});
+                  var activeTree = document.querySelector('.cv-tree-item[data-path="'+CSS.escape(file.path)+'"]');
+                  if (activeTree) { activeTree.classList.add('cv-active'); activeTree.scrollIntoView({block:'nearest'}); }
+
+                  // Update header
+                  document.getElementById('cv-selected-file').textContent = file.path;
+                  document.getElementById('cv-file-info').textContent = (file.lines||0)+' lines · '+cvFmtSize(file.size||0)+' · .'+file.ext;
+
+                  // Render code with line numbers
+                  var code = document.getElementById('cv-code');
+                  code.innerHTML = cvAddLineNumbers(file.content || '', file.ext);
+              };
+
+              function cvRender(data) {
+                  cvFiles = cvFlattenTree(data.tree);
+                  var langs = cvBuildStats(cvFiles);
+                  cvBuildLangBar(cvFiles);
+                  cvBuildLegend(langs);
+                  cvRenderTreemap(cvFiles);
+                  cvBuildFileTree(data.tree);
+                  document.getElementById('cv-scan-label').textContent = '— ' + data.root;
+                  document.getElementById('cv-code').innerHTML = '<span style="color:#444;font-style:italic;">← Select a file from the treemap to view its code</span>';
+                  document.getElementById('cv-selected-file').textContent = '';
+                  document.getElementById('cv-file-info').textContent = '';
+              }
+
+              function cvLoad(path) {
+                  var tm = document.getElementById('cv-treemap');
+                  tm.innerHTML = '<div id="cv-loading" style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;gap:12px;"><div style="width:28px;height:28px;border:3px solid #222;border-top-color:#38bdf8;border-radius:50%;animation:cvSpin 0.7s linear infinite;"></div><span>Scanning codebase...</span></div>';
+                  document.getElementById('cv-file-tree').innerHTML = '';
+                  cvCurrentPath = path;
+
+                  $.ajax({
+                      type: 'POST',
+                      url: window.location.pathname + window.location.search,
+                      data: {
+                          ajax: true,
+                          type: 'get_codebase',
+                          path: path,
+                          token: window.csrf
+                      },
+                      dataType: 'json',
+                      success: function(res) {
+                          if (res && res.success) {
+                              cvRender(res);
+                          } else {
+                              document.getElementById('cv-treemap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Error loading codebase</div>';
+                          }
+                      },
+                      error: function() {
+                          document.getElementById('cv-treemap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Request failed</div>';
+                      }
+                  });
+              }
+
+              window.showCodebaseVisualizer = function() {
+                  var urlParams = new URLSearchParams(window.location.search);
+                  var path = urlParams.get('p') || '';
+                  $('#codebaseVisualizerModal').modal('show');
+                  cvLoad(path);
+              };
+
+              window.cvRescan = function() {
+                  cvLoad(cvCurrentPath);
+              };
+
+              // Search filter
+              $(document).on('input', '#cv-search', function() {
+                  var q = this.value.toLowerCase();
+                  if (!q) {
+                      cvRenderTreemap(cvFiles);
+                      return;
+                  }
+                  var filtered = cvFiles.filter(function(f){ return f.path.toLowerCase().includes(q); });
+                  cvRenderTreemap(filtered);
+                  // Also filter tree list
+                  document.querySelectorAll('.cv-tree-item').forEach(function(el) {
+                      var p = (el.dataset.path || '').toLowerCase();
+                      el.style.display = p.includes(q) ? '' : 'none';
+                  });
+              });
+
+              // Resize handler
+              window.addEventListener('resize', function() {
+                  if (window._cvResizeTimer) clearTimeout(window._cvResizeTimer);
+                  window._cvResizeTimer = setTimeout(function(){
+                      if (cvFiles.length) cvRenderTreemap(cvFiles);
+                  }, 250);
+              });
+
+          })();
           </script>
           <script>
             /**

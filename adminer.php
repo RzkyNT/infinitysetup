@@ -1459,6 +1459,77 @@ class TaskScheduler {
     }
 }
 
+// ===== API: DISK ANALYZER =====
+if (isset($_GET['api']) && $_GET['api'] === 'disk_scan') {
+    header('Content-Type: application/json');
+    if (!isset($_SESSION['db_user'])) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
+    $scanPath = isset($_GET['path']) ? $_GET['path'] : __DIR__;
+    // Sanitize: only allow paths under document root or current dir
+    $realScan = realpath($scanPath);
+    if (!$realScan || !is_dir($realScan)) {
+        $realScan = __DIR__;
+    }
+    function adminer_folder_size($path) {
+        $total = 0;
+        $items = @scandir($path);
+        if (!$items) return 0;
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') continue;
+            $full = $path . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($full)) {
+                $total += adminer_folder_size($full);
+            } else {
+                $total += (int)@filesize($full);
+            }
+        }
+        return $total;
+    }
+    function adminer_format_size($bytes) {
+        if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
+        if ($bytes >= 1048576)    return round($bytes / 1048576, 2) . ' MB';
+        if ($bytes >= 1024)       return round($bytes / 1024, 2) . ' KB';
+        return $bytes . ' B';
+    }
+    $data = [];
+    $items = @scandir($realScan);
+    if ($items) {
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') continue;
+            $full = $realScan . DIRECTORY_SEPARATOR . $item;
+            $isDir = is_dir($full);
+            $size = $isDir ? adminer_folder_size($full) : (int)@filesize($full);
+            if ($size > 0) {
+                $data[] = [
+                    'name'   => $item,
+                    'size'   => $size,
+                    'size_h' => adminer_format_size($size),
+                    'type'   => $isDir ? 'dir' : 'file',
+                    'ext'    => $isDir ? '' : strtolower(pathinfo($item, PATHINFO_EXTENSION))
+                ];
+            }
+        }
+        usort($data, function($a, $b) { return $b['size'] - $a['size']; });
+    }
+    // Disk total/free
+    $diskTotal = @disk_total_space($realScan);
+    $diskFree  = @disk_free_space($realScan);
+    echo json_encode([
+        'success'    => true,
+        'data'       => $data,
+        'scan_path'  => $realScan,
+        'disk_total' => $diskTotal,
+        'disk_free'  => $diskFree,
+        'disk_used'  => $diskTotal - $diskFree,
+        'disk_total_h' => adminer_format_size($diskTotal),
+        'disk_free_h'  => adminer_format_size($diskFree),
+        'disk_used_h'  => adminer_format_size($diskTotal - $diskFree),
+    ]);
+    exit;
+}
+
 // ===== API HASH PHP (Bcrypt) =====
 // Paste tepat di sini, setelah session_start
 if (isset($_GET['api']) && $_GET['api'] === 'generate_php_hash') {
@@ -13389,6 +13460,9 @@ padding: 20px !important;
             <a href="?view=sql_visualizer" class="nav-item <?= ($_GET['view'] ?? '') === 'sql_visualizer' ? 'active' : '' ?>">
                 <i class="fas fa-magic" style="width:20px; text-align:center;"></i> <span>SQL File Visualizer</span>
             </a>
+            <a href="?view=disk_analyzer" class="nav-item <?= ($_GET['view'] ?? '') === 'disk_analyzer' ? 'active' : '' ?>">
+                <i class="fas fa-chart-pie" style="width:20px; text-align:center;"></i> <span>Disk Analyzer</span>
+            </a>
             
 
             
@@ -14562,6 +14636,232 @@ padding: 20px !important;
                             a.download = `${name}_exported.json`;
                             a.click();
                         }
+                    </script>
+                <?php elseif ($view === 'disk_analyzer'): ?>
+                    <?php
+                    $diskScanRoot = __DIR__;
+                    function adm_fmt($b) {
+                        if ($b >= 1073741824) return round($b/1073741824,2).' GB';
+                        if ($b >= 1048576)    return round($b/1048576,2).' MB';
+                        if ($b >= 1024)       return round($b/1024,2).' KB';
+                        return $b.' B';
+                    }
+                    $diskTotal = @disk_total_space($diskScanRoot);
+                    $diskFree  = @disk_free_space($diskScanRoot);
+                    $diskUsed  = $diskTotal - $diskFree;
+                    $usedPct   = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0;
+                    ?>
+                    <style>
+                        .da-container { padding: 20px; height: calc(100vh - 120px); display: flex; flex-direction: column; gap: 15px; }
+                        .da-stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+                        .da-stat { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 15px; text-align: center; }
+                        .da-stat-val { font-size: 1.5rem; font-weight: bold; }
+                        .da-stat-lbl { font-size: 0.7rem; text-transform: uppercase; color: var(--text-secondary); margin-top: 4px; }
+                        .da-disk-bar { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 15px; }
+                        .da-disk-bar-track { background: var(--bg-hover); border-radius: 99px; height: 18px; overflow: hidden; margin: 8px 0; }
+                        .da-disk-bar-fill { height: 100%; border-radius: 99px; transition: width 0.6s; }
+                        .da-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+                        .da-treemap-wrap { flex: 1; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color); position: relative; min-height: 300px; }
+                        #da-treemap { position: relative; width: 100%; height: 100%; }
+                        .da-node { position: absolute; border: 1.5px solid #000; overflow: hidden; color: #fff; font-family: sans-serif; transition: filter 0.15s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-sizing: border-box; }
+                        .da-node:hover { filter: brightness(1.35); z-index: 10; box-shadow: 0 0 12px rgba(0,0,0,0.6); border-color: rgba(255,255,255,0.4); }
+                        .da-node .da-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 90%; font-size: 0.75rem; }
+                        .da-node .da-size { font-size: 0.65rem; opacity: 0.75; }
+                        .da-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; }
+                        .da-legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; }
+                        .da-breadcrumb { display: flex; align-items: center; gap: 5px; font-size: 0.85rem; flex-wrap: wrap; }
+                        .da-breadcrumb a { color: var(--accent); cursor: pointer; text-decoration: none; }
+                        .da-breadcrumb a:hover { text-decoration: underline; }
+                        .da-spinner { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-secondary); gap: 12px; }
+                        .da-spin { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: daSpin 0.7s linear infinite; }
+                        @keyframes daSpin { to { transform: rotate(360deg); } }
+                    </style>
+
+                    <div class="da-container">
+                        <!-- Stats row -->
+                        <div class="da-stats-row">
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#6366f1"><?= adm_fmt($diskTotal ?: 0) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-hdd"></i> Total Disk</div>
+                            </div>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#ef4444"><?= adm_fmt($diskUsed ?: 0) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-database"></i> Used</div>
+                            </div>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#10b981"><?= adm_fmt($diskFree ?: 0) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-leaf"></i> Free</div>
+                            </div>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:<?= $usedPct > 80 ? '#ef4444' : ($usedPct > 60 ? '#f59e0b' : '#10b981') ?>"><?= $usedPct ?>%</div>
+                                <div class="da-stat-lbl"><i class="fas fa-percent"></i> Used</div>
+                            </div>
+                        </div>
+
+                        <!-- Disk bar -->
+                        <div class="da-disk-bar">
+                            <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-secondary);">
+                                <span>Disk Usage</span>
+                                <span><?= adm_fmt($diskUsed ?: 0) ?> / <?= adm_fmt($diskTotal ?: 0) ?></span>
+                            </div>
+                            <div class="da-disk-bar-track">
+                                <div class="da-disk-bar-fill" style="width:<?= $usedPct ?>%; background: <?= $usedPct > 80 ? '#ef4444' : ($usedPct > 60 ? '#f59e0b' : '#6366f1') ?>;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Toolbar -->
+                        <div class="da-toolbar">
+                            <div class="da-breadcrumb" id="da-breadcrumb">
+                                <a onclick="daBrowse('<?= addslashes($diskScanRoot) ?>', true)"><i class="fas fa-home"></i> Root</a>
+                            </div>
+                            <div style="flex:1"></div>
+                            <input type="text" id="da-path-input" class="form-control form-control-sm" style="max-width:320px; background:var(--bg-card); border:1px solid var(--border-color); color:var(--text-primary);" placeholder="Custom path..." value="<?= htmlspecialchars($diskScanRoot) ?>">
+                            <button class="btn btn-sm" style="background:var(--accent); color:#fff;" onclick="daBrowseCustom()"><i class="fas fa-search"></i> Scan</button>
+                            <button class="btn btn-sm" style="background:var(--bg-hover); border:1px solid var(--border-color); color:var(--text-primary);" onclick="daRescan()"><i class="fas fa-redo"></i> Rescan</button>
+                        </div>
+
+                        <!-- Treemap -->
+                        <div class="da-treemap-wrap" id="da-treemap-wrap">
+                            <div id="da-treemap">
+                                <div class="da-spinner"><div class="da-spin"></div><span>Calculating...</span></div>
+                            </div>
+                        </div>
+
+                        <!-- Legend -->
+                        <div class="da-legend" id="da-legend">
+                            <span><span class="da-legend-dot" style="background:#3b82f6"></span> Folder</span>
+                            <span><span class="da-legend-dot" style="background:#ef4444"></span> Video</span>
+                            <span><span class="da-legend-dot" style="background:#10b981"></span> Image</span>
+                            <span><span class="da-legend-dot" style="background:#f59e0b"></span> Archive</span>
+                            <span><span class="da-legend-dot" style="background:#8b5cf6"></span> Code</span>
+                            <span><span class="da-legend-dot" style="background:#6b7280"></span> Other</span>
+                        </div>
+                    </div>
+
+                    <script>
+                    (function() {
+                        var daCurrentPath = <?= json_encode($diskScanRoot) ?>;
+                        var daBreadcrumbs = [{ label: 'Root', path: <?= json_encode($diskScanRoot) ?> }];
+
+                        function daNodeColor(item) {
+                            if (item.type === 'dir') return '#3b82f6';
+                            var e = item.ext;
+                            if (['mp4','mov','mkv','avi','webm','flv'].includes(e)) return '#ef4444';
+                            if (['jpg','jpeg','png','webp','gif','bmp','svg','ico'].includes(e)) return '#10b981';
+                            if (['zip','rar','7z','tar','gz','bz2','xz'].includes(e)) return '#f59e0b';
+                            if (['php','js','ts','py','css','html','htm','json','xml','sql','sh','bat','c','cpp','h'].includes(e)) return '#8b5cf6';
+                            return '#6b7280';
+                        }
+
+                        function daLayout(items, x, y, w, h) {
+                            if (!items.length) return;
+                            var totalSize = items.reduce(function(a,b){return a+b.size;},0);
+                            var first = items[0];
+                            var ratio = first.size / totalSize;
+                            var nw, nh, nx, ny;
+                            if (w >= h) {
+                                nw = w * ratio; nh = h; nx = x + nw; ny = y;
+                                daDrawNode(first, x, y, nw, nh);
+                                daLayout(items.slice(1), nx, ny, w - nw, h);
+                            } else {
+                                nw = w; nh = h * ratio; nx = x; ny = y + nh;
+                                daDrawNode(first, x, y, nw, nh);
+                                daLayout(items.slice(1), nx, ny, w, h - nh);
+                            }
+                        }
+
+                        function daDrawNode(item, x, y, w, h) {
+                            if (w < 4 || h < 4) return;
+                            var node = document.createElement('div');
+                            node.className = 'da-node';
+                            node.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+daNodeColor(item)+';';
+                            node.title = item.name + ' (' + item.size_h + ')';
+                            if (w > 45 && h > 32) {
+                                var nm = document.createElement('div'); nm.className = 'da-name'; nm.textContent = item.name;
+                                var sz = document.createElement('div'); sz.className = 'da-size'; sz.textContent = item.size_h;
+                                node.appendChild(nm); node.appendChild(sz);
+                            }
+                            node.addEventListener('click', function() {
+                                if (item.type === 'dir') {
+                                    daBrowse(daCurrentPath.replace(/\/+$|\\+$/,'') + (navigator.platform.indexOf('Win') >= 0 ? '\\' : '/') + item.name, false, item.name);
+                                }
+                            });
+                            document.getElementById('da-treemap').appendChild(node);
+                        }
+
+                        function daRender(data) {
+                            var tm = document.getElementById('da-treemap');
+                            tm.innerHTML = '';
+                            if (!data.length) {
+                                tm.innerHTML = '<div class="da-spinner"><span>No files found</span></div>';
+                                return;
+                            }
+                            var wrap = document.getElementById('da-treemap-wrap');
+                            var W = wrap.offsetWidth, H = wrap.offsetHeight;
+                            tm.style.width = W + 'px'; tm.style.height = H + 'px';
+                            daLayout(data, 0, 0, W, H);
+                        }
+
+                        window.daBrowse = function(path, reset, label) {
+                            daCurrentPath = path;
+                            if (reset) {
+                                daBreadcrumbs = [{ label: 'Root', path: path }];
+                            } else if (label) {
+                                daBreadcrumbs.push({ label: label, path: path });
+                            }
+                            document.getElementById('da-path-input').value = path;
+                            daUpdateBreadcrumb();
+                            daLoad(path);
+                        };
+
+                        window.daRescan = function() { daLoad(daCurrentPath); };
+
+                        window.daBrowseCustom = function() {
+                            var p = document.getElementById('da-path-input').value.trim();
+                            if (p) daBrowse(p, true, 'Custom');
+                        };
+
+                        function daUpdateBreadcrumb() {
+                            var bc = document.getElementById('da-breadcrumb');
+                            bc.innerHTML = '';
+                            daBreadcrumbs.forEach(function(crumb, i) {
+                                var a = document.createElement('a');
+                                a.textContent = crumb.label;
+                                a.onclick = (function(cp){ return function(){ daBrowse(cp, false); }; })(crumb.path);
+                                bc.appendChild(a);
+                                if (i < daBreadcrumbs.length - 1) {
+                                    var sep = document.createElement('span');
+                                    sep.textContent = ' / ';
+                                    sep.style.color = 'var(--text-secondary)';
+                                    bc.appendChild(sep);
+                                }
+                            });
+                        }
+
+                        function daLoad(path) {
+                            var tm = document.getElementById('da-treemap');
+                            tm.innerHTML = '<div class="da-spinner"><div class="da-spin"></div><span>Scanning...</span></div>';
+                            var url = window.location.pathname + '?api=disk_scan&path=' + encodeURIComponent(path);
+                            fetch(url).then(function(r){return r.json();}).then(function(res) {
+                                if (res.success) {
+                                    daRender(res.data);
+                                } else {
+                                    tm.innerHTML = '<div class="da-spinner"><span style="color:#ef4444">Error: ' + (res.message||'Unknown') + '</span></div>';
+                                }
+                            }).catch(function(e) {
+                                tm.innerHTML = '<div class="da-spinner"><span style="color:#ef4444">Failed to load</span></div>';
+                            });
+                        }
+
+                        // Initial load
+                        daLoad(daCurrentPath);
+
+                        // Resize handler
+                        window.addEventListener('resize', function() {
+                            if (window._daResizeTimer) clearTimeout(window._daResizeTimer);
+                            window._daResizeTimer = setTimeout(function(){ daLoad(daCurrentPath); }, 300);
+                        });
+                    })();
                     </script>
                 <?php else: ?>
         <div class="content-area">

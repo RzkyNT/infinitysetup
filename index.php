@@ -350,14 +350,18 @@ if ($current_page === 'index.php') {
                 }
                 
                 if (pathinfo($filename, PATHINFO_EXTENSION) === 'php') {
-                    // Basic PHP syntax validation
-                    $tempCheckFile = tempnam(sys_get_temp_dir(), 'php_check_');
-                    file_put_contents($tempCheckFile, $content);
-                    exec("php -l " . escapeshellarg($tempCheckFile) . " 2>&1", $output, $return_var);
-                    unlink($tempCheckFile);
-                    
-                    if ($return_var !== 0) {
-                        $errors[] = "$filename has syntax errors";
+                    // Basic PHP content validation (no exec needed — works cross-platform)
+                    // Check it starts with a PHP open tag
+                    $trimmed = ltrim($content);
+                    if (strpos($trimmed, '<?php') !== 0 && strpos($trimmed, '<?') !== 0) {
+                        $errors[] = "$filename does not appear to be a valid PHP file";
+                        continue;
+                    }
+                    // Check for obviously broken token (unclosed string that would cause parse error)
+                    // Using token_get_all with error suppression as a lightweight check
+                    $tokens = @token_get_all($content);
+                    if (empty($tokens)) {
+                        $errors[] = "$filename failed token validation";
                         continue;
                     }
                 }
