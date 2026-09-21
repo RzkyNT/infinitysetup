@@ -1459,73 +1459,111 @@ class TaskScheduler {
     }
 }
 
-// ===== API: DISK ANALYZER =====
+// ===== API: DISK ANALYZER (Database Table Sizes) =====
 if (isset($_GET['api']) && $_GET['api'] === 'disk_scan') {
     header('Content-Type: application/json');
     if (!isset($_SESSION['db_user'])) {
         echo json_encode(['success' => false, 'message' => 'Unauthorized']);
         exit;
     }
-    $scanPath = isset($_GET['path']) ? $_GET['path'] : __DIR__;
-    // Sanitize: only allow paths under document root or current dir
-    $realScan = realpath($scanPath);
-    if (!$realScan || !is_dir($realScan)) {
-        $realScan = __DIR__;
-    }
-    function adminer_folder_size($path) {
-        $total = 0;
-        $items = @scandir($path);
-        if (!$items) return 0;
-        foreach ($items as $item) {
-            if ($item === '.' || $item === '..') continue;
-            $full = $path . DIRECTORY_SEPARATOR . $item;
-            if (is_dir($full)) {
-                $total += adminer_folder_size($full);
-            } else {
-                $total += (int)@filesize($full);
-            }
-        }
-        return $total;
-    }
-    function adminer_format_size($bytes) {
-        if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
-        if ($bytes >= 1048576)    return round($bytes / 1048576, 2) . ' MB';
-        if ($bytes >= 1024)       return round($bytes / 1024, 2) . ' KB';
-        return $bytes . ' B';
-    }
+    
+    $dbMode = $_SESSION['db_mode'] ?? 'sql';
     $data = [];
-    $items = @scandir($realScan);
-    if ($items) {
-        foreach ($items as $item) {
-            if ($item === '.' || $item === '..') continue;
-            $full = $realScan . DIRECTORY_SEPARATOR . $item;
-            $isDir = is_dir($full);
-            $size = $isDir ? adminer_folder_size($full) : (int)@filesize($full);
-            if ($size > 0) {
+    $totalSize = 0;
+    
+    function fmt_bytes($b) {
+        if ($b >= 1073741824) return round($b/1073741824,2).' GB';
+        if ($b >= 1048576)    return round($b/1048576,2).' MB';
+        if ($b >= 1024)       return round($b/1024,2).' KB';
+        return $b.' B';
+    }
+    
+    try {
+        if ($dbMode === 'sql' && isset($pdo)) {
+            $dbName = $_SESSION['db_name'] ?? '';
+            if ($dbName) {
+                $stmt = $pdo->query("
+                    SELECT 
+                        `TABLE_NAME` as `name`,
+                        `TABLE_ROWS` as `rows`,
+                        `DATA_LENGTH` as `data_size`,
+                        `INDEX_LENGTH` as `index_size`,
+                        (`DATA_LENGTH` + `INDEX_LENGTH`) as `total_size`,
+                        `TABLE_COLLATION` as `collation`,
+                        `ENGINE` as `engine`
+                    FROM `information_schema`.`TABLES` 
+                    WHERE `TABLE_SCHEMA` = '".addslashes($dbName)."'
+                    ORDER BY (`DATA_LENGTH` + `INDEX_LENGTH`) DESC
+                ");
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    $size = (int)$row['total_size'];
+                    $totalSize += $size;
+                    $data[] = [
+                        'name'       => $row['name'],
+                        'rows'       => (int)$row['rows'],
+                        'data_size'  => (int)$row['data_size'],
+                        'index_size' => (int)$row['index_size'],
+                        'size'       => $size,
+                        'size_h'     => fmt_bytes($size),
+                        'engine'     => $row['engine'],
+                        'collation'  => $row['collation'],
+                        'type'       => 'table'
+                    ];
+                }
+            }
+        } elseif ($dbMode === 'sqlite' && isset($pdo)) {
+            // SQLite: get page_count * page_size for each table
+            $tables = $pdo->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($tables as $tbl) {
+                try {
+                    $countStmt = $pdo->query("SELECT COUNT(*) FROM `$tbl`");
+                    $rows = (int)$countStmt->fetchColumn();
+                    // Approximate size from dbstat if available, else estimate
+                    $sizeStmt = $pdo->query("SELECT SUM(pgsize) as sz FROM dbstat WHERE tbl='$tbl'");
+                    $sz = $sizeStmt ? (int)$sizeStmt->fetchColumn() : 0;
+                    if ($sz <= 0) {
+                        // Fallback: estimate from row count * avg row size
+                        $sz = $rows * 100; // rough estimate
+                    }
+                    $totalSize += $sz;
+                    $data[] = [
+                        'name'   => $tbl,
+                        'rows'   => $rows,
+                        'size'   => $sz,
+                        'size_h' => fmt_bytes($sz),
+                        'type'   => 'table'
+                    ];
+                } catch (Exception $e) {}
+            }
+            usort($data, function($a,$b){ return $b['size'] - $a['size']; });
+        } elseif ($dbMode === 'json' && isset($jsonDb)) {
+            $tables = $jsonDb->listTables();
+            foreach ($tables as $tbl) {
+                $count = $jsonDb->count($tbl);
+                $sz = $count * 200; // estimate
+                $totalSize += $sz;
                 $data[] = [
-                    'name'   => $item,
-                    'size'   => $size,
-                    'size_h' => adminer_format_size($size),
-                    'type'   => $isDir ? 'dir' : 'file',
-                    'ext'    => $isDir ? '' : strtolower(pathinfo($item, PATHINFO_EXTENSION))
+                    'name'   => $tbl,
+                    'rows'   => $count,
+                    'size'   => $sz,
+                    'size_h' => fmt_bytes($sz),
+                    'type'   => 'collection'
                 ];
             }
+            usort($data, function($a,$b){ return $b['size'] - $a['size']; });
         }
-        usort($data, function($a, $b) { return $b['size'] - $a['size']; });
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        exit;
     }
-    // Disk total/free
-    $diskTotal = @disk_total_space($realScan);
-    $diskFree  = @disk_free_space($realScan);
+    
     echo json_encode([
-        'success'    => true,
-        'data'       => $data,
-        'scan_path'  => $realScan,
-        'disk_total' => $diskTotal,
-        'disk_free'  => $diskFree,
-        'disk_used'  => $diskTotal - $diskFree,
-        'disk_total_h' => adminer_format_size($diskTotal),
-        'disk_free_h'  => adminer_format_size($diskFree),
-        'disk_used_h'  => adminer_format_size($diskTotal - $diskFree),
+        'success'     => true,
+        'data'        => $data,
+        'total_size'  => $totalSize,
+        'total_size_h'=> fmt_bytes($totalSize),
+        'db_mode'     => $dbMode,
+        'db_name'     => $_SESSION['db_name'] ?? $_SESSION['sqlite_file'] ?? $_SESSION['json_file'] ?? ''
     ]);
     exit;
 }
@@ -14639,227 +14677,247 @@ padding: 20px !important;
                     </script>
                 <?php elseif ($view === 'disk_analyzer'): ?>
                     <?php
-                    $diskScanRoot = __DIR__;
-                    function adm_fmt($b) {
+                    $dbMode = $_SESSION['db_mode'] ?? 'sql';
+                    $dbName = $_SESSION['db_name'] ?? $_SESSION['sqlite_file'] ?? $_SESSION['json_file'] ?? '';
+                    
+                    function da_fmt($b) {
                         if ($b >= 1073741824) return round($b/1073741824,2).' GB';
                         if ($b >= 1048576)    return round($b/1048576,2).' MB';
                         if ($b >= 1024)       return round($b/1024,2).' KB';
                         return $b.' B';
                     }
-                    $diskTotal = @disk_total_space($diskScanRoot);
-                    $diskFree  = @disk_free_space($diskScanRoot);
-                    $diskUsed  = $diskTotal - $diskFree;
-                    $usedPct   = $diskTotal > 0 ? round(($diskUsed / $diskTotal) * 100, 1) : 0;
+                    
+                    // Get initial table data
+                    $tables = [];
+                    $totalSize = 0;
+                    $totalRows = 0;
+                    
+                    if ($dbMode === 'sql' && isset($pdo)) {
+                        $stmt = $pdo->query("
+                            SELECT 
+                                `TABLE_NAME` as `name`,
+                                `TABLE_ROWS` as `rows`,
+                                `DATA_LENGTH` as `data_size`,
+                                `INDEX_LENGTH` as `index_size`,
+                                (`DATA_LENGTH` + `INDEX_LENGTH`) as `total_size`,
+                                `ENGINE` as `engine`
+                            FROM `information_schema`.`TABLES` 
+                            WHERE `TABLE_SCHEMA` = '".addslashes($_SESSION['db_name'] ?? '')."'
+                            ORDER BY (`DATA_LENGTH` + `INDEX_LENGTH`) DESC
+                        ");
+                        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                            $tables[] = $row;
+                            $totalSize += (int)$row['total_size'];
+                            $totalRows += (int)$row['rows'];
+                        }
+                    }
                     ?>
                     <style>
-                        .da-container { padding: 20px; height: calc(100vh - 120px); display: flex; flex-direction: column; gap: 15px; }
-                        .da-stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-                        .da-stat { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 15px; text-align: center; }
-                        .da-stat-val { font-size: 1.5rem; font-weight: bold; }
-                        .da-stat-lbl { font-size: 0.7rem; text-transform: uppercase; color: var(--text-secondary); margin-top: 4px; }
-                        .da-disk-bar { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 15px; }
-                        .da-disk-bar-track { background: var(--bg-hover); border-radius: 99px; height: 18px; overflow: hidden; margin: 8px 0; }
-                        .da-disk-bar-fill { height: 100%; border-radius: 99px; transition: width 0.6s; }
-                        .da-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-                        .da-treemap-wrap { flex: 1; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color); position: relative; min-height: 300px; }
+                        .da-wrap { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+                        .da-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+                        .da-stat { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; text-align: center; }
+                        .da-stat-val { font-size: 1.4rem; font-weight: 700; }
+                        .da-stat-lbl { font-size: 0.68rem; text-transform: uppercase; color: var(--text-secondary); margin-top: 4px; }
+                        .da-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+                        .da-db-info { font-size: 0.85rem; color: var(--text-secondary); }
+                        .da-db-info code { background: var(--bg-hover); padding: 2px 8px; border-radius: 4px; color: var(--accent); }
+                        .da-treemap-wrap { flex: 1; background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color); position: relative; min-height: 250px; }
                         #da-treemap { position: relative; width: 100%; height: 100%; }
-                        .da-node { position: absolute; border: 1.5px solid #000; overflow: hidden; color: #fff; font-family: sans-serif; transition: filter 0.15s; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; box-sizing: border-box; }
-                        .da-node:hover { filter: brightness(1.35); z-index: 10; box-shadow: 0 0 12px rgba(0,0,0,0.6); border-color: rgba(255,255,255,0.4); }
-                        .da-node .da-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 90%; font-size: 0.75rem; }
-                        .da-node .da-size { font-size: 0.65rem; opacity: 0.75; }
-                        .da-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; }
-                        .da-legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; }
-                        .da-breadcrumb { display: flex; align-items: center; gap: 5px; font-size: 0.85rem; flex-wrap: wrap; }
-                        .da-breadcrumb a { color: var(--accent); cursor: pointer; text-decoration: none; }
-                        .da-breadcrumb a:hover { text-decoration: underline; }
-                        .da-spinner { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-secondary); gap: 12px; }
-                        .da-spin { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: daSpin 0.7s linear infinite; }
+                        .da-node { position: absolute; border: 1px solid rgba(0,0,0,0.5); overflow: hidden; color: #fff; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; transition: filter 0.15s, box-shadow 0.15s; }
+                        .da-node:hover { filter: brightness(1.3); z-index: 10; box-shadow: 0 0 0 2px rgba(99,102,241,0.5); }
+                        .da-node .da-n { font-weight: 700; font-size: 0.72rem; width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
+                        .da-node .da-s { font-size: 0.62rem; opacity: 0.8; }
+                        .da-table-list { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; max-height: 220px; overflow-y: auto; }
+                        .da-table-row { display: flex; align-items: center; padding: 8px 14px; gap: 12px; border-bottom: 1px solid var(--border-color); font-size: 0.8rem; transition: background 0.15s; }
+                        .da-table-row:last-child { border-bottom: none; }
+                        .da-table-row:hover { background: var(--bg-hover); }
+                        .da-table-row .name { flex: 1; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+                        .da-table-row .bar-wrap { width: 120px; height: 6px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
+                        .da-table-row .bar { height: 100%; border-radius: 3px; }
+                        .da-table-row .size { width: 80px; text-align: right; color: var(--text-secondary); font-family: monospace; font-size: 0.75rem; }
+                        .da-table-row .rows { width: 70px; text-align: right; color: var(--text-muted); font-size: 0.72rem; }
+                        .da-legend { display: flex; gap: 16px; font-size: 0.75rem; color: var(--text-secondary); flex-wrap: wrap; }
+                        .da-spinner { display: flex; align-items: center; justify-content: center; height: 100%; gap: 10px; color: var(--text-muted); }
+                        .da-spin { width: 28px; height: 28px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: daSpin 0.7s linear infinite; }
                         @keyframes daSpin { to { transform: rotate(360deg); } }
                     </style>
 
-                    <div class="da-container">
-                        <!-- Stats row -->
-                        <div class="da-stats-row">
-                            <div class="da-stat">
-                                <div class="da-stat-val" style="color:#6366f1"><?= adm_fmt($diskTotal ?: 0) ?></div>
-                                <div class="da-stat-lbl"><i class="fas fa-hdd"></i> Total Disk</div>
+                    <div class="da-wrap">
+                        <!-- Header -->
+                        <div class="da-header">
+                            <div>
+                                <h3 style="margin:0 0 4px 0; font-size:1.1rem;"><i class="fas fa-chart-pie" style="color:var(--accent); margin-right:8px;"></i>Database Size Analyzer</h3>
+                                <div class="da-db-info">
+                                    Database: <code><?= htmlspecialchars($dbName) ?></code> · Mode: <strong><?= strtoupper($dbMode) ?></strong>
+                                </div>
                             </div>
-                            <div class="da-stat">
-                                <div class="da-stat-val" style="color:#ef4444"><?= adm_fmt($diskUsed ?: 0) ?></div>
-                                <div class="da-stat-lbl"><i class="fas fa-database"></i> Used</div>
-                            </div>
-                            <div class="da-stat">
-                                <div class="da-stat-val" style="color:#10b981"><?= adm_fmt($diskFree ?: 0) ?></div>
-                                <div class="da-stat-lbl"><i class="fas fa-leaf"></i> Free</div>
-                            </div>
-                            <div class="da-stat">
-                                <div class="da-stat-val" style="color:<?= $usedPct > 80 ? '#ef4444' : ($usedPct > 60 ? '#f59e0b' : '#10b981') ?>"><?= $usedPct ?>%</div>
-                                <div class="da-stat-lbl"><i class="fas fa-percent"></i> Used</div>
-                            </div>
+                            <button class="btn btn-sm" style="background:var(--accent); color:#fff;" onclick="daRefresh()"><i class="fas fa-sync-alt"></i> Refresh</button>
                         </div>
 
-                        <!-- Disk bar -->
-                        <div class="da-disk-bar">
-                            <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-secondary);">
-                                <span>Disk Usage</span>
-                                <span><?= adm_fmt($diskUsed ?: 0) ?> / <?= adm_fmt($diskTotal ?: 0) ?></span>
+                        <!-- Stats -->
+                        <div class="da-stats">
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:var(--accent)"><?= count($tables) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-table"></i> Tables</div>
                             </div>
-                            <div class="da-disk-bar-track">
-                                <div class="da-disk-bar-fill" style="width:<?= $usedPct ?>%; background: <?= $usedPct > 80 ? '#ef4444' : ($usedPct > 60 ? '#f59e0b' : '#6366f1') ?>;"></div>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#10b981"><?= da_fmt($totalSize) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-database"></i> Total Size</div>
                             </div>
-                        </div>
-
-                        <!-- Toolbar -->
-                        <div class="da-toolbar">
-                            <div class="da-breadcrumb" id="da-breadcrumb">
-                                <a onclick="daBrowse('<?= addslashes($diskScanRoot) ?>', true)"><i class="fas fa-home"></i> Root</a>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#f59e0b"><?= number_format($totalRows) ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-list-ol"></i> Total Rows</div>
                             </div>
-                            <div style="flex:1"></div>
-                            <input type="text" id="da-path-input" class="form-control form-control-sm" style="max-width:320px; background:var(--bg-card); border:1px solid var(--border-color); color:var(--text-primary);" placeholder="Custom path..." value="<?= htmlspecialchars($diskScanRoot) ?>">
-                            <button class="btn btn-sm" style="background:var(--accent); color:#fff;" onclick="daBrowseCustom()"><i class="fas fa-search"></i> Scan</button>
-                            <button class="btn btn-sm" style="background:var(--bg-hover); border:1px solid var(--border-color); color:var(--text-primary);" onclick="daRescan()"><i class="fas fa-redo"></i> Rescan</button>
+                            <div class="da-stat">
+                                <div class="da-stat-val" style="color:#8b5cf6" id="da-avg-size"><?= count($tables) > 0 ? da_fmt($totalSize / count($tables)) : '—' ?></div>
+                                <div class="da-stat-lbl"><i class="fas fa-balance-scale"></i> Avg Size</div>
+                            </div>
                         </div>
 
                         <!-- Treemap -->
                         <div class="da-treemap-wrap" id="da-treemap-wrap">
-                            <div id="da-treemap">
-                                <div class="da-spinner"><div class="da-spin"></div><span>Calculating...</span></div>
-                            </div>
+                            <div id="da-treemap"></div>
                         </div>
 
                         <!-- Legend -->
-                        <div class="da-legend" id="da-legend">
-                            <span><span class="da-legend-dot" style="background:#3b82f6"></span> Folder</span>
-                            <span><span class="da-legend-dot" style="background:#ef4444"></span> Video</span>
-                            <span><span class="da-legend-dot" style="background:#10b981"></span> Image</span>
-                            <span><span class="da-legend-dot" style="background:#f59e0b"></span> Archive</span>
-                            <span><span class="da-legend-dot" style="background:#8b5cf6"></span> Code</span>
-                            <span><span class="da-legend-dot" style="background:#6b7280"></span> Other</span>
+                        <div class="da-legend">
+                            <span><i class="fas fa-square" style="color:#6366f1"></i> Data Size</span>
+                            <span><i class="fas fa-square" style="color:#10b981"></i> Large (>10MB)</span>
+                            <span><i class="fas fa-square" style="color:#f59e0b"></i> Medium (1-10MB)</span>
+                            <span><i class="fas fa-square" style="color:#6b7280"></i> Small (<1MB)</span>
+                        </div>
+
+                        <!-- Table List -->
+                        <div class="da-table-list" id="da-table-list">
+                            <?php foreach ($tables as $t): 
+                                $pct = $totalSize > 0 ? ($t['total_size'] / $totalSize * 100) : 0;
+                                $color = $t['total_size'] > 10485760 ? '#10b981' : ($t['total_size'] > 1048576 ? '#f59e0b' : '#6b7280');
+                            ?>
+                            <div class="da-table-row" onclick="window.location='?table=<?= htmlspecialchars($t['name']) ?>'">
+                                <div class="name">
+                                    <i class="fas fa-table" style="color:var(--accent)"></i>
+                                    <?= htmlspecialchars($t['name']) ?>
+                                    <?php if (!empty($t['engine'])): ?><span style="color:var(--text-muted); font-weight:400; font-size:0.7rem;"><?= $t['engine'] ?></span><?php endif; ?>
+                                </div>
+                                <div class="bar-wrap"><div class="bar" style="width:<?= $pct ?>%; background:<?= $color ?>"></div></div>
+                                <div class="size"><?= da_fmt($t['total_size']) ?></div>
+                                <div class="rows"><?= number_format($t['rows']) ?> rows</div>
+                            </div>
+                            <?php endforeach; ?>
+                            <?php if (empty($tables)): ?>
+                            <div style="padding: 20px; text-align: center; color: var(--text-muted);">No tables found. Select a database first.</div>
+                            <?php endif; ?>
                         </div>
                     </div>
 
                     <script>
                     (function() {
-                        var daCurrentPath = <?= json_encode($diskScanRoot) ?>;
-                        var daBreadcrumbs = [{ label: 'Root', path: <?= json_encode($diskScanRoot) ?> }];
+                        var daData = <?= json_encode($tables) ?>;
+                        var daTotalSize = <?= $totalSize ?>;
 
-                        function daNodeColor(item) {
-                            if (item.type === 'dir') return '#3b82f6';
-                            var e = item.ext;
-                            if (['mp4','mov','mkv','avi','webm','flv'].includes(e)) return '#ef4444';
-                            if (['jpg','jpeg','png','webp','gif','bmp','svg','ico'].includes(e)) return '#10b981';
-                            if (['zip','rar','7z','tar','gz','bz2','xz'].includes(e)) return '#f59e0b';
-                            if (['php','js','ts','py','css','html','htm','json','xml','sql','sh','bat','c','cpp','h'].includes(e)) return '#8b5cf6';
-                            return '#6b7280';
+                        function daColor(size) {
+                            if (size > 10485760) return '#10b981';  // >10MB green
+                            if (size > 1048576)  return '#f59e0b';  // >1MB yellow
+                            return '#6b7280';                       // gray
                         }
 
                         function daLayout(items, x, y, w, h) {
                             if (!items.length) return;
-                            var totalSize = items.reduce(function(a,b){return a+b.size;},0);
-                            var first = items[0];
-                            var ratio = first.size / totalSize;
+                            var total = items.reduce(function(a,b){ return a + (b.total_size || b.size || 0); }, 0);
+                            if (total <= 0) return;
+                            var ratio = (items[0].total_size || items[0].size || 0) / total;
                             var nw, nh, nx, ny;
                             if (w >= h) {
                                 nw = w * ratio; nh = h; nx = x + nw; ny = y;
-                                daDrawNode(first, x, y, nw, nh);
+                                daDrawNode(items[0], x, y, nw, nh);
                                 daLayout(items.slice(1), nx, ny, w - nw, h);
                             } else {
                                 nw = w; nh = h * ratio; nx = x; ny = y + nh;
-                                daDrawNode(first, x, y, nw, nh);
+                                daDrawNode(items[0], x, y, nw, nh);
                                 daLayout(items.slice(1), nx, ny, w, h - nh);
                             }
                         }
 
                         function daDrawNode(item, x, y, w, h) {
-                            if (w < 4 || h < 4) return;
+                            if (w < 3 || h < 3) return;
+                            var size = item.total_size || item.size || 0;
                             var node = document.createElement('div');
                             node.className = 'da-node';
-                            node.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+daNodeColor(item)+';';
-                            node.title = item.name + ' (' + item.size_h + ')';
-                            if (w > 45 && h > 32) {
-                                var nm = document.createElement('div'); nm.className = 'da-name'; nm.textContent = item.name;
-                                var sz = document.createElement('div'); sz.className = 'da-size'; sz.textContent = item.size_h;
-                                node.appendChild(nm); node.appendChild(sz);
+                            node.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+daColor(size)+';opacity:0.85;';
+                            node.title = item.name + '\nSize: ' + fmtSize(size) + '\nRows: ' + (item.rows || 0).toLocaleString();
+                            if (w > 40 && h > 28) {
+                                var nm = document.createElement('div'); nm.className = 'da-n'; nm.textContent = item.name;
+                                node.appendChild(nm);
+                            }
+                            if (w > 50 && h > 45) {
+                                var sz = document.createElement('div'); sz.className = 'da-s'; sz.textContent = fmtSize(size);
+                                node.appendChild(sz);
                             }
                             node.addEventListener('click', function() {
-                                if (item.type === 'dir') {
-                                    daBrowse(daCurrentPath.replace(/\/+$|\\+$/,'') + (navigator.platform.indexOf('Win') >= 0 ? '\\' : '/') + item.name, false, item.name);
-                                }
+                                window.location = '?table=' + encodeURIComponent(item.name);
                             });
                             document.getElementById('da-treemap').appendChild(node);
                         }
 
-                        function daRender(data) {
+                        function fmtSize(b) {
+                            if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GB';
+                            if (b >= 1048576)    return (b/1048576).toFixed(2)+' MB';
+                            if (b >= 1024)       return (b/1024).toFixed(1)+' KB';
+                            return b+' B';
+                        }
+
+                        function daRender() {
+                            var wrap = document.getElementById('da-treemap-wrap');
                             var tm = document.getElementById('da-treemap');
-                            tm.innerHTML = '';
-                            if (!data.length) {
-                                tm.innerHTML = '<div class="da-spinner"><span>No files found</span></div>';
+                            if (!daData.length) {
+                                tm.innerHTML = '<div class="da-spinner">No tables to display</div>';
                                 return;
                             }
-                            var wrap = document.getElementById('da-treemap-wrap');
                             var W = wrap.offsetWidth, H = wrap.offsetHeight;
                             tm.style.width = W + 'px'; tm.style.height = H + 'px';
-                            daLayout(data, 0, 0, W, H);
+                            tm.innerHTML = '';
+                            var sorted = daData.slice().sort(function(a,b){ return (b.total_size||b.size||0) - (a.total_size||a.size||0); });
+                            daLayout(sorted, 0, 0, W, H);
                         }
 
-                        window.daBrowse = function(path, reset, label) {
-                            daCurrentPath = path;
-                            if (reset) {
-                                daBreadcrumbs = [{ label: 'Root', path: path }];
-                            } else if (label) {
-                                daBreadcrumbs.push({ label: label, path: path });
-                            }
-                            document.getElementById('da-path-input').value = path;
-                            daUpdateBreadcrumb();
-                            daLoad(path);
-                        };
-
-                        window.daRescan = function() { daLoad(daCurrentPath); };
-
-                        window.daBrowseCustom = function() {
-                            var p = document.getElementById('da-path-input').value.trim();
-                            if (p) daBrowse(p, true, 'Custom');
-                        };
-
-                        function daUpdateBreadcrumb() {
-                            var bc = document.getElementById('da-breadcrumb');
-                            bc.innerHTML = '';
-                            daBreadcrumbs.forEach(function(crumb, i) {
-                                var a = document.createElement('a');
-                                a.textContent = crumb.label;
-                                a.onclick = (function(cp){ return function(){ daBrowse(cp, false); }; })(crumb.path);
-                                bc.appendChild(a);
-                                if (i < daBreadcrumbs.length - 1) {
-                                    var sep = document.createElement('span');
-                                    sep.textContent = ' / ';
-                                    sep.style.color = 'var(--text-secondary)';
-                                    bc.appendChild(sep);
-                                }
-                            });
-                        }
-
-                        function daLoad(path) {
+                        window.daRefresh = function() {
                             var tm = document.getElementById('da-treemap');
-                            tm.innerHTML = '<div class="da-spinner"><div class="da-spin"></div><span>Scanning...</span></div>';
-                            var url = window.location.pathname + '?api=disk_scan&path=' + encodeURIComponent(path);
-                            fetch(url).then(function(r){return r.json();}).then(function(res) {
-                                if (res.success) {
-                                    daRender(res.data);
-                                } else {
-                                    tm.innerHTML = '<div class="da-spinner"><span style="color:#ef4444">Error: ' + (res.message||'Unknown') + '</span></div>';
-                                }
-                            }).catch(function(e) {
-                                tm.innerHTML = '<div class="da-spinner"><span style="color:#ef4444">Failed to load</span></div>';
-                            });
-                        }
+                            tm.innerHTML = '<div class="da-spinner"><div class="da-spin"></div><span>Reloading...</span></div>';
+                            fetch('?api=disk_scan')
+                                .then(function(r){ return r.json(); })
+                                .then(function(res) {
+                                    if (res.success) {
+                                        daData = res.data;
+                                        daTotalSize = res.total_size;
+                                        // Update stats
+                                        document.querySelector('.da-stats').innerHTML = 
+                                            '<div class="da-stat"><div class="da-stat-val" style="color:var(--accent)">'+daData.length+'</div><div class="da-stat-lbl"><i class="fas fa-table"></i> Tables</div></div>'+
+                                            '<div class="da-stat"><div class="da-stat-val" style="color:#10b981">'+res.total_size_h+'</div><div class="da-stat-lbl"><i class="fas fa-database"></i> Total Size</div></div>'+
+                                            '<div class="da-stat"><div class="da-stat-val" style="color:#f59e0b">'+daData.reduce(function(a,t){return a+(t.rows||0);},0).toLocaleString()+'</div><div class="da-stat-lbl"><i class="fas fa-list-ol"></i> Total Rows</div></div>'+
+                                            '<div class="da-stat"><div class="da-stat-val" style="color:#8b5cf6">'+(daData.length > 0 ? fmtSize(daTotalSize/daData.length) : '—')+'</div><div class="da-stat-lbl"><i class="fas fa-balance-scale"></i> Avg Size</div></div>';
+                                        // Update table list
+                                        var list = document.getElementById('da-table-list');
+                                        list.innerHTML = daData.map(function(t) {
+                                            var pct = daTotalSize > 0 ? ((t.size||t.total_size||0)/daTotalSize*100) : 0;
+                                            var color = (t.size||t.total_size||0) > 10485760 ? '#10b981' : ((t.size||t.total_size||0) > 1048576 ? '#f59e0b' : '#6b7280');
+                                            return '<div class="da-table-row" onclick="window.location=\'?table='+encodeURIComponent(t.name)+'\'">'+
+                                                '<div class="name"><i class="fas fa-table" style="color:var(--accent)"></i> '+t.name+'</div>'+
+                                                '<div class="bar-wrap"><div class="bar" style="width:'+pct+'%; background:'+color+'"></div></div>'+
+                                                '<div class="size">'+t.size_h+'</div>'+
+                                                '<div class="rows">'+(t.rows||0).toLocaleString()+' rows</div></div>';
+                                        }).join('');
+                                        daRender();
+                                    }
+                                });
+                        };
 
-                        // Initial load
-                        daLoad(daCurrentPath);
+                        // Initial render
+                        setTimeout(daRender, 50);
 
-                        // Resize handler
+                        // Resize
                         window.addEventListener('resize', function() {
-                            if (window._daResizeTimer) clearTimeout(window._daResizeTimer);
-                            window._daResizeTimer = setTimeout(function(){ daLoad(daCurrentPath); }, 300);
+                            clearTimeout(window._daTimer);
+                            window._daTimer = setTimeout(daRender, 200);
                         });
                     })();
                     </script>
