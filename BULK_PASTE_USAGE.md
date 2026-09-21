@@ -1,0 +1,6 @@
+============ FILE: link.txt ============
+https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/system.php
+https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/filemanager.php
+https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/adminer.php
+https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/index.php
+https://raw.githubusercontent.com/RzkyNT/infinitysetup/refs/heads/main/.htaccess

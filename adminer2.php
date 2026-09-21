@@ -1529,8 +1529,26 @@ function get_db_handle($path) {
         // This is safer if the file is 0 bytes or was created by index.php
         $dbs[$path]->exec("CREATE TABLE IF NOT EXISTS settings (key_name TEXT PRIMARY KEY, value_data TEXT)");
         $dbs[$path]->exec("CREATE TABLE IF NOT EXISTS backup_history (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date INTEGER, file_id TEXT, message_id INTEGER, tag TEXT, size INTEGER)");
+        $dbs[$path]->exec("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, db_name TEXT, mode TEXT, action TEXT, table_name TEXT, pk_column TEXT, pk_value TEXT, before_data TEXT, after_data TEXT, restoreable INTEGER DEFAULT 0, created_at INTEGER)");
     }
     return $dbs[$path];
+}
+
+function audit_log_change($action, $table, $before = null, $after = null, $pkColumn = '', $pkValue = '', $restoreable = true) {
+    global $configFile;
+    try {
+        $db = get_db_handle($configFile);
+        $stmt = $db->prepare("INSERT INTO audit_log (db_name, mode, action, table_name, pk_column, pk_value, before_data, after_data, restoreable, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $_SESSION['db_name'] ?? '', $_SESSION['db_mode'] ?? 'sql', $action, $table,
+            $pkColumn, (string)$pkValue,
+            $before === null ? null : json_encode($before, JSON_UNESCAPED_UNICODE),
+            $after === null ? null : json_encode($after, JSON_UNESCAPED_UNICODE),
+            $restoreable ? 1 : 0, time()
+        ]);
+    } catch (Exception $e) {
+        error_log('Adminer audit log error: ' . $e->getMessage());
+    }
 }
 
 function load_config($path)
@@ -3712,6 +3730,18 @@ if ($is_logged_in && (isset($_GET['action']) || isset($_POST['action']))) {
     }
 }
 
+// ===== AUDIT TRACKING API =====
+if ($is_logged_in && isset($_GET['action']) && $_GET['action'] === 'audit_list') {
+    header('Content-Type: application/json');
+    try {
+        $stmt = get_db_handle($configFile)->query("SELECT id, db_name, mode, action, table_name, pk_column, pk_value, before_data, after_data, restoreable, created_at FROM audit_log WHERE db_name = " . get_db_handle($configFile)->quote($_SESSION['db_name'] ?? '') . " ORDER BY id DESC LIMIT 100");
+        echo json_encode(['success' => true, 'items' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
 // ===== ACTION HANDLER (POST) =====
 if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // Handle JSON payloads (e.g. for Excel Import)
@@ -3726,6 +3756,85 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $table = $_POST['table'] ?? '';
     $dbMode = $_SESSION['db_mode'] ?? 'sql';
+
+    // --- RESTORE AUDIT ENTRY ---
+    if ($action === 'audit_restore') {
+        header('Content-Type: application/json');
+        if (!has_permission('adminer', 'write')) {
+            echo json_encode(['success' => false, 'message' => 'Write permission required']);
+            exit;
+        }
+        try {
+            $auditId = (int)($_POST['audit_id'] ?? 0);
+            $auditDb = get_db_handle($configFile);
+            $auditStmt = $auditDb->prepare("SELECT * FROM audit_log WHERE id = ? AND db_name = ? AND restoreable = 1");
+            $auditStmt->execute([$auditId, $_SESSION['db_name'] ?? '']);
+            $entry = $auditStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$entry) throw new Exception('Audit entry not found or cannot be restored.');
+
+            $before = $entry['before_data'] ? json_decode($entry['before_data'], true) : null;
+            $after = $entry['after_data'] ? json_decode($entry['after_data'], true) : null;
+            $restoreMode = $entry['mode'];
+            $restoreTable = $entry['table_name'];
+            $pkColumn = $entry['pk_column'];
+            $pkValue = $entry['pk_value'];
+
+            $rowRestore = in_array($entry['action'], ['insert', 'delete', 'update'], true);
+            if (!preg_match('/^[A-Za-z0-9_$-]+$/', $restoreTable) || ($rowRestore && !preg_match('/^[A-Za-z0-9_$-]+$/', $pkColumn))) {
+                throw new Exception('Invalid audit identifiers.');
+            }
+
+            if ($restoreMode === 'json') {
+                if ($entry['action'] === 'insert' && $after) {
+                    $jsonDb->delete($restoreTable, [$pkColumn => ['operator' => '=', 'value' => $pkValue]]);
+                } elseif ($entry['action'] === 'delete' && $before) {
+                    $jsonDb->insert($restoreTable, $before);
+                } elseif ($entry['action'] === 'update' && $before) {
+                    $jsonDb->update($restoreTable, $before, [$pkColumn => ['operator' => '=', 'value' => $pkValue]]);
+                }
+            } else {
+                if ($entry['action'] === 'insert') {
+                    $stmt = $pdo->prepare("DELETE FROM `$restoreTable` WHERE `$pkColumn` = ?");
+                    $stmt->execute([$pkValue]);
+                } elseif ($entry['action'] === 'delete' && $before) {
+                    $columns = array_keys($before);
+                    $safeColumns = array_filter($columns, fn($column) => preg_match('/^[A-Za-z0-9_$-]+$/', $column));
+                    $fields = implode('`, `', $safeColumns);
+                    $placeholders = implode(', ', array_fill(0, count($safeColumns), '?'));
+                    $stmt = $pdo->prepare("INSERT INTO `$restoreTable` (`$fields`) VALUES ($placeholders)");
+                    $stmt->execute(array_map(fn($column) => $before[$column], $safeColumns));
+                } elseif ($entry['action'] === 'update' && $before) {
+                    $setColumns = array_keys($before);
+                    $safeColumns = array_filter($setColumns, fn($column) => preg_match('/^[A-Za-z0-9_$-]+$/', $column) && $column !== $pkColumn);
+                    $assignments = implode(', ', array_map(fn($column) => "`$column` = ?", $safeColumns));
+                    $values = array_map(fn($column) => $before[$column], $safeColumns);
+                    $values[] = $pkValue;
+                    $stmt = $pdo->prepare("UPDATE `$restoreTable` SET $assignments WHERE `$pkColumn` = ?");
+                    $stmt->execute($values);
+                } elseif (in_array($entry['action'], ['truncate_table', 'drop_table'], true) && $before) {
+                    if ($entry['action'] === 'drop_table' && !empty($before['create_sql'])) {
+                        $pdo->exec($before['create_sql']);
+                    }
+                    if (!empty($before['rows']) && is_array($before['rows'])) {
+                        foreach ($before['rows'] as $row) {
+                            $columns = array_keys($row);
+                            $safeColumns = array_filter($columns, fn($column) => preg_match('/^[A-Za-z0-9_$-]+$/', $column));
+                            if (!$safeColumns) continue;
+                            $fields = implode('`, `', $safeColumns);
+                            $placeholders = implode(', ', array_fill(0, count($safeColumns), '?'));
+                            $stmt = $pdo->prepare("INSERT INTO `$restoreTable` (`$fields`) VALUES ($placeholders)");
+                            $stmt->execute(array_map(fn($column) => $row[$column], $safeColumns));
+                        }
+                    }
+                }
+            }
+            audit_log_change('restore_' . $entry['action'], $restoreTable, $after, $before, $pkColumn, $pkValue, false);
+            echo json_encode(['success' => true, 'message' => 'Change restored successfully.']);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+        exit;
+    }
 
     // --- UNIVERSAL REPLACE ---
     if ($action === 'universal_replace') {
@@ -3924,6 +4033,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sqlResults = $resultSets;
                 $lastResultSet = !empty($resultSets) ? end($resultSets) : null;
                 $msg = count($statements) . " statement(s) executed. Rows affected: $affectedTotal.";
+                audit_log_change('sql_query', $table ?: '(multiple)', ['query' => $sql, 'affected' => $affectedTotal], null, '', '', false);
             } catch (Exception $e) {
                 $error = $e->getMessage();
             }
@@ -4492,6 +4602,17 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = $_POST['data'] ?? [];
         $pk = $_POST['pk'] ?? null;
         $pkVal = $_POST['pk_val'] ?? null;
+        $beforeRow = null;
+        if ($pkVal && $pk) {
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                $found = $jsonDb->select($table, [$pk => ['operator' => '=', 'value' => $pkVal]]);
+                $beforeRow = $found[0] ?? null;
+            } elseif (isset($pdo)) {
+                $lookup = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ? LIMIT 1");
+                $lookup->execute([$pkVal]);
+                $beforeRow = $lookup->fetch(PDO::FETCH_ASSOC) ?: null;
+            }
+        }
         
         try {
             // Check if we're in JSON mode
@@ -4502,10 +4623,12 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         'id' => ['operator' => '=', 'value' => $pkVal]
                     ]);
                     $msg = "Row updated successfully.";
+                    audit_log_change('update', $table, $beforeRow, array_merge($beforeRow ?? [], $data), $pk, $pkVal);
                 } else {
                     // INSERT
                     $jsonDb->insert($table, $data);
                     $msg = "Row inserted successfully.";
+                    audit_log_change('insert', $table, null, $data, $pk ?: 'id', $data[$pk ?: 'id'] ?? '');
                 }
             } else {
                 // SQL Mode
@@ -4531,6 +4654,8 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute($vals);
                     $msg = "Row inserted successfully.";
+                    $insertedId = $pk ? ($data[$pk] ?? '') : $pdo->lastInsertId();
+                    audit_log_change('insert', $table, null, $data, $pk ?: 'id', $insertedId);
                 }
             }
             redirect("?table=$table&view=data&msg=" . urlencode($msg));
@@ -4541,7 +4666,14 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- DELETE TABLE ---
     elseif ($action === 'delete_table') {
         try {
+            $createStmt = $pdo->query("SHOW CREATE TABLE `$table`");
+            $createRow = $createStmt->fetch(PDO::FETCH_NUM);
+            $tableSnapshot = [
+                'create_sql' => $createRow[1] ?? '',
+                'rows' => $pdo->query("SELECT * FROM `$table`")->fetchAll(PDO::FETCH_ASSOC)
+            ];
             $pdo->exec("DROP TABLE `$table`");
+            audit_log_change('drop_table', $table, $tableSnapshot, null, '', '', true);
             redirect("?msg=" . urlencode("Table $table deleted."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -4550,7 +4682,11 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- TRUNCATE TABLE ---
     elseif ($action === 'truncate_table') {
         try {
+            $tableSnapshot = [
+                'rows' => $pdo->query("SELECT * FROM `$table`")->fetchAll(PDO::FETCH_ASSOC)
+            ];
             $pdo->exec("TRUNCATE TABLE `$table`");
+            audit_log_change('truncate_table', $table, $tableSnapshot, null, '', '', true);
             redirect("?table=$table&view=structure&msg=" . urlencode("Table $table truncated."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -4561,6 +4697,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         $col = $_POST['col'];
         try {
             $pdo->exec("ALTER TABLE `$table` DROP COLUMN `$col`");
+            audit_log_change('drop_column', $table, ['column' => $col], null, '', '', false);
             redirect("?table=$table&view=structure&msg=" . urlencode("Column $col dropped."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -4604,6 +4741,7 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sql = "ALTER TABLE `$table` ADD COLUMN $def $pos";
             }
             $pdo->exec($sql);
+            audit_log_change($orig ? 'change_column' : 'add_column', $table, ['sql' => $sql], null, '', '', false);
             redirect("?table=$table&view=structure&msg=" . urlencode("Column saved."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -4949,6 +5087,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
         // Check if we're in JSON mode
         if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
             try {
+                $lookupKey = $col === 'value' ? 'key' : 'id';
+                $found = $jsonDb->select($tableName, [$lookupKey => ['operator' => '=', 'value' => $id]]);
+                $beforeRow = $found[0] ?? null;
                 // For flat structure, id is the key name
                 if ($col === 'value') {
                     $jsonDb->update($tableName, [$col => $val], [
@@ -4959,6 +5100,9 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
                         'id' => ['operator' => '=', 'value' => $id]
                     ]);
                 }
+                $afterRow = $beforeRow;
+                if ($afterRow) $afterRow[$col] = $val;
+                audit_log_change('update', $tableName, $beforeRow, $afterRow, $lookupKey, $id);
                 echo json_encode(['success' => true]);
             } catch (Exception $e) {
                 echo json_encode(['success' => false, 'message' => $e->getMessage()]);
@@ -4972,8 +5116,14 @@ if ($is_logged_in && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             try {
+                $beforeStmt = $pdo->prepare("SELECT * FROM `$tableName` WHERE `$pkCol` = ? LIMIT 1");
+                $beforeStmt->execute([$id]);
+                $beforeRow = $beforeStmt->fetch(PDO::FETCH_ASSOC) ?: null;
                 $stmt = $pdo->prepare("UPDATE `$tableName` SET `$col` = ? WHERE `$pkCol` = ?");
                 $stmt->execute([$val, $id]);
+                $afterRow = $beforeRow;
+                if ($afterRow) $afterRow[$col] = $val;
+                audit_log_change('update', $tableName, $beforeRow, $afterRow, $pkCol, $id);
                 echo json_encode(['success' => true]);
             } catch (Exception $e) {
                 echo json_encode(['success' => false, 'message' => $e->getMessage()]);
@@ -7404,6 +7554,15 @@ if ($is_logged_in) {
         $pk = $_GET['pk'];
         $val = $_GET['val'];
         try {
+            $beforeRow = null;
+            if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
+                $found = $jsonDb->select($table, [$pk => ['operator' => '=', 'value' => $val]]);
+                $beforeRow = $found[0] ?? null;
+            } elseif (isset($pdo)) {
+                $lookup = $pdo->prepare("SELECT * FROM `$table` WHERE `$pk` = ? LIMIT 1");
+                $lookup->execute([$val]);
+                $beforeRow = $lookup->fetch(PDO::FETCH_ASSOC) ?: null;
+            }
             // Check if we're in JSON mode
             if (($_SESSION['db_mode'] ?? 'sql') === 'json' && !empty($_SESSION['json_file'])) {
                 $jsonDb->delete($table, [
@@ -7414,6 +7573,7 @@ if ($is_logged_in) {
                 $stmt = $pdo->prepare("DELETE FROM `$table` WHERE `$pk` = ?");
                 $stmt->execute([$val]);
             }
+            audit_log_change('delete', $table, $beforeRow, null, $pk, $val);
             redirect("?table=$table&view=data&msg=" . urlencode("Row deleted."));
         } catch (Exception $e) {
             $error = $e->getMessage();
@@ -13383,6 +13543,9 @@ padding: 20px !important;
             <a href="javascript:void(0)" onclick="openDocsModal()" class="nav-item">
                 <i class="fas fa-book" style="width:20px; text-align:center;"></i> <span>Developer Docs</span>
             </a>
+            <a href="javascript:void(0)" onclick="openAuditTracker()" class="nav-item">
+                <i class="fas fa-history" style="width:20px; text-align:center;"></i> <span>Change Tracking</span>
+            </a>
             <a href="?view=visualizer" class="nav-item <?= ($_GET['view'] ?? '') === 'visualizer' ? 'active' : '' ?>">
                 <i class="fas fa-project-diagram" style="width:20px; text-align:center;"></i> <span>Schema Visualizer</span>
             </a>
@@ -16220,6 +16383,55 @@ padding: 20px !important;
                     }).then((r) => { if (r.isConfirmed) { Swal.fire({ toast:true, position:'top-end', showConfirmButton:false, timer:3000, icon:'success', title:'Removed' }).then(() => location.reload()); } });
                 }
 
+                function openAuditTracker() {
+                    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+                    fetch('?action=audit_list')
+                        .then(response => response.json())
+                        .then(result => {
+                            if (!result.success) throw new Error(result.message || 'Unable to load audit history');
+                            const rows = result.items.map(item => {
+                                const before = item.before_data ? JSON.stringify(JSON.parse(item.before_data), null, 2) : '-';
+                                const after = item.after_data ? JSON.stringify(JSON.parse(item.after_data), null, 2) : '-';
+                                const restore = Number(item.restoreable) === 1
+                                    ? `<button class="btn btn-sm btn-primary" onclick="restoreAuditEntry(${Number(item.id)})"><i class="fas fa-undo"></i> Restore</button>`
+                                    : '<span style="color:var(--text-secondary);">Logged only</span>';
+                                return `<tr><td>${escapeHtml(new Date(Number(item.created_at) * 1000).toLocaleString())}</td><td><b>${escapeHtml(item.action)}</b><br><small>${escapeHtml(item.mode)}</small></td><td>${escapeHtml(item.table_name)}</td><td>${escapeHtml(item.pk_column)} = ${escapeHtml(item.pk_value)}</td><td><details><summary>Before / After</summary><pre style="white-space:pre-wrap; max-width:420px;">${escapeHtml(before)}\n\n=>\n\n${escapeHtml(after)}</pre></details></td><td>${restore}</td></tr>`;
+                            }).join('');
+                            Swal.fire({
+                                title: '<i class="fas fa-history"></i> Database Change Tracking',
+                                width: '1200px',
+                                background: 'var(--bg-card)',
+                                color: 'var(--text-primary)',
+                                showCloseButton: true,
+                                showConfirmButton: false,
+                                html: `<div style="text-align:left; max-height:65vh; overflow:auto;"><p style="color:var(--text-secondary);">Reversible row changes are retained locally in Adminer. DDL operations are not currently restorable.</p><table style="width:100%; font-size:0.8rem;"><thead><tr><th>Time</th><th>Action</th><th>Table</th><th>Record</th><th>Snapshot</th><th>Action</th></tr></thead><tbody>${rows || '<tr><td colspan="6" style="padding:20px; text-align:center;">No changes recorded yet.</td></tr>'}</tbody></table></div>`
+                            });
+                        })
+                        .catch(error => Swal.fire('Error', error.message, 'error'));
+                }
+
+                function restoreAuditEntry(auditId) {
+                    Swal.fire({
+                        title: 'Restore this change?',
+                        text: 'The current row will be overwritten by the saved snapshot.',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonText: 'Restore',
+                        showLoaderOnConfirm: true,
+                        preConfirm: () => {
+                            const formData = new FormData();
+                            formData.append('action', 'audit_restore');
+                            formData.append('audit_id', auditId);
+                            return fetch('?', { method: 'POST', body: formData }).then(response => response.json()).then(result => {
+                                if (!result.success) throw new Error(result.message || 'Restore failed');
+                                return result;
+                            });
+                        }
+                    }).then(result => {
+                        if (result.isConfirmed) Swal.fire('Restored', result.value.message, 'success').then(() => window.location.reload());
+                    });
+                }
+
                 function openDocsModal() {
                     const apiKeys = <?= json_encode($config['api_keys'] ?? []) ?>;
                     const apiKey = apiKeys.length > 0 ? apiKeys[0].key : 'No API Key Found';
@@ -16818,21 +17030,6 @@ padding: 20px !important;
                                     <option value="<" <?=$searchOp==='<'?'selected':''?>>&lt;</option>
                                     <option value="BETWEEN" <?=$searchOp==='BETWEEN'?'selected':''?>>BETWEEN</option>
                                 </select>
-                                <div id="serverDateRange" style="display:none; flex:1; gap:6px; align-items:center; min-width:260px;">
-                                    <div style="display:flex; gap:4px; align-items:center; white-space:nowrap;">
-                                        <span style="font-size:0.75rem; color:var(--text-secondary);">From</span>
-                                        <input type="text" id="searchFrom" class="form-control" placeholder="Start" style="width:145px;">
-                                    </div>
-                                    <span style="color:var(--text-secondary);">to</span>
-                                    <div style="display:flex; gap:4px; align-items:center; white-space:nowrap;">
-                                        <span style="font-size:0.75rem; color:var(--text-secondary);">To</span>
-                                        <input type="text" id="searchTo" class="form-control" placeholder="End" style="width:145px;">
-                                    </div>
-                                    <div class="btn-group" role="group" aria-label="Date or time mode" style="display:flex;">
-                                        <button type="button" class="btn btn-sm search-date-mode active" data-mode="date" style="padding:5px 8px;">Date</button>
-                                        <button type="button" class="btn btn-sm search-date-mode" data-mode="time" style="padding:5px 8px;">Time</button>
-                                    </div>
-                                </div>
                                 <input type="text" name="search_val" class="form-control" placeholder="Server-side Search..." value="<?=htmlspecialchars($searchVal)?>" style="width: 100%;">
                             </div>
                             <button type="submit" class="btn btn-primary"><i class="fas fa-search"></i> Filter</button>
@@ -16847,68 +17044,36 @@ padding: 20px !important;
                             const searchColumn = document.querySelector('select[name="search_col"]');
                             const searchOperator = document.querySelector('select[name="search_op"]');
                             const searchValue = document.querySelector('input[name="search_val"]');
-                            const dateRange = document.getElementById('serverDateRange');
-                            const searchFrom = document.getElementById('searchFrom');
-                            const searchTo = document.getElementById('searchTo');
-                            const modeButtons = document.querySelectorAll('.search-date-mode');
                             const columnTypes = <?= json_encode(array_reduce($tableStructure ?? [], function ($types, $column) {
                                 $name = $column['Field'] ?? $column['name'] ?? '';
                                 if ($name !== '') $types[$name] = $column['Type'] ?? $column['type'] ?? '';
                                 return $types;
                             }, []), JSON_UNESCAPED_UNICODE) ?>;
 
-                            let pickerMode = 'date';
-
                             function updateServerSearchPicker() {
-                                if (!searchValue || !dateRange || typeof flatpickr === 'undefined') return;
+                                if (!searchValue || typeof flatpickr === 'undefined') return;
                                 const type = String(columnTypes[searchColumn.value] || '').toLowerCase();
                                 const isDateTime = type.includes('datetime') || type.includes('timestamp');
-                                dateRange.style.display = isDateTime ? 'flex' : 'none';
-                                searchValue.style.display = isDateTime ? 'none' : 'block';
-                                if (!isDateTime) {
-                                    if (searchFrom._flatpickr) searchFrom._flatpickr.destroy();
-                                    if (searchTo._flatpickr) searchTo._flatpickr.destroy();
-                                    return;
-                                }
+                                if (searchValue._flatpickr) searchValue._flatpickr.destroy();
 
-                                [searchFrom, searchTo].forEach(input => {
-                                    if (input._flatpickr) input._flatpickr.destroy();
-                                    flatpickr(input, {
+                                if (isDateTime) {
+                                    flatpickr(searchValue, {
                                         theme: 'dark',
-                                        enableTime: pickerMode === 'time',
-                                        enableSeconds: pickerMode === 'time',
-                                        dateFormat: pickerMode === 'time' ? 'Y-m-d H:i:S' : 'Y-m-d',
-                                        allowInput: true
+                                        mode: 'range',
+                                        enableTime: true,
+                                        enableSeconds: true,
+                                        dateFormat: 'Y-m-d H:i:S',
+                                        allowInput: true,
+                                        rangeSeparator: ' to ',
+                                        onChange: (selectedDates) => {
+                                            if (selectedDates.length === 2) searchOperator.value = 'BETWEEN';
+                                        }
                                     });
-                                });
-                                searchOperator.value = 'BETWEEN';
-                            }
-
-                            function syncDateRangeValue() {
-                                if (searchFrom.value && searchTo.value) {
-                                    const endValue = pickerMode === 'date' ? `${searchTo.value} 23:59:59` : searchTo.value;
-                                    const startValue = pickerMode === 'date' ? `${searchFrom.value} 00:00:00` : searchFrom.value;
-                                    searchValue.value = `${startValue} to ${endValue}`;
-                                } else {
-                                    searchValue.value = '';
                                 }
                             }
 
-                            modeButtons.forEach(button => button.addEventListener('click', () => {
-                                pickerMode = button.dataset.mode;
-                                modeButtons.forEach(item => item.classList.toggle('active', item === button));
-                                updateServerSearchPicker();
-                            }));
-                            [searchFrom, searchTo].forEach(input => input.addEventListener('change', syncDateRangeValue));
                             searchColumn?.addEventListener('change', updateServerSearchPicker);
                             updateServerSearchPicker();
-                            const existingRange = <?= json_encode(parse_search_date_range($searchVal), JSON_UNESCAPED_UNICODE) ?>;
-                            if (existingRange && existingRange.length === 2) {
-                                const start = existingRange[0].replace(/ 00:00:00$/, '');
-                                const end = existingRange[1].replace(/ 23:59:59$/, '');
-                                searchFrom.value = start;
-                                searchTo.value = end;
-                            }
                         })();
                         </script>
                         
