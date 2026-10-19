@@ -8092,13 +8092,15 @@ function render_data_row($row, $currentTable, $primaryKey, $colTypes, $fkMap = [
             <?php
             // 5. Color Picker Logic
             if (!$isBoolean && !$isMediaColumn && $primaryKey && preg_match('/^#([A-Fa-f0-9]{3}|[A-Fa-f0-9]{6})$/', trim($valStr))) {
-                $jsTable = addslashes($currentTable);
-                $jsCol = addslashes($key);
-                $jsPk = addslashes($row[$primaryKey]);
+                $jsFlags = JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_INVALID_UTF8_SUBSTITUTE;
+                $colorChangeHandler = 'updateColorValue(this, '
+                    . json_encode($currentTable, $jsFlags) . ', '
+                    . json_encode($key, $jsFlags) . ', '
+                    . json_encode((string)$row[$primaryKey], $jsFlags) . ')';
                 $displayVal = '
                 <div class="color-preview-wrapper" style="display:inline-flex; align-items:center; gap:8px;">
                     <div class="color-preview-box" style="width:16px; height:16px; border-radius:4px; background:'.htmlspecialchars(trim($valStr)).'; border:1px solid rgba(255,255,255,0.2); cursor:pointer;" onclick="this.nextElementSibling.click(); event.stopPropagation();" title="Click to change color"></div>
-                    <input type="color" value="'.htmlspecialchars(trim($valStr)).'" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="updateColorValue(this, \''.$jsTable.'\', \''.$jsCol.'\', \''.$jsPk.'\')">
+                    <input type="color" value="'.htmlspecialchars(trim($valStr), ENT_QUOTES, 'UTF-8').'" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="'.htmlspecialchars($colorChangeHandler, ENT_QUOTES, 'UTF-8').'">
                     <span style="font-family:monospace; font-size:0.85rem;">'.htmlspecialchars($valStr).'</span>
                 </div>';
             }
@@ -9326,11 +9328,21 @@ if (!empty($tables)) {
             formData.append('value', newVal);
 
             td.classList.add('confirming');
+            window.AdminerDebug?.log('inline-cell-update-started', { table, column: col });
 
             fetch('?', { method: 'POST', body: formData })
-            .then(res => res.json())
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
             .then(data => {
                 td.classList.remove('confirming');
+                window.AdminerDebug?.log('inline-cell-update-response', {
+                    table,
+                    column: col,
+                    success: Boolean(data.success),
+                    message: data.message || null
+                });
                 if (data.success) {
                     // Update cell content
                     td.innerHTML = '';
@@ -9381,6 +9393,11 @@ if (!empty($tables)) {
                 }
             })
             .catch(err => {
+                window.AdminerDebug?.log('inline-cell-update-failed', {
+                    table,
+                    column: col,
+                    message: String(err)
+                });
                 td.classList.remove('confirming');
                 // Revert on error
                 td.innerHTML = '';
@@ -9426,9 +9443,19 @@ if (!empty($tables)) {
             formData.append('id', pk);
             formData.append('value', value);
 
+            window.AdminerDebug?.log('inline-toggle-update-started', { table, column });
             fetch('?', { method: 'POST', body: formData })
-            .then(res => res.json())
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
             .then(data => {
+                window.AdminerDebug?.log('inline-toggle-update-response', {
+                    table,
+                    column,
+                    success: Boolean(data.success),
+                    message: data.message || null
+                });
                 if (data.success) {
                     const toast = Swal.mixin({toast: true, position: 'top-end', showConfirmButton: false, timer: 1000});
                     toast.fire({ icon: 'success', title: 'Updated to ' + value });
@@ -9441,8 +9468,14 @@ if (!empty($tables)) {
                 }
             })
             .catch(err => {
+                window.AdminerDebug?.log('inline-toggle-update-failed', {
+                    table,
+                    column,
+                    message: String(err)
+                });
                 checkbox.checked = !checkbox.checked;
-                Swal.fire('Error', 'Network error', 'error');
+                console.error('[Adminer] Inline toggle update failed.', err);
+                Swal.fire('Error', 'Network error while updating value', 'error');
             });
         }
 
@@ -9459,9 +9492,19 @@ if (!empty($tables)) {
             formData.append('id', pk);
             formData.append('value', newVal);
 
+            window.AdminerDebug?.log('inline-color-update-started', { table, column: col });
             fetch('?', { method: 'POST', body: formData })
-            .then(res => res.json())
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
             .then(data => {
+                window.AdminerDebug?.log('inline-color-update-response', {
+                    table,
+                    column: col,
+                    success: Boolean(data.success),
+                    message: data.message || null
+                });
                 if (data.success) {
                     preview.style.background = newVal;
                     if (text) text.innerText = newVal;
@@ -9470,6 +9513,15 @@ if (!empty($tables)) {
                 } else {
                     Swal.fire('Error', data.message || 'Update failed', 'error');
                 }
+            })
+            .catch(err => {
+                window.AdminerDebug?.log('inline-color-update-failed', {
+                    table,
+                    column: col,
+                    message: String(err)
+                });
+                console.error('[Adminer] Inline color update failed.', err);
+                Swal.fire('Error', 'Network error while updating color', 'error');
             });
         }
 
@@ -11704,13 +11756,16 @@ var advancedFilters = null;
                         let displayValue = field.value === null ? '<span style="color:#666; font-style:italic;">NULL</span>' : value;
                         
                         if (isColor) {
-                            const escTable = table.replace(/'/g, "\\'");
-                            const escCol = field.column.replace(/'/g, "\\'");
-                            const escVal = String(val).replace(/'/g, "\\'");
+                            const colorHandlerArgs = [table, field.column, String(val)].map(argument =>
+                                JSON.stringify(String(argument))
+                                    .replace(/&/g, '&amp;')
+                                    .replace(/"/g, '&quot;')
+                                    .replace(/</g, '&lt;')
+                            );
                             displayValue = `
                             <div class="color-preview-wrapper" style="display:inline-flex; align-items:center; gap:8px;">
                                 <div class="color-preview-box" style="width:18px; height:18px; border-radius:4px; background:${value}; border:1px solid rgba(255,255,255,0.2); cursor:pointer;" onclick="this.nextElementSibling.click(); event.stopPropagation();" title="Click to change color"></div>
-                                <input type="color" value="${value}" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="updateColorValue(this, '${escTable}', '${escCol}', '${escVal}')">
+                                <input type="color" value="${value}" style="opacity:0; width:0; height:0; position:absolute; pointer-events:none;" onchange="updateColorValue(this, ${colorHandlerArgs.join(', ')})">
                                 <span style="font-family:monospace; font-size:0.9rem;">${value}</span>
                             </div>`;
                         }
@@ -13373,6 +13428,69 @@ padding: 20px !important;
     justify-content: end;
     }
     </style>
+    <script>
+        (() => {
+            const debugKey = 'adminer:debug';
+
+            const debugEnabled = () => {
+                try {
+                    return localStorage.getItem(debugKey) === '1' ||
+                        new URLSearchParams(window.location.search).get('debug') === '1';
+                } catch (error) {
+                    return new URLSearchParams(window.location.search).get('debug') === '1';
+                }
+            };
+
+            const log = (event, details = {}) => {
+                if (!debugEnabled()) return;
+                const entry = {
+                    event,
+                    timestamp: new Date().toISOString(),
+                    url: window.location.pathname + window.location.search,
+                    ...details
+                };
+                const method = event === 'javascript-error' || event === 'unhandled-rejection'
+                    ? 'error'
+                    : 'info';
+                console[method]('[Adminer debug]', entry);
+
+                try {
+                    const entries = JSON.parse(sessionStorage.getItem('adminer:debug-log') || '[]');
+                    entries.push(entry);
+                    sessionStorage.setItem('adminer:debug-log', JSON.stringify(entries.slice(-50)));
+                } catch (error) {
+                    console.warn('[Adminer debug] Unable to persist diagnostic log.', error);
+                }
+            };
+
+            window.AdminerDebug = {
+                enabled: debugEnabled,
+                log,
+                setEnabled(enabled) {
+                    try {
+                        localStorage.setItem(debugKey, enabled ? '1' : '0');
+                    } catch (error) {
+                        console.error('[Adminer debug] Unable to update debug setting.', error);
+                    }
+                }
+            };
+
+            window.addEventListener('error', (event) => {
+                log('javascript-error', {
+                    message: event.message,
+                    filename: event.filename,
+                    line: event.lineno,
+                    column: event.colno,
+                    stack: event.error?.stack || null
+                });
+            });
+            window.addEventListener('unhandledrejection', (event) => {
+                log('unhandled-rejection', {
+                    message: String(event.reason?.stack || event.reason)
+                });
+            });
+        })();
+    </script>
 </head>
 <body>
 
@@ -21886,5 +22004,171 @@ var queryBuilder = null;
         </div>
         <?php endif; ?>
     </div>
+    <script>
+        (() => {
+            const storageKey = 'adminer:pending-scroll-position';
+            const restoreMaxAge = 30000;
+            const scrolledElements = new Set();
+
+            document.addEventListener('scroll', (event) => {
+                if (
+                    event.target instanceof Element &&
+                    event.target !== document.body &&
+                    event.target !== document.documentElement
+                ) {
+                    scrolledElements.add(event.target);
+                }
+            }, true);
+
+            const getElementPath = (element) => {
+                const path = [];
+                let current = element;
+
+                while (current && current !== document.body) {
+                    const parent = current.parentElement;
+                    if (!parent) return null;
+                    if (current.id) {
+                        path.unshift({ id: current.id });
+                    } else {
+                        const classes = Array.from(current.classList);
+                        const siblings = Array.from(parent.children).filter((sibling) =>
+                            sibling.tagName === current.tagName &&
+                            Array.from(sibling.classList).join(' ') === classes.join(' ')
+                        );
+                        path.unshift({
+                            tag: current.tagName,
+                            classes,
+                            index: siblings.indexOf(current)
+                        });
+                    }
+                    current = parent;
+                }
+
+                return current === document.body ? path : null;
+            };
+
+            const getElementAtPath = (path) => {
+                let current = document.body;
+                for (const segment of path) {
+                    const children = Array.from(current.children);
+                    if (segment.id) {
+                        current = children.find((child) => child.id === segment.id);
+                    } else {
+                        const matches = children.filter((child) =>
+                            child.tagName === segment.tag &&
+                            Array.from(child.classList).join(' ') === segment.classes.join(' ')
+                        );
+                        current = matches[segment.index];
+                    }
+                    if (!current) return null;
+                }
+                return current;
+            };
+
+            const saveScrollPosition = () => {
+                const scrollContainers = [];
+                scrolledElements.forEach((element) => {
+                    if (!element.isConnected) return;
+                    const path = getElementPath(element);
+                    if (path) {
+                        scrollContainers.push({
+                            path,
+                            x: element.scrollLeft,
+                            y: element.scrollTop
+                        });
+                    }
+                });
+
+                try {
+                    sessionStorage.setItem(storageKey, JSON.stringify({
+                        pathname: window.location.pathname,
+                        x: window.scrollX,
+                        y: window.scrollY,
+                        containers: scrollContainers,
+                        savedAt: Date.now()
+                    }));
+                    window.AdminerDebug?.log('scroll-position-saved', {
+                        page: { x: window.scrollX, y: window.scrollY },
+                        scrollContainerCount: scrollContainers.length,
+                        scrollContainers
+                    });
+                } catch (error) {
+                    console.error('[Adminer] Unable to preserve the page position.', error);
+                }
+            };
+
+            const shouldSaveForForm = (form) =>
+                form instanceof HTMLFormElement &&
+                form.method.toUpperCase() === 'POST' &&
+                (!form.target || form.target === '_self');
+
+            document.addEventListener('submit', (event) => {
+                if (shouldSaveForForm(event.target)) {
+                    saveScrollPosition();
+                }
+            }, true);
+
+            const nativeSubmit = HTMLFormElement.prototype.submit;
+            HTMLFormElement.prototype.submit = function() {
+                if (shouldSaveForForm(this)) {
+                    saveScrollPosition();
+                }
+                nativeSubmit.call(this);
+            };
+
+            let pendingPosition;
+            try {
+                const saved = sessionStorage.getItem(storageKey);
+                sessionStorage.removeItem(storageKey);
+                pendingPosition = saved ? JSON.parse(saved) : null;
+            } catch (error) {
+                console.error('[Adminer] Unable to read the saved page position.', error);
+            }
+
+            if (
+                pendingPosition &&
+                pendingPosition.pathname === window.location.pathname &&
+                Date.now() - pendingPosition.savedAt < restoreMaxAge &&
+                Number.isFinite(pendingPosition.x) &&
+                Number.isFinite(pendingPosition.y)
+            ) {
+                const restoreScrollPosition = () => {
+                    const restoredContainers = [];
+                    (pendingPosition.containers || []).forEach((position) => {
+                        if (!Array.isArray(position.path)) return;
+                        const element = getElementAtPath(position.path);
+                        if (!element) return;
+
+                        element.scrollLeft = position.x;
+                        element.scrollTop = position.y;
+                        restoredContainers.push(position);
+                    });
+
+                    window.scrollTo(pendingPosition.x, pendingPosition.y);
+                    window.AdminerDebug?.log('scroll-position-restored', {
+                        page: { x: pendingPosition.x, y: pendingPosition.y },
+                        restoredContainerCount: restoredContainers.length,
+                        savedContainerCount: (pendingPosition.containers || []).length
+                    });
+                };
+
+                const scheduleRestore = () => {
+                    requestAnimationFrame(() => {
+                        restoreScrollPosition();
+                        window.setTimeout(restoreScrollPosition, 200);
+                    });
+                };
+
+                if (document.readyState === 'complete') scheduleRestore();
+                else window.addEventListener('load', scheduleRestore, { once: true });
+            } else if (pendingPosition) {
+                window.AdminerDebug?.log('scroll-position-not-restored', {
+                    reason: pendingPosition.pathname !== window.location.pathname
+                        ? 'page-changed'
+                        : 'expired-or-invalid'
+                });
+            }
+        })();
+    </script>
 </body>
 </html>
