@@ -1187,30 +1187,64 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
           echo json_encode(['success' => true, 'data' => $data]);
           exit();
       }
-      // ---- Codebase Visualizer: get file tree + code content ----
+      // ---- Codebase Visualizer: Enhanced with statistics and lazy loading ----
       if (isset($_POST['type']) && $_POST['type'] == "get_codebase") {
           $dir = isset($_POST['path']) ? fm_clean_path($_POST['path']) : '';
           $absPath = FM_ROOT_PATH . ($dir ? '/' . $dir : '');
           $absPath = rtrim($absPath, '/');
-          $maxSize = 200 * 1024; // skip files > 200 KB
+          $maxSize = 500 * 1024; // 500 KB
+          $maxDepth = isset($_POST['depth']) ? (int)$_POST['depth'] : 3;
 
-          $codeExts = ['php','js','ts','css','html','htm','py','java','c','cpp','h','rb','go','rs',
-                       'json','xml','yml','yaml','sh','bat','sql','md','txt','env','ini','conf','htaccess'];
+          $codeExts = ['php','js','ts','tsx','jsx','css','scss','less','html','htm','py','java','c','cpp','h','rs','go','rb',
+                       'json','xml','yml','yaml','sh','bat','sql','md','txt','env','ini','conf','htaccess','vue'];
 
-          function cv_scan_dir($path, $root, $maxSize, $codeExts, $depth = 0) {
-              if ($depth > 5) return [];
-              $result = [];
+          function cv_count_lines($content) {
+              return substr_count($content, "\n") + 1;
+          }
+
+          function cv_detect_lang($ext) {
+              $map = [
+                  'php'=>'PHP', 'py'=>'Python', 'js'=>'JavaScript', 'ts'=>'TypeScript', 'tsx'=>'TypeScript React',
+                  'jsx'=>'JavaScript React', 'java'=>'Java', 'cpp'=>'C++', 'c'=>'C', 'h'=>'C Header',
+                  'rs'=>'Rust', 'go'=>'Go', 'rb'=>'Ruby', 'cs'=>'C#', 'swift'=>'Swift',
+                  'html'=>'HTML', 'htm'=>'HTML', 'css'=>'CSS', 'scss'=>'SCSS', 'less'=>'LESS',
+                  'sql'=>'SQL', 'json'=>'JSON', 'xml'=>'XML', 'yml'=>'YAML', 'yaml'=>'YAML',
+                  'md'=>'Markdown', 'sh'=>'Shell', 'bash'=>'Bash', 'bat'=>'Batch', 'vue'=>'Vue'
+              ];
+              return $map[$ext] ?? ucfirst($ext);
+          }
+
+          function cv_scan_dir($path, $root, $maxSize, $codeExts, $depth = 0, $maxDepth = 3) {
+              if ($depth > $maxDepth) return [];
+              $result = ['files' => [], 'dirs' => [], 'stats' => ['size' => 0, 'lines' => 0, 'langs' => []]];
               $items = @scandir($path);
               if (!$items) return $result;
+
               foreach ($items as $item) {
                   if ($item === '.' || $item === '..') continue;
-                  if (!FM_SHOW_HIDDEN && substr($item, 0, 1) === '.') continue;
+                  if (substr($item, 0, 1) === '.') continue;
                   $full = $path . '/' . $item;
-                  $rel  = ltrim(str_replace($root, '', $full), '/\\');
+                  $rel = ltrim(str_replace($root, '', $full), '/\\');
+
                   if (is_dir($full)) {
-                      $children = cv_scan_dir($full, $root, $maxSize, $codeExts, $depth + 1);
-                      if (!empty($children)) {
-                          $result[] = ['type' => 'dir', 'name' => $item, 'path' => $rel, 'children' => $children];
+                      $sub = cv_scan_dir($full, $root, $maxSize, $codeExts, $depth + 1, $maxDepth);
+                      if (!empty($sub['files']) || !empty($sub['dirs'])) {
+                          $result['dirs'][] = [
+                              'type' => 'dir',
+                              'name' => $item,
+                              'path' => $rel,
+                              'size' => $sub['stats']['size'],
+                              'lines' => $sub['stats']['lines'],
+                              'files' => count($sub['files']),
+                              'dirs' => count($sub['dirs']),
+                              'langs' => $sub['stats']['langs'],
+                              'children' => ['files' => $sub['files'], 'dirs' => $sub['dirs']]
+                          ];
+                          $result['stats']['size'] += $sub['stats']['size'];
+                          $result['stats']['lines'] += $sub['stats']['lines'];
+                          foreach ($sub['stats']['langs'] as $l => $c) {
+                              $result['stats']['langs'][$l] = ($result['stats']['langs'][$l] ?? 0) + $c;
+                          }
                       }
                   } else {
                       $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
@@ -1218,25 +1252,73 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
                       $size = (int)@filesize($full);
                       if ($size > $maxSize) continue;
                       $content = @file_get_contents($full);
-                      $lines   = $content !== false ? substr_count($content, "\n") + 1 : 0;
-                      $result[] = [
-                          'type'    => 'file',
-                          'name'    => $item,
-                          'path'    => $rel,
-                          'ext'     => $ext,
-                          'size'    => $size,
-                          'lines'   => $lines,
-                          'content' => $content !== false ? $content : '',
+                      if ($content === false) continue;
+                      $lines = cv_count_lines($content);
+                      $lang = cv_detect_lang($ext);
+                      $result['files'][] = [
+                          'type' => 'file',
+                          'name' => $item,
+                          'path' => $rel,
+                          'ext' => $ext,
+                          'lang' => $lang,
+                          'size' => $size,
+                          'lines' => $lines,
+                          'content' => $content,
                       ];
+                      $result['stats']['size'] += $size;
+                      $result['stats']['lines'] += $lines;
+                      $result['stats']['langs'][$lang] = ($result['stats']['langs'][$lang] ?? 0) + 1;
                   }
               }
+
+              // Sort
+              usort($result['files'], function($a, $b) { return $b['size'] - $a['size']; });
+              usort($result['dirs'], function($a, $b) { return $b['size'] - $a['size']; });
               return $result;
           }
 
-          $tree = cv_scan_dir($absPath, FM_ROOT_PATH, $maxSize, $codeExts);
+          $tree = cv_scan_dir($absPath, FM_ROOT_PATH, $maxSize, $codeExts, 0, $maxDepth);
           header('Content-Type: application/json');
-          echo json_encode(['success' => true, 'tree' => $tree, 'root' => $dir ?: '/']);
-          exit();
+          echo json_encode([
+              'success' => true,
+              'tree' => $tree,
+              'root' => $dir ?: '/',
+              'path' => $dir ?: '/',
+              'absPath' => $absPath
+          ]);
+          exit;
+      }
+
+      // ---- Get file content + cache ----
+      if (isset($_POST['type']) && $_POST['type'] == "get_file_content") {
+          header('Content-Type: application/json');
+          $filePath = isset($_POST['path']) ? $_POST['path'] : '';
+          if (empty($filePath)) {
+              echo json_encode(['success' => false, 'message' => 'No path']);
+              exit;
+          }
+          $fullPath = FM_ROOT_PATH . '/' . $filePath;
+          $realPath = realpath($fullPath);
+          if (!$realPath || strpos($realPath, FM_ROOT_PATH) !== 0 || !is_file($realPath)) {
+              echo json_encode(['success' => false, 'message' => 'File not found']);
+              exit;
+          }
+          $content = @file_get_contents($realPath);
+          if ($content === false) {
+              echo json_encode(['success' => false, 'message' => 'Cannot read file']);
+              exit;
+          }
+          $ext = strtolower(pathinfo($realPath, PATHINFO_EXTENSION));
+          $lines = substr_count($content, "\n") + 1;
+          echo json_encode([
+              'success' => true,
+              'content' => $content,
+              'ext' => $ext,
+              'lines' => $lines,
+              'size' => strlen($content),
+              'path' => $filePath
+          ]);
+          exit;
       }
 // save editor file
       if (isset($_POST['type']) && $_POST['type'] == "save") {
@@ -4200,7 +4282,7 @@ document.addEventListener('DOMContentLoaded', function() {
          }
      }
 
-     renderQA();
+     renderQA([]);
 
      // 12. Create Modal Logic
      window.openCreateModal = function(type) {
@@ -11203,6 +11285,10 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   $('#duplicateScannerModal').modal('show');
               }
 
+              function showCodebaseVisualizer() {
+                  cv_open();
+              }
+
               function runDuplicateScan() {
                   const urlParams = new URLSearchParams(window.location.search);
                   const path = urlParams.get('p') || '.';
@@ -11525,351 +11611,100 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               }
           </script>
 
-          <!-- ============================================================ -->
-          <!-- CODEBASE VISUALIZER MODAL                                     -->
-          <!-- ============================================================ -->
+          <!-- CODEBASE VISUALIZER MODAL - Bento Grid -->
           <div class="modal fade" id="codebaseVisualizerModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
               <div class="modal-dialog modal-fullscreen" role="document">
                   <div class="modal-content" style="background:#0a0a0f; border:none;">
-                      <div class="modal-header" style="background:#111118; border-bottom:1px solid #222; padding:10px 18px;">
-                          <span style="font-size:1rem; font-weight:700; color:#e0e0e0; display:flex; align-items:center; gap:10px;">
-                              <i class="fa fa-code" style="color:#38bdf8;"></i> Codebase Visualizer
-                              <span style="font-size:0.78rem; font-weight:400; color:#666;" id="cv-scan-label"></span>
-                          </span>
-                          <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
-                              <input type="text" id="cv-search" placeholder="Search files..." style="background:#1a1a2e; border:1px solid #333; border-radius:6px; color:#e0e0e0; padding:4px 10px; font-size:0.82rem; width:180px;">
-                              <button class="btn btn-sm" style="background:#38bdf8; color:#000; font-weight:600;" onclick="cvRescan()"><i class="fa fa-refresh"></i> Rescan</button>
-                              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                      <div class="modal-header" style="background:#111; border-bottom:1px solid #222;">
+                          <h5 class="modal-title" style="color:#e0e0e0;"><i class="fa fa-code" style="color:#38bdf8;margin-right:10px;"></i>Codebase</h5>
+                          <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+                              <input type="text" id="cv-search" placeholder="Filter..." style="background:#1a1a2e; border:1px solid #333; border-radius:4px; padding:5px 10px; color:#e0e0e0; font-size:0.9rem; width:180px;">
+                              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                           </div>
                       </div>
-                      <div class="modal-body" style="padding:0; display:flex; height:calc(100vh - 56px); overflow:hidden;">
-
-                          <!-- LEFT PANEL: Treemap -->
-                          <div id="cv-left" style="width:42%; min-width:280px; display:flex; flex-direction:column; border-right:1px solid #222; background:#0a0a0f;">
-                              <!-- Stats -->
-                              <div id="cv-stats" style="display:flex; gap:0; border-bottom:1px solid #1a1a2e; flex-shrink:0;">
-                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
-                                      <div id="cv-stat-files" style="font-size:1.3rem; font-weight:700; color:#38bdf8;">0</div>
-                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Files</div>
-                                  </div>
-                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
-                                      <div id="cv-stat-lines" style="font-size:1.3rem; font-weight:700; color:#a78bfa;">0</div>
-                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Lines</div>
-                                  </div>
-                                  <div style="flex:1; padding:10px 14px; text-align:center; border-right:1px solid #1a1a2e;">
-                                      <div id="cv-stat-size" style="font-size:1.3rem; font-weight:700; color:#34d399;">—</div>
-                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Total Size</div>
-                                  </div>
-                                  <div style="flex:1; padding:10px 14px; text-align:center;">
-                                      <div id="cv-stat-langs" style="font-size:1.3rem; font-weight:700; color:#f59e0b;">0</div>
-                                      <div style="font-size:0.65rem; color:#666; text-transform:uppercase; margin-top:2px;">Languages</div>
-                                  </div>
-                              </div>
-                              <!-- Treemap -->
-                              <div id="cv-treemap-wrap" style="flex:1; position:relative; background:#000; overflow:hidden;">
-                                  <div id="cv-treemap" style="position:relative; width:100%; height:100%;">
-                                      <div id="cv-loading" style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;gap:12px;">
-                                          <div style="width:28px;height:28px;border:3px solid #222;border-top-color:#38bdf8;border-radius:50%;animation:cvSpin 0.7s linear infinite;"></div>
-                                          <span>Scanning codebase...</span>
-                                      </div>
-                                  </div>
-                              </div>
-                              <!-- Lang bar -->
-                              <div id="cv-lang-bar" style="height:8px; display:flex; flex-shrink:0;"></div>
-                              <!-- Legend -->
-                              <div id="cv-legend" style="display:flex; flex-wrap:wrap; gap:8px; padding:10px 14px; border-top:1px solid #1a1a2e; font-size:0.72rem; color:#888; flex-shrink:0;"></div>
-                          </div>
-
-                          <!-- RIGHT PANEL: File browser + Code viewer -->
-                          <div id="cv-right" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
-                              <!-- File list header -->
-                              <div id="cv-file-list-header" style="padding:8px 14px; border-bottom:1px solid #1a1a2e; font-size:0.78rem; color:#666; display:flex; justify-content:space-between; flex-shrink:0;">
-                                  <span>Click a block to view code &nbsp;·&nbsp; <span id="cv-selected-file" style="color:#38bdf8;"></span></span>
-                                  <span id="cv-file-info" style="color:#555;"></span>
-                              </div>
-                              <!-- Code viewer -->
-                              <div id="cv-code-wrap" style="flex:1; overflow:auto; background:#050508;">
-                                  <pre id="cv-code" style="margin:0; padding:18px; font-family:'Fira Code','Cascadia Code','Consolas',monospace; font-size:0.8rem; color:#cdd6f4; line-height:1.6; white-space:pre; tab-size:4; min-height:100%;"><span style="color:#444; font-style:italic;">← Select a file from the treemap to view its code</span></pre>
-                              </div>
-                              <!-- File tree -->
-                              <div id="cv-file-tree" style="height:220px; overflow-y:auto; border-top:1px solid #1a1a2e; background:#0a0a0f; flex-shrink:0; padding:8px 0;">
-                              </div>
-                          </div>
+                      <div class="modal-body" style="padding:15px; overflow-y:auto; height:calc(100vh - 56px);">
+                          <div id="cv-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px;"></div>
                       </div>
                   </div>
               </div>
           </div>
 
           <style>
-              @keyframes cvSpin { to { transform: rotate(360deg); } }
-              .cv-node { position:absolute; border:1px solid rgba(0,0,0,0.4); overflow:hidden; cursor:pointer; transition:filter 0.12s, box-shadow 0.12s; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; }
-              .cv-node:hover { filter:brightness(1.4); z-index:20; box-shadow:0 0 0 2px rgba(56,189,248,0.6); }
-              .cv-node.cv-active { box-shadow:0 0 0 2px #38bdf8 !important; filter:brightness(1.5) !important; z-index:30; }
-              .cv-node .cv-lbl { font-size:0.65rem; font-weight:700; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:90%; text-align:center; text-shadow:0 1px 3px rgba(0,0,0,0.9); }
-              .cv-node .cv-sub { font-size:0.58rem; color:rgba(255,255,255,0.7); text-align:center; }
-              .cv-tree-item { display:flex; align-items:center; gap:8px; padding:4px 14px; cursor:pointer; font-size:0.78rem; color:#888; transition:background 0.1s; }
-              .cv-tree-item:hover { background:rgba(56,189,248,0.08); color:#e0e0e0; }
-              .cv-tree-item.cv-active { background:rgba(56,189,248,0.12); color:#38bdf8; }
-              .cv-tree-dir { padding:4px 14px; font-size:0.75rem; color:#555; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; border-top:1px solid #111; margin-top:4px; }
-              .cv-ext-badge { display:inline-block; padding:1px 5px; border-radius:3px; font-size:0.65rem; font-weight:700; margin-right:4px; }
-              #cv-search::placeholder { color:#444; }
-              /* Syntax highlight classes */
-              .cv-kw  { color:#c792ea; }
-              .cv-str { color:#c3e88d; }
-              .cv-cmt { color:#546e7a; font-style:italic; }
-              .cv-fn  { color:#82aaff; }
-              .cv-num { color:#f78c6c; }
-              .cv-tag { color:#f07178; }
-              .cv-atr { color:#ffcb6b; }
+              .cv-card { background:#1a1a2e; border:1px solid #333; border-radius:8px; overflow:hidden; display:flex; flex-direction:column; transition:transform 0.15s, background 0.15s; }
+              .cv-card:hover { transform:translateY(-2px); background:#202038; border-color:#444; }
+              .cv-card-header { background:#0f0f18; padding:10px 14px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center; }
+              .cv-card-title { font-size:0.9rem; font-weight:600; color:#38bdf8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; }
+              .cv-card-meta { font-size:0.7rem; color:#666; }
+              .cv-card-code { flex:1; overflow:hidden; background:#0a0a0f; font-family:'Fira Code','Consolas',monospace; font-size:0.75rem; color:#ccc; line-height:1.4; white-space:pre-wrap; word-break:break-word; padding:10px; max-height:300px; overflow-y:auto; }
+              .cv-card-code::-webkit-scrollbar { width:4px; }
+              .cv-card-code::-webkit-scrollbar-track { background:#0a0a0f; }
+              .cv-card-code::-webkit-scrollbar-thumb { background:#333; border-radius:2px; }
+              .cv-card-code::-webkit-scrollbar-thumb:hover { background:#444; }
+              #cv-search { font-size:0.85rem; }
+              .cv-empty { grid-column:1/-1; text-align:center; color:#666; padding:40px; }
           </style>
 
           <script>
           (function() {
-              var cvFiles = []; // flat list of all files
-              var cvCurrentPath = '';
+              var cvAllFiles = [];
 
-              var CV_COLORS = {
-                  'php': '#8b5cf6', 'js': '#f59e0b', 'ts': '#3b82f6',
-                  'css': '#06b6d4', 'html': '#ef4444', 'htm': '#ef4444',
-                  'py':  '#3b82f6', 'java':'#ef4444', 'c':'#6b7280',
-                  'cpp': '#6b7280', 'h':  '#6b7280', 'rb':'#ef4444',
-                  'go':  '#06b6d4', 'rs': '#f97316', 'json':'#10b981',
-                  'xml': '#10b981', 'yml':'#10b981', 'yaml':'#10b981',
-                  'sh':  '#4ade80', 'bat':'#4ade80', 'sql':'#a78bfa',
-                  'md':  '#94a3b8', 'txt':'#94a3b8', 'env':'#fbbf24',
-                  'ini': '#fbbf24', 'conf':'#fbbf24', 'htaccess':'#f472b6',
-                  'default': '#6b7280'
-              };
-
-              function cvColor(ext) { return CV_COLORS[ext] || CV_COLORS['default']; }
-
-              function cvFmtSize(b) {
-                  if (b >= 1048576) return (b/1048576).toFixed(1)+' MB';
-                  if (b >= 1024)    return (b/1024).toFixed(1)+' KB';
-                  return b+' B';
-              }
-
-              function cvFlattenTree(tree, result) {
-                  if (!result) result = [];
-                  tree.forEach(function(item) {
-                      if (item.type === 'file') result.push(item);
-                      else if (item.children) cvFlattenTree(item.children, result);
-                  });
-                  return result;
-              }
-
-              function cvBuildStats(files) {
-                  var totalLines = 0, totalSize = 0, langs = {};
-                  files.forEach(function(f) {
-                      totalLines += f.lines || 0;
-                      totalSize  += f.size  || 0;
-                      langs[f.ext] = (langs[f.ext] || 0) + 1;
-                  });
-                  document.getElementById('cv-stat-files').textContent = files.length;
-                  document.getElementById('cv-stat-lines').textContent = totalLines.toLocaleString();
-                  document.getElementById('cv-stat-size').textContent  = cvFmtSize(totalSize);
-                  document.getElementById('cv-stat-langs').textContent  = Object.keys(langs).length;
-                  return langs;
-              }
-
-              function cvBuildLangBar(files) {
-                  var totalSize = files.reduce(function(a,f){return a+f.size;},0);
-                  var byExt = {};
-                  files.forEach(function(f){ byExt[f.ext]=(byExt[f.ext]||0)+f.size; });
-                  var bar = document.getElementById('cv-lang-bar');
-                  bar.innerHTML = '';
-                  Object.keys(byExt).sort(function(a,b){return byExt[b]-byExt[a];}).forEach(function(ext) {
-                      var pct = (byExt[ext]/totalSize*100).toFixed(2);
-                      var seg = document.createElement('div');
-                      seg.style.cssText = 'width:'+pct+'%; background:'+cvColor(ext)+'; transition:width 0.4s;';
-                      seg.title = ext + ': ' + pct + '%';
-                      bar.appendChild(seg);
-                  });
-              }
-
-              function cvBuildLegend(langs) {
-                  var leg = document.getElementById('cv-legend');
-                  leg.innerHTML = '';
-                  Object.keys(langs).sort().forEach(function(ext) {
-                      var item = document.createElement('span');
-                      item.style.display = 'flex'; item.style.alignItems = 'center'; item.style.gap = '4px';
-                      item.innerHTML = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+cvColor(ext)+'"></span>'+
-                          '<span>.'+ext+' ('+langs[ext]+')</span>';
-                      leg.appendChild(item);
-                  });
-              }
-
-              // Treemap layout
-              function cvLayout(items, x, y, w, h) {
-                  if (!items.length) return;
-                  var total = items.reduce(function(a,b){return a+b.size;},0);
-                  var ratio = items[0].size / total;
-                  var nw,nh,nx,ny;
-                  if (w >= h) {
-                      nw=w*ratio; nh=h; nx=x+nw; ny=y;
-                      cvDrawNode(items[0], x, y, nw, nh);
-                      cvLayout(items.slice(1), nx, ny, w-nw, h);
-                  } else {
-                      nw=w; nh=h*ratio; nx=x; ny=y+nh;
-                      cvDrawNode(items[0], x, y, nw, nh);
-                      cvLayout(items.slice(1), nx, ny, w, h-nh);
+              function cvHighlight(code, ext) {
+                  // Simple syntax coloring
+                  if (['php','js','ts','py'].includes(ext)) {
+                      code = code.replace(/(\/\/.*|\/\*[\s\S]*?\*\/|#.*)/g, '<span style="color:#666;">$1</span>');
+                      code = code.replace(/\b(function|class|return|if|else|for|while|var|let|const|new|import|export|async|await|try|catch|def|if|elif|else|for|while|class)\b/g, '<span style="color:#a78bfa;">$1</span>');
+                      code = code.replace(/(["\']).*?\1/g, function(m) { return '<span style="color:#7ee787;">'+m+'</span>'; });
+                  } else if (['html','htm','xml'].includes(ext)) {
+                      code = code.replace(/(&lt;\/?[\w:-]+)/g, '<span style="color:#f472b6;">$1</span>');
+                      code = code.replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span style="color:#666;">$1</span>');
+                  } else if (ext === 'css') {
+                      code = code.replace(/([a-z-]+\s*:)/g, '<span style="color:#fbbf24;">$1</span>');
+                      code = code.replace(/#[0-9a-fA-F]{3,8}/g, function(m) { return '<span style="color:'+m+';">'+m+'</span>'; });
                   }
+                  return code;
               }
 
-              function cvDrawNode(file, x, y, w, h) {
-                  if (w < 4 || h < 4) return;
-                  var node = document.createElement('div');
-                  node.className = 'cv-node';
-                  node.dataset.path = file.path;
-                  node.style.cssText = 'left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+cvColor(file.ext)+';opacity:0.85;';
-                  node.title = file.path + '\n' + (file.lines||0)+' lines · '+cvFmtSize(file.size);
-                  if (w > 36 && h > 24) {
-                      var nm = document.createElement('div'); nm.className='cv-lbl';
-                      nm.textContent = file.name;
-                      node.appendChild(nm);
-                  }
-                  if (w > 50 && h > 40) {
-                      var sub = document.createElement('div'); sub.className='cv-sub';
-                      sub.textContent = (file.lines||0)+' lines';
-                      node.appendChild(sub);
-                  }
-                  node.addEventListener('click', function(e) {
-                      e.stopPropagation();
-                      cvShowFile(file);
+              function cvRender() {
+                  var grid = document.getElementById('cv-grid');
+                  var query = (document.getElementById('cv-search').value || '').toLowerCase();
+                  
+                  var filtered = cvAllFiles.filter(function(f) {
+                      return f.path.toLowerCase().includes(query);
                   });
-                  document.getElementById('cv-treemap').appendChild(node);
-              }
 
-              function cvRenderTreemap(files) {
-                  var tm = document.getElementById('cv-treemap');
-                  tm.innerHTML = '';
-                  if (!files.length) {
-                      tm.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;">No code files found</div>';
+                  if (!filtered.length) {
+                      grid.innerHTML = '<div class="cv-empty">No files found</div>';
                       return;
                   }
-                  var wrap = document.getElementById('cv-treemap-wrap');
-                  var W = wrap.offsetWidth, H = wrap.offsetHeight;
-                  tm.style.width = W+'px'; tm.style.height = H+'px';
-                  var sorted = files.slice().sort(function(a,b){return b.size-a.size;});
-                  cvLayout(sorted, 0, 0, W, H);
+
+                  grid.innerHTML = filtered.map(function(f) {
+                      var lines = (f.content || '').split('\n').slice(0, 12).join('\n');
+                      var escaped = lines.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                      var highlighted = cvHighlight(escaped, f.ext);
+                      var lineCount = (f.content || '').split('\n').length;
+                      return '<div class="cv-card">'+
+                          '<div class="cv-card-header">'+
+                              '<span class="cv-card-title">'+f.path+'</span>'+
+                              '<span class="cv-card-meta">.'+f.ext+'</span>'+
+                          '</div>'+
+                          '<div class="cv-card-code">'+highlighted+'</div>'+
+                          '<div style="padding:8px 14px; background:#0f0f18; font-size:0.7rem; color:#666; border-top:1px solid #333;">'+
+                              lineCount+' lines'+
+                          '</div>'+
+                      '</div>';
+                  }).join('');
               }
 
-              function cvBuildFileTree(tree) {
-                  var container = document.getElementById('cv-file-tree');
-                  container.innerHTML = '';
-                  function renderNode(items, indent) {
-                      items.forEach(function(item) {
-                          if (item.type === 'dir') {
-                              var dirEl = document.createElement('div');
-                              dirEl.className = 'cv-tree-dir';
-                              dirEl.style.paddingLeft = (14 + indent*12)+'px';
-                              dirEl.innerHTML = '<i class="fa fa-folder" style="color:#f59e0b;margin-right:5px;"></i>' + item.name;
-                              container.appendChild(dirEl);
-                              if (item.children) renderNode(item.children, indent+1);
-                          } else {
-                              var el = document.createElement('div');
-                              el.className = 'cv-tree-item';
-                              el.dataset.path = item.path;
-                              el.style.paddingLeft = (14 + indent*12)+'px';
-                              el.innerHTML = '<span class="cv-ext-badge" style="background:'+cvColor(item.ext)+'20;color:'+cvColor(item.ext)+'">'+item.ext+'</span>' +
-                                  '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.name+'</span>' +
-                                  '<span style="color:#444;font-size:0.7rem;margin-left:4px;">'+(item.lines||0)+'L</span>';
-                              el.addEventListener('click', function() { cvShowFile(item); });
-                              container.appendChild(el);
-                          }
-                      });
-                  }
-                  renderNode(tree, 0);
-              }
-
-              // Simple syntax highlighter
-              function cvHighlight(code, ext) {
-                  var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-                  if (['php','js','ts','py','java','c','cpp','h','rb','go','rs','sh','bat'].includes(ext)) {
-                      // Comments
-                      escaped = escaped.replace(/(\/\/[^\n]*|#[^\n]*)/g, '<span class="cv-cmt">$1</span>');
-                      escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="cv-cmt">$1</span>');
-                      // Strings
-                      escaped = escaped.replace(/(&quot;[^&]*?&quot;|&#039;[^&]*?&#039;)/g, '<span class="cv-str">$1</span>');
-                      escaped = escaped.replace(/(`[^`]*?`)/g, '<span class="cv-str">$1</span>');
-                      // Keywords
-                      var kws = ext === 'php'
-                          ? 'function|class|return|if|else|elseif|foreach|for|while|echo|print|new|public|private|protected|static|extends|implements|namespace|use|require|include|try|catch|throw|null|true|false|array'
-                          : 'function|class|return|if|else|for|while|const|let|var|new|import|export|from|async|await|try|catch|throw|null|true|false|undefined|type|interface|extends';
-                      escaped = escaped.replace(new RegExp('\\b('+kws+')\\b', 'g'), '<span class="cv-kw">$1</span>');
-                      // Numbers
-                      escaped = escaped.replace(/\b(\d+\.?\d*)\b/g, '<span class="cv-num">$1</span>');
-                  } else if (['html','htm','xml'].includes(ext)) {
-                      escaped = escaped.replace(/(&lt;\/?[\w:.-]+)/g, '<span class="cv-tag">$1</span>');
-                      escaped = escaped.replace(/([\w-]+=)/g, '<span class="cv-atr">$1</span>');
-                      escaped = escaped.replace(/(&quot;[^&]*?&quot;)/g, '<span class="cv-str">$1</span>');
-                      escaped = escaped.replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="cv-cmt">$1</span>');
-                  } else if (ext === 'css') {
-                      escaped = escaped.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="cv-cmt">$1</span>');
-                      escaped = escaped.replace(/(#[0-9a-fA-F]{3,8})\b/g, '<span style="color:$1">$1</span>');
-                      escaped = escaped.replace(/([a-z-]+\s*:)/g, '<span class="cv-atr">$1</span>');
-                  } else if (['json','yml','yaml'].includes(ext)) {
-                      escaped = escaped.replace(/(&quot;[^&]*?&quot;)\s*:/g, '<span class="cv-kw">$1</span>:');
-                      escaped = escaped.replace(/:\s*(&quot;[^&]*?&quot;)/g, ': <span class="cv-str">$1</span>');
-                      escaped = escaped.replace(/\b(true|false|null)\b/g, '<span class="cv-num">$1</span>');
-                  } else if (ext === 'sql') {
-                      escaped = escaped.replace(/\b(SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|TABLE|INDEX|JOIN|ON|AND|OR|NOT|NULL|PRIMARY|KEY|AUTO_INCREMENT|DEFAULT|INNER|LEFT|RIGHT|OUTER|GROUP BY|ORDER BY|LIMIT|OFFSET)\b/gi,
-                          '<span class="cv-kw">$1</span>');
-                  }
-                  return '<span style="color:#555;user-select:none;margin-right:12px;display:inline-block;min-width:3em;text-align:right;font-size:0.75rem;">' +
-                      '${LINE}</span>' + escaped; // line numbers added below
-              }
-
-              function cvAddLineNumbers(code, ext) {
-                  var lines = code.split('\n');
-                  var highlighted = lines.map(function(line, i) {
-                      var escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                      var lnSpan = '<span style="color:#333;user-select:none;margin-right:12px;display:inline-block;min-width:3em;text-align:right;font-size:0.75rem;">'+(i+1)+'</span>';
-                      return lnSpan + escaped;
-                  });
-                  return highlighted.join('\n');
-              }
-
-              window.cvShowFile = function(file) {
-                  // Highlight active node
-                  document.querySelectorAll('.cv-node').forEach(function(n){n.classList.remove('cv-active');});
-                  var activeNode = document.querySelector('.cv-node[data-path="'+CSS.escape(file.path)+'"]');
-                  if (activeNode) activeNode.classList.add('cv-active');
-
-                  // Highlight active tree item
-                  document.querySelectorAll('.cv-tree-item').forEach(function(n){n.classList.remove('cv-active');});
-                  var activeTree = document.querySelector('.cv-tree-item[data-path="'+CSS.escape(file.path)+'"]');
-                  if (activeTree) { activeTree.classList.add('cv-active'); activeTree.scrollIntoView({block:'nearest'}); }
-
-                  // Update header
-                  document.getElementById('cv-selected-file').textContent = file.path;
-                  document.getElementById('cv-file-info').textContent = (file.lines||0)+' lines · '+cvFmtSize(file.size||0)+' · .'+file.ext;
-
-                  // Render code with line numbers
-                  var code = document.getElementById('cv-code');
-                  code.innerHTML = cvAddLineNumbers(file.content || '', file.ext);
-              };
-
-              function cvRender(data) {
-                  cvFiles = cvFlattenTree(data.tree);
-                  var langs = cvBuildStats(cvFiles);
-                  cvBuildLangBar(cvFiles);
-                  cvBuildLegend(langs);
-                  cvRenderTreemap(cvFiles);
-                  cvBuildFileTree(data.tree);
-                  document.getElementById('cv-scan-label').textContent = '— ' + data.root;
-                  document.getElementById('cv-code').innerHTML = '<span style="color:#444;font-style:italic;">← Select a file from the treemap to view its code</span>';
-                  document.getElementById('cv-selected-file').textContent = '';
-                  document.getElementById('cv-file-info').textContent = '';
-              }
-
-              function cvLoad(path) {
-                  var tm = document.getElementById('cv-treemap');
-                  tm.innerHTML = '<div id="cv-loading" style="display:flex;align-items:center;justify-content:center;height:100%;color:#555;gap:12px;"><div style="width:28px;height:28px;border:3px solid #222;border-top-color:#38bdf8;border-radius:50%;animation:cvSpin 0.7s linear infinite;"></div><span>Scanning codebase...</span></div>';
-                  document.getElementById('cv-file-tree').innerHTML = '';
-                  cvCurrentPath = path;
-
+              window.showCodebaseVisualizer = function() {
+                  var modal = document.getElementById('codebaseVisualizerModal');
+                  new (window.bootstrap ? window.bootstrap.Modal : window.$.fn.modal.Constructor)(modal).show();
+                  
+                  var grid = document.getElementById('cv-grid');
+                  grid.innerHTML = '<div class="cv-empty"><div style="margin:20px 0;"><div style="font-size:1.2rem; color:#555; margin-bottom:10px;"><i class="fa fa-spinner fa-spin"></i></div>Scanning codebase...</div></div>';
+                  
+                  var urlParams = new URLSearchParams(window.location.search);
+                  var path = urlParams.get('p') || '';
+                  
                   $.ajax({
                       type: 'POST',
                       url: window.location.pathname + window.location.search,
@@ -11882,52 +11717,47 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       dataType: 'json',
                       success: function(res) {
                           if (res && res.success) {
-                              cvRender(res);
-                          } else {
-                              document.getElementById('cv-treemap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Error loading codebase</div>';
+                              cvAllFiles = [];
+                              function flattenTree(node) {
+                                  if (!node) return;
+                                  
+                                  // Handle new structure: {files: [], dirs: []}
+                                  if (node.files && Array.isArray(node.files)) {
+                                      node.files.forEach(function(item) {
+                                          if (item.type === 'file' || item.isFile) {
+                                              cvAllFiles.push(item);
+                                          }
+                                      });
+                                  }
+                                  
+                                  if (node.dirs && Array.isArray(node.dirs)) {
+                                      node.dirs.forEach(function(dir) {
+                                          if (dir.children) {
+                                              flattenTree(dir.children);
+                                          }
+                                      });
+                                  }
+                                  
+                                  // Handle old structure: array of items
+                                  if (Array.isArray(node)) {
+                                      node.forEach(function(item) {
+                                          if (item.type === 'file') {
+                                              cvAllFiles.push(item);
+                                          } else if (item.children) {
+                                              flattenTree(item.children);
+                                          }
+                                      });
+                                  }
+                              }
+                              flattenTree(res.tree);
+                              cvRender();
                           }
-                      },
-                      error: function() {
-                          document.getElementById('cv-treemap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;">Request failed</div>';
                       }
                   });
-              }
-
-              window.showCodebaseVisualizer = function() {
-                  var urlParams = new URLSearchParams(window.location.search);
-                  var path = urlParams.get('p') || '';
-                  $('#codebaseVisualizerModal').modal('show');
-                  cvLoad(path);
-              };
-
-              window.cvRescan = function() {
-                  cvLoad(cvCurrentPath);
               };
 
               // Search filter
-              $(document).on('input', '#cv-search', function() {
-                  var q = this.value.toLowerCase();
-                  if (!q) {
-                      cvRenderTreemap(cvFiles);
-                      return;
-                  }
-                  var filtered = cvFiles.filter(function(f){ return f.path.toLowerCase().includes(q); });
-                  cvRenderTreemap(filtered);
-                  // Also filter tree list
-                  document.querySelectorAll('.cv-tree-item').forEach(function(el) {
-                      var p = (el.dataset.path || '').toLowerCase();
-                      el.style.display = p.includes(q) ? '' : 'none';
-                  });
-              });
-
-              // Resize handler
-              window.addEventListener('resize', function() {
-                  if (window._cvResizeTimer) clearTimeout(window._cvResizeTimer);
-                  window._cvResizeTimer = setTimeout(function(){
-                      if (cvFiles.length) cvRenderTreemap(cvFiles);
-                  }, 250);
-              });
-
+              $(document).on('input', '#cv-search', cvRender);
           })();
           </script>
           <script>
@@ -12325,6 +12155,702 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               .video-placeholder { font-size: 32px; opacity: 0.3; }
               .video-thumb-target { width: 100%; height: 100%; object-fit: cover; z-index: 1; }
           </style>
+
+          <!-- Codebase Visualizer JS Engine -->
+          <script>
+          // ======= SQUARIFIED TREEMAP ENGINE =======
+          const CV = {
+              data: null,
+              currentPath: '/',
+              pathStack: ['/'],  // For back button
+              canvas: null,
+              ctx: null,
+              minimapCanvas: null,
+              minimapCtx: null,
+              selectedItem: null,
+              searchResults: [],
+              viewportRect: { x: 0, y: 0, w: 0, h: 0 },
+              items: [],
+              langColors: {
+                  'PHP': '#8892BE', 'Python': '#3776AB', 'JavaScript': '#F7DF1E',
+                  'TypeScript': '#3178C6', 'C++': '#00599C', 'Java': '#007396',
+                  'Go': '#00ADD8', 'Rust': '#CE422B', 'Ruby': '#CC342D',
+                  'CSS': '#563D7C', 'HTML': '#E34C26', 'SQL': '#CC2927',
+                  'JSON': '#292929', 'YAML': '#CB171E', 'Markdown': '#083FA1',
+                  'Vue': '#42B983', 'Shell': '#89E051', 'C': '#A8B9CC',
+                  'TypeScript React': '#61DAFB', 'JavaScript React': '#61DAFB',
+                  'C#': '#239120', 'Swift': '#FA7343'
+              },
+
+              init() {
+                  this.canvas = document.getElementById('cvTreemap');
+                  this.ctx = this.canvas.getContext('2d');
+                  this.minimapCanvas = document.getElementById('cvMinimap');
+                  this.minimapCtx = this.minimapCanvas.getContext('2d');
+                  this.resizeCanvas();
+                  window.addEventListener('resize', () => this.resizeCanvas());
+                  this.setupEventListeners();
+                  this.setupMinimapInteraction();
+              },
+
+              setupMinimapInteraction() {
+                  if (!this.minimapCanvas) return;
+                  this.minimapCanvas.addEventListener('click', (e) => this.handleMinimapClick(e));
+                  this.minimapCanvas.addEventListener('mousemove', (e) => this.handleMinimapMouseMove(e));
+                  this.minimapCanvas.style.cursor = 'crosshair';
+              },
+
+              handleMinimapMouseMove(e) {
+                  if (!this.minimapCanvas || this.items.length === 0) return;
+                  const rect = this.minimapCanvas.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const y = e.clientY - rect.top;
+                  
+                  const scale = Math.min(this.minimapCanvas.width / this.viewportRect.w, this.minimapCanvas.height / this.viewportRect.h) * 0.95;
+                  
+                  for (let item of this.items) {
+                      const mx = item.rect.x * scale;
+                      const my = item.rect.y * scale;
+                      const mw = Math.max(1, item.rect.w * scale);
+                      const mh = Math.max(1, item.rect.h * scale);
+                      
+                      if (x >= mx && x <= mx + mw && y >= my && y <= my + mh) {
+                          const tooltip = document.getElementById('cvTooltip');
+                          if (tooltip) {
+                              const info = `<strong>${item.name}</strong><br/>${item.isFile ? 'File' : 'Folder'}`;
+                              tooltip.innerHTML = info;
+                              tooltip.style.display = 'block';
+                              tooltip.style.left = (e.clientX + 10) + 'px';
+                              tooltip.style.top = (e.clientY + 10) + 'px';
+                          }
+                          return;
+                      }
+                  }
+                  
+                  const tooltip = document.getElementById('cvTooltip');
+                  if (tooltip) tooltip.style.display = 'none';
+              },
+
+              handleMinimapClick(e) {
+                  if (!this.minimapCanvas || this.items.length === 0) return;
+                  const rect = this.minimapCanvas.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const y = e.clientY - rect.top;
+                  
+                  // Click on minimap to focus that area in main view
+                  // Find which item was clicked
+                  const scale = Math.min(this.minimapCanvas.width / this.viewportRect.w, this.minimapCanvas.height / this.viewportRect.h) * 0.95;
+                  
+                  for (let item of this.items) {
+                      const mx = item.rect.x * scale;
+                      const my = item.rect.y * scale;
+                      const mw = Math.max(1, item.rect.w * scale);
+                      const mh = Math.max(1, item.rect.h * scale);
+                      
+                      if (x >= mx && x <= mx + mw && y >= my && y <= my + mh) {
+                          if (!item.isFile) {
+                              this.drill_to(item.path);
+                          } else {
+                              this.selectedItem = item;
+                              this.loadAndShowSource(item);
+                              this.render();
+                          }
+                          return;
+                      }
+                  }
+              },
+
+              resizeCanvas() {
+                  const container = document.getElementById('cvTreemapContainer');
+                  if (!container) return;
+                  const rect = container.getBoundingClientRect();
+                  this.canvas.width = rect.width;
+                  this.canvas.height = rect.height;
+                  if (this.data) this.render();
+              },
+
+              setupEventListeners() {
+                  this.canvas.addEventListener('click', (e) => this.handleCanvasClick(e));
+                  this.canvas.addEventListener('mousemove', (e) => this.handleCanvasMouseMove(e));
+                  this.canvas.addEventListener('wheel', (e) => this.handleCanvasWheel(e));
+                  const search = document.getElementById('cvSearch');
+                  if (search) search.addEventListener('input', (e) => this.handleSearch(e));
+              },
+
+              async loadCodebase(path = '/') {
+                  try {
+                      const response = await fetch('', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                          body: 'type=get_codebase&path=' + encodeURIComponent(path)
+                      });
+                      const result = await response.json();
+                      if (!result.success) throw new Error('Failed to load codebase');
+                      this.data = result.tree;
+                      this.currentPath = path;
+                      this.render();
+                  } catch (e) {
+                      console.error('Codebase load error:', e);
+                      alert('Error loading codebase: ' + e.message);
+                  }
+              },
+
+              // Squarified treemap layout algorithm (simplified version)
+              squarify(items, rect) {
+                  if (items.length === 0 || rect.w <= 0 || rect.h <= 0) return [];
+                  const totalSize = items.reduce((sum, i) => sum + i.size, 0);
+                  if (totalSize === 0) return [];
+
+                  items.sort((a, b) => b.size - a.size);
+                  const result = [];
+                  this.layout(items, rect, totalSize, result);
+                  return result;
+              },
+
+              layout(items, rect, totalSize, result) {
+                  if (items.length === 0 || rect.w <= 0 || rect.h <= 0) return;
+                  
+                  // Single item case
+                  if (items.length === 1) {
+                      result.push({...items[0], rect: rect});
+                      return;
+                  }
+
+                  // Decide split direction based on aspect ratio
+                  const isHorizontal = rect.w >= rect.h;
+                  const length = isHorizontal ? rect.w : rect.h;
+                  const depth = isHorizontal ? rect.h : rect.w;
+
+                  // Greedily partition items into rows
+                  let row = [items[0]];
+                  let rowSize = items[0].size;
+                  let i = 1;
+
+                  while (i < items.length) {
+                      const newItem = items[i];
+                      const newRowSize = rowSize + newItem.size;
+                      const currentWorst = this.worstAspect(row, rowSize, length, depth);
+                      const newWorst = this.worstAspect([...row, newItem], newRowSize, length, depth);
+                      
+                      if (newWorst <= currentWorst) {
+                          row.push(newItem);
+                          rowSize = newRowSize;
+                      }
+                      i++;
+                  }
+
+                  // Layout current row
+                  const rowLength = rowSize / totalSize * length;
+                  const rects = this.layoutRow(row, rowSize, isHorizontal, rect.x, rect.y, length, depth, rowLength);
+                  result.push(...rects);
+
+                  // Recursively layout remaining items
+                  const remaining = items.slice(row.length);
+                  if (remaining.length > 0) {
+                      const newRect = isHorizontal 
+                          ? {x: rect.x + rowLength, y: rect.y, w: rect.w - rowLength, h: rect.h}
+                          : {x: rect.x, y: rect.y + rowLength, w: rect.w, h: rect.h - rowLength};
+                      this.layout(remaining, newRect, totalSize, result);
+                  }
+              },
+
+              worstAspect(items, size, length, depth) {
+                  if (size === 0) return 1000;
+                  const rowLength = size / (size + 1) * length; // Approximate
+                  let worst = 0;
+                  for (let item of items) {
+                      const ratio = (item.size / size) * rowLength / depth;
+                      const ar = ratio > 1 ? ratio : 1 / ratio;
+                      worst = Math.max(worst, ar);
+                  }
+                  return worst;
+              },
+
+              layoutRow(items, rowSize, isHorizontal, x, y, length, depth, rowLength) {
+                  const rects = [];
+                  let pos = 0;
+                  for (let item of items) {
+                      const itemLength = rowSize > 0 ? (item.size / rowSize) * rowLength : 0;
+                      if (isHorizontal) {
+                          rects.push({...item, rect: {x: x + pos, y: y, w: itemLength, h: depth}});
+                          pos += itemLength;
+                      } else {
+                          rects.push({...item, rect: {x: x, y: y + pos, w: depth, h: itemLength}});
+                          pos += itemLength;
+                      }
+                  }
+                  return rects;
+              },
+
+              render() {
+                  if (!this.canvas || !this.data) return;
+                  
+                  const rect = this.getCanvasRect();
+                  this.viewportRect = rect;
+                  const itemsToLayout = this.getItemsForPath();
+                  this.items = this.squarify(itemsToLayout, rect);
+
+                  this.ctx.fillStyle = '#0a0a0a';
+                  this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                  for (let item of this.items) {
+                      const isSearchMatch = this.searchResults.length > 0 && this.searchResults.some(r => r.path === item.path);
+                      this.drawItem(item, item === this.selectedItem, isSearchMatch);
+                  }
+                  this.updateStats();
+                  this.renderMinimap();
+              },
+
+              getCanvasRect() {
+                  return { x: 2, y: 2, w: this.canvas.width - 4, h: this.canvas.height - 4 };
+              },
+
+              getItemsForPath() {
+                  let current = this.data;
+                  if (this.currentPath !== '/') {
+                      const parts = this.currentPath.split('/').filter(p => p);
+                      for (let part of parts) {
+                          if (!current.dirs) return [];
+                          const found = current.dirs.find(d => d.name === part);
+                          if (!found) return [];
+                          current = found.children;
+                      }
+                  }
+                  const items = [];
+                  if (current.files) items.push(...current.files.map(f => ({...f, isFile: true})));
+                  if (current.dirs) items.push(...current.dirs.map(d => ({...d, isFile: false})));
+                  return items.filter(i => i.size > 0);
+              },
+
+              drawItem(item, selected = false, isSearchMatch = false) {
+                  const r = item.rect;
+                  if (r.w <= 1 || r.h <= 1) return;
+
+                  const color = item.isFile ? (this.langColors[item.lang] || '#666') : '#444';
+                  let alpha = selected ? 1.0 : 0.7;
+                  
+                  // Highlight search matches with glow
+                  if (isSearchMatch && !selected) {
+                      alpha = 0.9;
+                      this.ctx.shadowColor = '#0f0';
+                      this.ctx.shadowBlur = 8;
+                      this.ctx.shadowOffsetX = 0;
+                      this.ctx.shadowOffsetY = 0;
+                  }
+
+                  this.ctx.globalAlpha = alpha;
+                  this.ctx.fillStyle = color;
+                  this.ctx.fillRect(r.x, r.y, r.w, r.h);
+                  this.ctx.shadowColor = 'transparent';
+
+                  this.ctx.globalAlpha = 1.0;
+                  const strokeColor = selected ? '#0ff' : (isSearchMatch ? '#0f0' : '#222');
+                  const lineWidth = selected ? 2 : (isSearchMatch ? 2 : 1);
+                  this.ctx.strokeStyle = strokeColor;
+                  this.ctx.lineWidth = lineWidth;
+                  this.ctx.strokeRect(r.x, r.y, r.w, r.h);
+
+                  // Label
+                  if (r.w > 20 && r.h > 20) {
+                      const fontSize = Math.max(9, Math.min(12, Math.min(r.w, r.h) / 8));
+                      this.ctx.font = `bold ${fontSize}px Arial`;
+                      this.ctx.fillStyle = '#fff';
+                      const text = item.name.length > 15 ? item.name.substring(0, 12) + '...' : item.name;
+                      const metrics = this.ctx.measureText(text);
+                      if (r.w > metrics.width + 8 && r.h > fontSize + 8) {
+                          this.ctx.fillText(text, r.x + 4, r.y + fontSize + 4);
+                      }
+                  }
+              },
+
+              handleCanvasClick(e) {
+                  const rect = this.canvas.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const y = e.clientY - rect.top;
+                  const item = this.items.find(i => this.pointInRect(x, y, i.rect));
+                  if (!item) return;
+
+                  if (item.isFile) {
+                      this.selectedItem = item;
+                      this.loadAndShowSource(item);
+                      this.render();
+                  } else {
+                      this.drill_to(item.path);
+                  }
+              },
+
+              handleCanvasMouseMove(e) {
+                  const rect = this.canvas.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const y = e.clientY - rect.top;
+                  const item = this.items.find(i => this.pointInRect(x, y, i.rect));
+                  this.canvas.style.cursor = item ? 'pointer' : 'default';
+
+                  if (item) {
+                      this.showTooltip(e, item);
+                  } else {
+                      const tooltip = document.getElementById('cvTooltip');
+                      if (tooltip) tooltip.style.display = 'none';
+                  }
+              },
+
+              handleCanvasWheel(e) {
+                  e.preventDefault();
+                  // Zoom implementation (future)
+              },
+
+              handleSearch(e) {
+                  const query = e.target.value.toLowerCase().trim();
+                  if (!query) {
+                      this.searchResults = [];
+                      this.render();
+                      this.showSearchResults([]);
+                      return;
+                  }
+                  
+                  this.searchResults = this.findMatches(query);
+                  this.showSearchResults(this.searchResults);
+                  
+                  // Auto-drill to first result's parent folder
+                  if (this.searchResults.length > 0) {
+                      const firstResult = this.searchResults[0];
+                      if (firstResult.fullPath) {
+                          const parentPath = firstResult.fullPath.substring(0, firstResult.fullPath.lastIndexOf('/'));
+                          if (parentPath && parentPath !== this.currentPath) {
+                              this.drill_to(parentPath || '/');
+                          } else {
+                              this.render();
+                          }
+                      }
+                  } else {
+                      this.render();
+                  }
+              },
+
+              findMatches(query) {
+                  const results = [];
+                  const search = (items, path = '') => {
+                      if (items.files) {
+                          items.files.forEach(f => {
+                              if (f.name.toLowerCase().includes(query)) results.push({...f, fullPath: path + '/' + f.name});
+                          });
+                      }
+                      if (items.dirs) {
+                          items.dirs.forEach(d => {
+                              if (d.name.toLowerCase().includes(query)) results.push({...d, fullPath: path + '/' + d.name});
+                              search(d.children, path + '/' + d.name);
+                          });
+                      }
+                  };
+                  search(this.data);
+                  return results;
+              },
+
+              showSearchResults(results) {
+                  const search = document.getElementById('cvSearch');
+                  if (!search) return;
+                  
+                  // Show result count
+                  if (results.length > 0) {
+                      search.style.borderColor = '#0f0';
+                      search.title = `${results.length} results found`;
+                  } else if (search.value.trim()) {
+                      search.style.borderColor = '#f00';
+                      search.title = 'No results found';
+                  } else {
+                      search.style.borderColor = '#444';
+                      search.title = '';
+                  }
+              },
+
+              showTooltip(e, item) {
+                  const tooltip = document.getElementById('cvTooltip');
+                  const info = `<strong>${item.name}</strong><br/>
+                      ${item.isFile ? `LOC: ${item.lines}<br/>Size: ${(item.size/1024).toFixed(1)}KB<br/>Lang: ${item.lang}` : `Files: ${item.files}<br/>Size: ${(item.size/1024/1024).toFixed(1)}MB`}`;
+                  tooltip.innerHTML = info;
+                  tooltip.style.display = 'block';
+                  tooltip.style.left = (e.clientX + 10) + 'px';
+                  tooltip.style.top = (e.clientY + 10) + 'px';
+              },
+
+              pointInRect(x, y, rect) {
+                  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+              },
+
+              drill_to(path) {
+                  if (path !== this.currentPath) {
+                      this.pathStack.push(path);
+                      this.currentPath = path;
+                      this.selectedItem = null;
+                      this.updateBreadcrumb();
+                      this.updateBackButton();
+                      this.render();
+                  }
+              },
+
+              go_back() {
+                  if (this.pathStack.length > 1) {
+                      this.pathStack.pop();
+                      const path = this.pathStack[this.pathStack.length - 1];
+                      this.currentPath = path;
+                      this.selectedItem = null;
+                      this.updateBreadcrumb();
+                      this.updateBackButton();
+                      this.render();
+                  }
+              },
+
+              updateBackButton() {
+                  const btn = document.getElementById('cvBackBtn');
+                  if (btn) {
+                      btn.disabled = this.pathStack.length <= 1;
+                      btn.style.opacity = this.pathStack.length <= 1 ? '0.5' : '1';
+                  }
+              },
+
+              updateBreadcrumb() {
+                  const parts = this.currentPath === '/' ? [] : this.currentPath.split('/').filter(p => p);
+                  let html = '';
+                  let path = '';
+                  
+                  // Build clickable breadcrumb
+                  for (let i = 0; i < parts.length; i++) {
+                      path += '/' + parts[i];
+                      const isLast = i === parts.length - 1;
+                      html += `<span class="badge ${isLast ? 'bg-primary' : 'bg-secondary'} cursor-pointer" 
+                          onclick="cv_drill_to('${path}')" 
+                          title="${path}">${parts[i]}</span>`;
+                      if (!isLast) html += '<span style="margin: 0 2px; color: #666;">›</span>';
+                  }
+                  
+                  // If at root
+                  if (parts.length === 0) {
+                      html = '<span class="badge bg-primary">Root</span>';
+                  }
+                  
+                  const bc = document.getElementById('cvBreadcrumb');
+                  if (bc) bc.innerHTML = html;
+              },
+
+              updateStats() {
+                  const current = this.getItemsForPath();
+                  const totalSize = current.reduce((s, i) => s + i.size, 0);
+                  const totalLines = current.reduce((s, i) => s + i.lines, 0);
+                  const stats = `<small class="text-muted">
+                      <i class="fa fa-files me-1"></i>${current.length} items |
+                      <i class="fa fa-code me-1"></i>${totalLines} LOC |
+                      <i class="fa fa-database me-1"></i>${(totalSize/1024/1024).toFixed(1)}MB
+                  </small>`;
+                  const statsEl = document.getElementById('cvStats');
+                  if (statsEl) statsEl.innerHTML = stats;
+              },
+
+              loadAndShowSource(item) {
+                  if (!item.content) {
+                      fetch('', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                          body: 'type=get_file_content&path=' + encodeURIComponent(item.path)
+                      }).then(r => r.json()).then(d => {
+                          if (d.success) {
+                              this.showSourceViewer(d.content, item);
+                          }
+                      });
+                  } else {
+                      this.showSourceViewer(item.content, item);
+                  }
+              },
+
+              showSourceViewer(content, item) {
+                  const panel = document.getElementById('cvRightPanel');
+                  const header = document.getElementById('cvSourceHeader');
+                  const code = document.getElementById('cvSourceCode');
+                  if (panel && header && code) {
+                      panel.style.width = '35%';
+                      const sizeKB = (item.size/1024).toFixed(1);
+                      const lines = item.lines || content.split('\n').length;
+                      header.textContent = `${item.name} (${lines} LOC, ${sizeKB}KB, ${item.lang || 'Text'})`;
+                      
+                      // Apply basic syntax highlighting
+                      const highlighted = this.applySyntaxHighlight(content, item.ext || item.lang);
+                      code.innerHTML = highlighted;
+                      code.style.color = '#0f0';
+                  }
+              },
+
+              applySyntaxHighlight(code, lang) {
+                  // Escape HTML
+                  code = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  
+                  // Basic patterns for common languages
+                  const patterns = {
+                      'string': /(["'`])((?:\\.|(?!\1).)*?)\1/g,  // Strings
+                      'comment': /(\/\/.*?$)|(\/\*[\s\S]*?\*\/)/gm,  // Comments
+                      'keyword': /\b(function|class|if|else|for|while|return|const|let|var|async|await|import|export|public|private|static|new|this|try|catch|throw)\b/g,
+                      'number': /\b(\d+\.?\d*)\b/g,
+                      'bool': /\b(true|false|null|undefined)\b/g,
+                  };
+                  
+                  // Apply highlighting based on language
+                  if (['js', 'ts', 'tsx', 'jsx', 'javascript', 'typescript'].includes(lang)) {
+                      code = code.replace(patterns.comment, '<span style="color:#666;">$&</span>');
+                      code = code.replace(patterns.string, '<span style="color:#ce9178;">$&</span>');
+                      code = code.replace(patterns.keyword, '<span style="color:#569cd6;">$1</span>');
+                      code = code.replace(patterns.bool, '<span style="color:#569cd6;">$&</span>');
+                      code = code.replace(patterns.number, '<span style="color:#b5cea8;">$&</span>');
+                  } else if (['php'].includes(lang)) {
+                      code = code.replace(patterns.comment, '<span style="color:#666;">$&</span>');
+                      code = code.replace(patterns.string, '<span style="color:#ce9178;">$&</span>');
+                      code = code.replace(patterns.keyword, '<span style="color:#569cd6;">$1</span>');
+                      code = code.replace(patterns.bool, '<span style="color:#569cd6;">$&</span>');
+                  } else if (['py', 'python'].includes(lang)) {
+                      code = code.replace(/^(\s*#.*?)$/gm, '<span style="color:#666;">$1</span>');
+                      code = code.replace(patterns.string, '<span style="color:#ce9178;">$&</span>');
+                      code = code.replace(/\b(def|class|if|else|for|while|return|import|from|as|try|except)\b/g, '<span style="color:#569cd6;">$&</span>');
+                  } else if (['json'].includes(lang)) {
+                      code = code.replace(/"[^"]*":/g, '<span style="color:#569cd6;">$&</span>');
+                      code = code.replace(patterns.string, '<span style="color:#ce9178;">$&</span>');
+                      code = code.replace(patterns.number, '<span style="color:#b5cea8;">$&</span>');
+                      code = code.replace(patterns.bool, '<span style="color:#569cd6;">$&</span>');
+                  } else if (['html', 'htm', 'xml'].includes(lang)) {
+                      code = code.replace(/&lt;[^>]*&gt;/g, '<span style="color:#569cd6;">$&</span>');
+                  } else if (['css', 'scss', 'less'].includes(lang)) {
+                      code = code.replace(/\.[a-zA-Z_-]+|#[a-zA-Z_-]+/g, '<span style="color:#ce9178;">$&</span>');
+                      code = code.replace(/:[^;]+/g, '<span style="color:#569cd6;">$&</span>');
+                  }
+                  
+                  // Add line numbers
+                  const lines = code.split('\n');
+                  return lines.map((line, i) => {
+                      const lineNum = (i + 1).toString().padStart(4, ' ');
+                      return `<span style="color:#666; margin-right: 12px;">${lineNum}</span>${line}`;
+                  }).join('\n');
+              },
+
+              renderMinimap() {
+                  const c = this.minimapCanvas;
+                  if (!c) return;
+                  const ctx = this.minimapCtx;
+                  ctx.fillStyle = '#1a1a1a';
+                  ctx.fillRect(0, 0, c.width, c.height);
+
+                  const scale = Math.min(c.width / this.viewportRect.w, c.height / this.viewportRect.h) * 0.95;
+                  
+                  // Draw all items
+                  for (let item of this.items) {
+                      const color = item.isFile ? (this.langColors[item.lang] || '#666') : '#444';
+                      ctx.fillStyle = color;
+                      ctx.fillRect(
+                          item.rect.x * scale, item.rect.y * scale,
+                          Math.max(1, item.rect.w * scale), Math.max(1, item.rect.h * scale)
+                      );
+                  }
+                  
+                  // Draw border around entire minimap
+                  ctx.strokeStyle = '#333';
+                  ctx.lineWidth = 1;
+                  ctx.strokeRect(0, 0, c.width, c.height);
+                  
+                  // Draw current path indicator at bottom
+                  if (this.currentPath !== '/') {
+                      ctx.font = '8px Arial';
+                      ctx.fillStyle = '#666';
+                      const text = this.currentPath.substring(1).split('/').slice(-1)[0] || 'root';
+                      ctx.fillText(text, 4, c.height - 2);
+                  }
+              },
+          };
+
+          // API
+          function cv_open() {
+              CV.init();
+              CV.loadCodebase('/');
+              const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('codebaseVisualizerModal'));
+              modal.show();
+          }
+          function cv_drill_to(path) { CV.drill_to(path); }
+          function cv_go_back() { CV.go_back(); }
+          function cv_close_viewer() { const panel = document.getElementById('cvRightPanel'); if (panel) panel.style.width = '0'; }
+          function cv_reset() { 
+              CV.currentPath = '/'; 
+              CV.pathStack = ['/'];
+              CV.selectedItem = null;
+              CV.loadCodebase('/'); 
+          }
+          </script>
+          <div class="modal fade" id="codebaseVisualizerModal" tabindex="-1" role="dialog" aria-hidden="true" data-bs-theme="<?php echo FM_THEME; ?>">
+              <div class="modal-dialog modal-fullscreen">
+                  <div class="modal-content" style="background: #0a0a0a; border: none;">
+                      <div class="modal-header border-bottom" style="background: #121212;">
+                          <h5 class="modal-title text-white"><i class="fa fa-sitemap me-2 text-primary"></i> Codebase Visualizer</h5>
+                          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                      </div>
+                      <div class="modal-body p-0" style="display: flex; flex-direction: column; height: calc(100vh - 120px);">
+                          <!-- Toolbar -->
+                          <div style="background: #1a1a1a; border-bottom: 1px solid #333; padding: 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                              <!-- Back + Home Buttons -->
+                              <div style="display: flex; gap: 6px;">
+                                  <button class="btn btn-sm btn-outline-secondary" id="cvBackBtn" onclick="cv_go_back()" title="Go back"><i class="fa fa-arrow-left"></i></button>
+                                  <button class="btn btn-sm btn-outline-secondary" onclick="cv_drill_to('/')" title="Go to root"><i class="fa fa-home"></i></button>
+                              </div>
+
+                              <!-- Breadcrumb Navigation -->
+                              <div id="cvBreadcrumb" style="flex: 1; display: flex; gap: 8px; align-items: center; font-size: 12px; min-width: 200px; overflow-x: auto; padding: 0 8px;">
+                                  <span class="badge bg-secondary cursor-pointer" onclick="cv_drill_to('/')" title="Root">Root</span>
+                              </div>
+
+                              <!-- Search Box -->
+                              <div class="input-group input-group-sm" style="flex: 0 1 250px;">
+                                  <span class="input-group-text" style="background: #222; border-color: #444;"><i class="fa fa-search"></i></span>
+                                  <input type="text" id="cvSearch" class="form-control" placeholder="Search files..." style="background: #222; border-color: #444; color: #fff;">
+                              </div>
+
+                              <!-- Stats -->
+                              <div id="cvStats" style="white-space: nowrap;"></div>
+
+                              <!-- Action Buttons -->
+                              <button class="btn btn-sm btn-outline-secondary" onclick="cv_reset()" title="Reset to root"><i class="fa fa-refresh me-1"></i>Reset</button>
+                          </div>
+
+                          <!-- Main Container: Treemap + Panels -->
+                          <div style="display: flex; flex: 1; overflow: hidden; gap: 0;">
+                              <!-- Minimap (left) -->
+                              <div id="cvMinimapContainer" style="width: 120px; background: #0f0f0f; border-right: 1px solid #333; display: flex; flex-direction: column; position: relative;">
+                                  <div style="padding: 6px; font-size: 10px; font-weight: bold; color: #666; border-bottom: 1px solid #333; text-align: center;">Navigator</div>
+                                  <canvas id="cvMinimap" width="100" height="100" style="flex: 1; background: #1a1a1a; border: 1px solid #444; margin: 4px; cursor: crosshair;"></canvas>
+                                  <small class="text-muted text-center p-2" style="font-size: 9px; border-top: 1px solid #333; color: #555;">Click to jump</small>
+                              </div>
+
+                              <!-- Treemap Visualization (middle) -->
+                              <div id="cvTreemapContainer" style="flex: 1; position: relative; background: #0a0a0a; overflow: hidden;">
+                                  <canvas id="cvTreemap" style="display: block; width: 100%; height: 100%;"></canvas>
+                                  <div id="cvTooltip" style="position: absolute; background: rgba(0,0,0,0.9); color: #0ff; padding: 8px 12px; border-radius: 4px; font-size: 11px; pointer-events: none; border: 1px solid #0ff; display: none; z-index: 1000; max-width: 300px; word-wrap: break-word;"></div>
+                              </div>
+
+                              <!-- Right Panel: Stats + Source Viewer -->
+                              <div id="cvRightPanel" style="width: 0; background: #0f0f0f; border-left: 1px solid #333; display: flex; flex-direction: column; transition: width 0.3s; overflow: hidden; position: relative;">
+                                  <div style="flex: 1; overflow-y: auto; padding: 12px; border-bottom: 1px solid #333;">
+                                      <div id="cvStatsPanel" style="display: none;">
+                                          <h6 class="text-white mb-3"><i class="fa fa-info-circle me-2"></i>Statistics</h6>
+                                          <div id="cvStatDetails" style="font-size: 12px; line-height: 1.8;"></div>
+                                      </div>
+                                  </div>
+                                  <div style="flex: 2; display: flex; flex-direction: column; overflow: hidden;">
+                                      <div style="padding: 8px 12px; background: #1a1a1a; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between;">
+                                          <small class="text-muted" id="cvSourceHeader"></small>
+                                          <button class="btn btn-xs btn-outline-secondary" onclick="cv_close_viewer()" style="padding: 2px 6px; font-size: 10px;"><i class="fa fa-times"></i></button>
+                                      </div>
+                                      <div id="cvSourceViewer" style="flex: 1; overflow: auto; position: relative; background: #0a0a0a;">
+                                          <pre id="cvSourceCode" style="margin: 0; padding: 12px; color: #0f0; font-family: 'Courier New', monospace; font-size: 11px; white-space: pre-wrap; word-wrap: break-word; background: #0a0a0a; line-height: 1.4;"></pre>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+
           <div id="snackbar"></div>
       </body>
 
