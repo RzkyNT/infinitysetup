@@ -8144,7 +8144,15 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                    <label for="folderInput">Or select a folder to upload:</label>
                                    <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple onchange="previewModalUploadFiles()">
                                </div>
-                               <small class="form-text text-muted mt-2">Select the files to upload below. Uncheck files you want to skip. Existing files are replaced only when their contents change.</small>
+                               <div class="mt-3">
+                                   <label for="modal-upload-exclude-folders">Exclude folders:</label>
+                                   <div class="input-group">
+                                       <input type="text" id="modal-upload-exclude-folders" class="form-control" value=".git" placeholder=".git, node_modules">
+                                       <button type="button" class="btn btn-outline-secondary" onclick="applyModalUploadExclusions()">Apply</button>
+                                   </div>
+                                   <small class="form-text text-muted">Folder names are matched anywhere in the selected path. Separate multiple names with commas. Matching files will be unchecked.</small>
+                               </div>
+                               <small class="form-text text-muted d-block mt-2">Select the files to upload below. Uncheck files you want to skip. Existing files are replaced only when their contents change.</small>
                                <div id="modal-upload-progress" class="mt-3" style="display:none;">
                                    <div class="d-flex justify-content-between small mb-1">
                                        <span id="modal-upload-summary">Preparing upload...</span>
@@ -10159,8 +10167,9 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   const totalBytes = modalUploadJob.items.reduce((sum, item) => sum + item.file.size, 0);
                   const uploadedBytes = modalUploadJob.items.reduce((sum, item) => sum + item.loaded, 0);
                   const percent = totalBytes ? Math.floor((uploadedBytes / totalBytes) * 100) : 100;
-                  const completed = modalUploadJob.items.filter(item => ['done', 'skipped'].includes(item.status)).length;
-                  document.getElementById('modal-upload-summary').textContent = `${completed}/${modalUploadJob.items.length} files`;
+                  const completed = modalUploadJob.items.filter(item => ['done', 'skipped', 'excluded'].includes(item.status)).length;
+                  const excluded = modalUploadJob.items.filter(item => item.status === 'excluded').length;
+                  document.getElementById('modal-upload-summary').textContent = `${completed}/${modalUploadJob.items.length} files${excluded ? ` (${excluded} excluded)` : ''}`;
                   document.getElementById('modal-upload-percent').textContent = percent + '%';
                   document.getElementById('modal-upload-overall').style.width = percent + '%';
                   document.getElementById('modal-upload-overall').textContent = percent + '%';
@@ -10177,8 +10186,40 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   if (!modalUploadJob || !modalUploadJob.items[index]) return;
                   const item = modalUploadJob.items[index];
                   item.selected = selected;
-                  if (!selected && item.status === 'queued') item.status = 'skipped';
-                  if (selected && item.status === 'skipped') item.status = 'queued';
+                  if (!selected && ['queued', 'excluded'].includes(item.status)) item.status = 'skipped';
+                  if (selected && ['skipped', 'excluded'].includes(item.status)) item.status = 'queued';
+                  renderModalUpload();
+              }
+
+              function getModalUploadExcludedFolders() {
+                  const input = document.getElementById('modal-upload-exclude-folders');
+                  return input.value.split(/[,\n]/).map(folder => folder.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean);
+              }
+
+              function isModalUploadPathExcluded(path, excludedFolders) {
+                  const pathParts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+                  return excludedFolders.some(folder => {
+                      const folderParts = folder.replace(/\\/g, '/').split('/').filter(Boolean);
+                      if (folderParts.length === 0 || folderParts.length > pathParts.length) return false;
+                      return pathParts.some((_, index) =>
+                          folderParts.every((part, offset) => pathParts[index + offset] === part)
+                      );
+                  });
+              }
+
+              function applyModalUploadExclusions() {
+                  if (!modalUploadJob) return;
+                  const excludedFolders = getModalUploadExcludedFolders();
+                  modalUploadJob.items.forEach(item => {
+                      if (['done', 'uploading'].includes(item.status)) return;
+                      if (isModalUploadPathExcluded(item.path, excludedFolders)) {
+                          item.selected = false;
+                          item.status = 'excluded';
+                      } else if (item.status === 'excluded') {
+                          item.selected = true;
+                          item.status = 'queued';
+                      }
+                  });
                   renderModalUpload();
               }
 
@@ -10190,7 +10231,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       uploadModalItem(item);
                   }
                   renderModalUpload();
-                  if (modalUploadJob.active === 0 && modalUploadJob.items.every(entry => ['skipped', 'cancelled'].includes(entry.status))) {
+                  if (modalUploadJob.active === 0 && modalUploadJob.items.every(entry => ['skipped', 'excluded', 'cancelled'].includes(entry.status))) {
                       toast('Tidak ada file yang dipilih untuk di-upload', 'info');
                   }
               }
@@ -10209,7 +10250,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       item.status = 'done';
                       modalUploadJob.active--;
                       pumpModalUpload();
-                      if (modalUploadJob.items.every(entry => ['done', 'skipped', 'cancelled'].includes(entry.status))) {
+                      if (modalUploadJob.items.every(entry => ['done', 'skipped', 'excluded', 'cancelled'].includes(entry.status))) {
                           toast('Upload selesai', 'success');
                           setTimeout(() => window.location.reload(), 1000);
                       }
@@ -10343,6 +10384,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       paused: false,
                       cancelled: false
                   };
+                  applyModalUploadExclusions();
                   document.getElementById('modal-upload-progress').style.display = '';
                   document.getElementById('modal-upload-start').style.display = '';
                   renderModalUpload();
