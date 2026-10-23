@@ -3198,14 +3198,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
       $file = fm_clean_path($_GET['view'], false);
       $file = str_replace('/', '', $file);
       if ($file != '' && is_file($path . '/' . $file) && fm_is_exclude_items($file, $path . '/' . $file)) {
-          $file_url = FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $file;
-          
-          // Fix for external/streamed files
-          $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
-          $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
-          if (strpos($normalized_root_path, $normalized_doc_root) !== 0) {
-              $file_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($file) . '&stream=1';
-          }
+          $file_url = fm_stream_file_url(FM_PATH, $file);
 
           $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
           // Set flag for JS to open modal on load
@@ -3605,12 +3598,7 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   $filesize_raw = fm_get_size($path . '/' . $f);
                   $filesize = fm_get_filesize($filesize_raw);
                   $filelink = '?p=' . urlencode(FM_PATH) . '&amp;view=' . urlencode($f);
-                  $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
-                  $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
-                  $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
-                  if (strpos($normalized_root_path, $normalized_doc_root) !== 0) {
-                      $http_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($f) . '&stream=1';
-                  }
+                  $http_url = fm_enc(fm_stream_file_url(FM_PATH, $f));
                   $all_files_size += $filesize_raw;
                   $perms = substr(decoct(fileperms($path . '/' . $f)), -4);
                   $owner = array('name' => '?'); 
@@ -3731,20 +3719,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
               $is_img = in_array($ext, array('gif', 'jpg', 'jpeg', 'png', 'bmp', 'webp', 'heic', 'heif'));
               $icon_class = fm_get_file_icon_class($file_path);
               $view_link = '?p=' . urlencode(FM_PATH) . '&view=' . urlencode($f);
-               $http_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f);
-               
-               // Proxy media if outside web root
-               $normalized_doc_root = str_replace('\\', '/', realpath($_SERVER['DOCUMENT_ROOT']));
-               $normalized_root_path = str_replace('\\', '/', realpath(FM_ROOT_PATH));
-               $is_outside_root = strpos($normalized_root_path, $normalized_doc_root) !== 0;
-
-               $img_src = $is_img ? fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/' . $f) : '';
-               if ($is_outside_root) {
-                   $http_url = FM_SELF_URL . '?p=' . urlencode(FM_PATH) . '&dl=' . urlencode($f) . '&stream=1';
-                   if ($is_img) {
-                       $img_src = $http_url;
-                   }
-               }
+              $http_url = fm_enc(fm_stream_file_url(FM_PATH, $f));
+              $img_src = $is_img ? $http_url : '';
               $modif_raw = filemtime($file_path);
               $modif = date(FM_DATETIME_FORMAT, $modif_raw);
               $filesize_raw = fm_get_size($file_path);
@@ -3758,14 +3734,8 @@ if (isset($_GET['duplicate'], $_GET['token']) && !FM_READONLY) {
                   $cache_dir = $path . '/.thumbcache';
                   $cache_file = $cache_dir . '/' . $f . '.jpg';
                   if (is_file($cache_file)) {
-                      // Serve cached thumbnail via stream proxy if outside web root
-                      if ($is_outside_root) {
-                          // dl handler strips '/' from dl — put .thumbcache in p param, filename only in dl
-                          $tc_p = trim(FM_PATH . '/.thumbcache', '/');
-                          $cached_thumb_url = FM_SELF_URL . '?p=' . urlencode($tc_p) . '&dl=' . urlencode($f . '.jpg') . '&stream=1';
-                      } else {
-                          $cached_thumb_url = fm_enc(FM_ROOT_URL . (FM_PATH != '' ? '/' . FM_PATH : '') . '/.thumbcache/' . $f . '.jpg');
-                      }
+                      $tc_p = trim(FM_PATH . '/.thumbcache', '/');
+                      $cached_thumb_url = fm_enc(fm_stream_file_url($tc_p, $f . '.jpg'));
                   }
               }
               ?>
@@ -4772,6 +4742,11 @@ function fm_foldersize($path) {
           $path = '';
       }
       return str_replace('\\', '/', $path);
+  }
+
+  function fm_stream_file_url($path, $filename)
+  {
+      return $_SERVER['PHP_SELF'] . '?p=' . urlencode($path) . '&dl=' . urlencode($filename) . '&stream=1';
   }
 
   /**
