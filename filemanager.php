@@ -8141,6 +8141,17 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                <p><label for="fileInput">Select Files to Upload:</label></p>
                                <input type="file" id="fileInput" class="form-control" multiple accept="*" placeholder="Choose files..." onchange="previewModalUploadFiles()">
                                <div class="mt-3">
+                                   <button type="button" id="modal-camera-start" class="btn btn-outline-primary" onclick="startModalCamera()"><i class="fa fa-camera"></i> Use Camera</button>
+                               </div>
+                               <div id="modal-camera-panel" class="mt-2" style="display:none;">
+                                   <video id="modal-camera-video" class="w-100 rounded" autoplay playsinline muted style="max-height:320px; background:#111; object-fit:contain;"></video>
+                                   <div class="d-flex gap-2 mt-2">
+                                       <button type="button" id="modal-camera-capture" class="btn btn-success" onclick="captureModalCameraPhoto()"><i class="fa fa-camera"></i> Take Photo</button>
+                                       <button type="button" id="modal-camera-switch" class="btn btn-outline-secondary" onclick="switchModalCamera()"><i class="fa fa-refresh"></i> Switch Camera</button>
+                                       <button type="button" class="btn btn-outline-danger" onclick="stopModalCamera()"><i class="fa fa-stop"></i> Stop Camera</button>
+                                   </div>
+                               </div>
+                               <div class="mt-3">
                                    <label for="folderInput">Or select a folder to upload:</label>
                                    <input type="file" id="folderInput" class="form-control" webkitdirectory directory multiple onchange="previewModalUploadFiles()">
                                </div>
@@ -10160,6 +10171,75 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               // Chunked modal upload queue. Files run concurrently, chunks remain sequential per file.
               let modalUploadJob = null;
               const modalUploadChunkSize = <?php echo UPLOAD_CHUNK_SIZE; ?>;
+              let modalCameraStream = null;
+              let modalCameraFacingMode = 'environment';
+              let modalCameraFiles = [];
+
+              async function startModalCamera() {
+                  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                      toast('Camera access is unavailable. Use HTTPS or localhost and a supported browser.', 'error');
+                      return;
+                  }
+
+                  stopModalCamera();
+                  try {
+                      modalCameraStream = await navigator.mediaDevices.getUserMedia({
+                          video: { facingMode: { ideal: modalCameraFacingMode } },
+                          audio: false
+                      });
+                      const video = document.getElementById('modal-camera-video');
+                      video.srcObject = modalCameraStream;
+                      document.getElementById('modal-camera-panel').style.display = '';
+                      document.getElementById('modal-camera-start').style.display = 'none';
+                  } catch (error) {
+                      modalCameraStream = null;
+                      const message = error && error.message ? ': ' + error.message : '';
+                      toast('Unable to access the camera' + message, 'error');
+                  }
+              }
+
+              function stopModalCamera() {
+                  if (modalCameraStream) {
+                      modalCameraStream.getTracks().forEach(track => track.stop());
+                      modalCameraStream = null;
+                  }
+                  const video = document.getElementById('modal-camera-video');
+                  if (video) video.srcObject = null;
+                  const panel = document.getElementById('modal-camera-panel');
+                  const startButton = document.getElementById('modal-camera-start');
+                  if (panel) panel.style.display = 'none';
+                  if (startButton) startButton.style.display = '';
+              }
+
+              async function switchModalCamera() {
+                  modalCameraFacingMode = modalCameraFacingMode === 'environment' ? 'user' : 'environment';
+                  await startModalCamera();
+              }
+
+              function captureModalCameraPhoto() {
+                  const video = document.getElementById('modal-camera-video');
+                  if (!modalCameraStream || !video.videoWidth || !video.videoHeight) {
+                      toast('The camera is not ready yet', 'warning');
+                      return;
+                  }
+
+                  const canvas = document.createElement('canvas');
+                  canvas.width = video.videoWidth;
+                  canvas.height = video.videoHeight;
+                  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                  canvas.toBlob(blob => {
+                      if (!blob) {
+                          toast('Could not capture a photo from the camera', 'error');
+                          return;
+                      }
+                      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                      modalCameraFiles.push(new File([blob], `camera-${timestamp}.jpg`, { type: 'image/jpeg' }));
+                      previewModalUploadFiles();
+                      toast('Photo added to the upload list', 'success');
+                  }, 'image/jpeg', 0.92);
+              }
+
+              document.getElementById('uploadFiles').addEventListener('hidden.bs.modal', stopModalCamera);
 
               function renderModalUpload() {
                   if (!modalUploadJob) return;
@@ -10367,7 +10447,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
               function previewModalUploadFiles() {
                   var fileInput = document.getElementById('fileInput');
                   var folderInput = document.getElementById('folderInput');
-                  var files = Array.from(fileInput.files || []).concat(Array.from(folderInput.files || []));
+                  var files = Array.from(fileInput.files || [])
+                      .concat(Array.from(folderInput.files || []), modalCameraFiles);
 
                   if (files.length === 0) {
                       modalUploadJob = null;
@@ -10397,6 +10478,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       return;
                   }
                   if (modalUploadJob.active > 0 || modalUploadJob.items.some(item => item.status === 'done')) return;
+                  stopModalCamera();
                   modalUploadJob.items.forEach(item => {
                       if (!item.selected && item.status === 'queued') item.status = 'skipped';
                   });
