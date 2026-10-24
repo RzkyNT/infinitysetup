@@ -155,7 +155,786 @@ if (isset($_POST['bulk_paste'])) {
 }
 
 // Normal page load continues...
+function share_db()
+{
+    static $db = null;
+    if ($db instanceof PDO) {
+        return $db;
+    }
+
+    $db = new PDO('sqlite:' . __DIR__ . '/adminer.sqlite');
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->exec('PRAGMA busy_timeout = 5000');
+    $db->exec("CREATE TABLE IF NOT EXISTS file_shares (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token TEXT NOT NULL UNIQUE,
+        target_path TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK (target_type IN ('file', 'folder')),
+        permissions TEXT NOT NULL,
+        pin_hash TEXT,
+        max_accesses INTEGER NOT NULL DEFAULT 0,
+        access_count INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        revoked INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS file_share_proposals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        share_id INTEGER NOT NULL,
+        relative_path TEXT NOT NULL,
+        original_hash TEXT NOT NULL,
+        proposed_content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        submitted_at TEXT NOT NULL,
+        reviewed_by TEXT,
+        reviewed_at TEXT,
+        FOREIGN KEY (share_id) REFERENCES file_shares(id)
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS file_share_pin_attempts (
+        token TEXT NOT NULL,
+        ip_hash TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        window_started INTEGER NOT NULL,
+        locked_until INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (token, ip_hash)
+    )");
+    return $db;
+}
+
+function share_permissions(array $share)
+{
+    $permissions = json_decode($share['permissions'] ?? '[]', true);
+    return is_array($permissions) ? $permissions : [];
+}
+
+function share_find($token)
+{
+    if (!is_string($token) || !preg_match('/^[a-f0-9]{48}$/', $token)) {
+        return null;
+    }
+
+    $stmt = share_db()->prepare('SELECT * FROM file_shares WHERE token = ? AND revoked = 0');
+    $stmt->execute([$token]);
+    $share = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $share ?: null;
+}
+
+function share_expired(array $share)
+{
+    return !empty($share['expires_at']) && strtotime($share['expires_at'] . ' UTC') <= time();
+}
+
+function share_has_grant($token)
+{
+    return !empty($_SESSION['file_share_grants'][$token]);
+}
+
+function share_pin_ip_hash()
+{
+    return hash('sha256', (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+}
+
+function share_pin_is_locked($token)
+{
+    $stmt = share_db()->prepare('SELECT locked_until FROM file_share_pin_attempts WHERE token = ? AND ip_hash = ?');
+    $stmt->execute([$token, share_pin_ip_hash()]);
+    return (int) $stmt->fetchColumn() > time();
+}
+
+function share_pin_record_failure($token)
+{
+    $db = share_db();
+    $ipHash = share_pin_ip_hash();
+    $now = time();
+    $stmt = $db->prepare('SELECT attempts, window_started FROM file_share_pin_attempts WHERE token = ? AND ip_hash = ?');
+    $stmt->execute([$token, $ipHash]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$attempt || $now - (int) $attempt['window_started'] >= 900) {
+        $attempts = 1;
+        $windowStarted = $now;
+    } else {
+        $attempts = (int) $attempt['attempts'] + 1;
+        $windowStarted = (int) $attempt['window_started'];
+    }
+    $lockedUntil = $attempts >= 10 ? $now + 900 : 0;
+    $stmt = $db->prepare('INSERT INTO file_share_pin_attempts (token, ip_hash, attempts, window_started, locked_until)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(token, ip_hash) DO UPDATE SET attempts = excluded.attempts, window_started = excluded.window_started, locked_until = excluded.locked_until');
+    $stmt->execute([$token, $ipHash, $attempts, $windowStarted, $lockedUntil]);
+}
+
+function share_pin_clear_failures($token)
+{
+    $stmt = share_db()->prepare('DELETE FROM file_share_pin_attempts WHERE token = ? AND ip_hash = ?');
+    $stmt->execute([$token, share_pin_ip_hash()]);
+}
+
+function share_grant_access(array $share)
+{
+    $token = $share['token'];
+    if (share_has_grant($token)) {
+        return true;
+    }
+    if (share_expired($share)) {
+        return false;
+    }
+
+    $stmt = share_db()->prepare("UPDATE file_shares
+        SET access_count = access_count + 1
+        WHERE id = ? AND revoked = 0
+          AND (expires_at IS NULL OR expires_at > datetime('now'))
+          AND (max_accesses = 0 OR access_count < max_accesses)");
+    $stmt->execute([(int) $share['id']]);
+    if ($stmt->rowCount() !== 1) {
+        return false;
+    }
+
+    $_SESSION['file_share_grants'][$token] = true;
+    return true;
+}
+
+function share_relative_path($input)
+{
+    if (!is_string($input) || strpos($input, "\0") !== false || strpos($input, '\\') !== false) {
+        return false;
+    }
+    $input = trim($input, '/');
+    if ($input === '') {
+        return '';
+    }
+    foreach (explode('/', $input) as $segment) {
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            return false;
+        }
+    }
+    return $input;
+}
+
+function share_resolve_path(array $share, $relativePath)
+{
+    $relativePath = share_relative_path($relativePath);
+    if ($relativePath === false) {
+        return false;
+    }
+
+    $root = realpath($share['target_path']);
+    if ($root === false || is_link($share['target_path'])) {
+        return false;
+    }
+    if ($share['target_type'] === 'file') {
+        return $relativePath === '' && is_file($root) ? $root : false;
+    }
+
+    $candidate = $root;
+    if ($relativePath !== '') {
+        foreach (explode('/', $relativePath) as $segment) {
+            $candidate .= DIRECTORY_SEPARATOR . $segment;
+            if (is_link($candidate)) {
+                return false;
+            }
+        }
+    }
+    $resolved = realpath($candidate);
+    if ($resolved === false) {
+        return false;
+    }
+    $prefix = rtrim($root, '\\/') . DIRECTORY_SEPARATOR;
+    if ($resolved !== $root && strncmp($resolved, $prefix, strlen($prefix)) !== 0) {
+        return false;
+    }
+    return $resolved;
+}
+
+function share_is_text_file($path)
+{
+    $allowed = ['txt', 'md', 'csv', 'json', 'xml', 'css', 'js', 'html', 'htm', 'php', 'ini', 'yaml', 'yml', 'sql', 'log'];
+    if (!is_file($path)
+        || filesize($path) > 262144
+        || !in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), $allowed, true)) {
+        return false;
+    }
+    $content = file_get_contents($path);
+    return is_string($content) && strpos($content, "\0") === false && preg_match('//u', $content) === 1;
+}
+
+function share_is_previewable_mime($mime)
+{
+    return in_array($mime, [
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/avif',
+        'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav',
+        'application/pdf', 'text/plain'
+    ], true);
+}
+
+function share_diff_lines($original, $proposed)
+{
+    $old = explode("\n", str_replace(["\r\n", "\r"], "\n", $original));
+    $new = explode("\n", str_replace(["\r\n", "\r"], "\n", $proposed));
+    if (count($old) + count($new) > 1200) {
+        return [['kind' => 'notice', 'text' => 'Diff is too large; compare the original and proposed versions below.']];
+    }
+
+    $rows = count($old) + 1;
+    $cols = count($new) + 1;
+    $lcs = array_fill(0, $rows, null);
+    for ($i = 0; $i < $rows; $i++) {
+        $lcs[$i] = array_fill(0, $cols, 0);
+    }
+    for ($i = count($old) - 1; $i >= 0; $i--) {
+        for ($j = count($new) - 1; $j >= 0; $j--) {
+            $lcs[$i][$j] = $old[$i] === $new[$j]
+                ? 1 + $lcs[$i + 1][$j + 1]
+                : max($lcs[$i + 1][$j], $lcs[$i][$j + 1]);
+        }
+    }
+
+    $diff = [];
+    $i = 0;
+    $j = 0;
+    while ($i < count($old) || $j < count($new)) {
+        if ($i < count($old) && $j < count($new) && $old[$i] === $new[$j]) {
+            $diff[] = ['kind' => 'same', 'text' => $old[$i++]];
+            $j++;
+        } elseif ($j < count($new) && ($i === count($old) || $lcs[$i][$j + 1] > $lcs[$i + 1][$j])) {
+            $diff[] = ['kind' => 'add', 'text' => $new[$j++]];
+        } else {
+            $diff[] = ['kind' => 'remove', 'text' => $old[$i++]];
+        }
+    }
+    return $diff;
+}
+
+function share_page_error($message, $status = 404)
+{
+    http_response_code($status);
+    $escaped = htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    echo '<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Share tidak tersedia</title><body style="font:16px system-ui;max-width:680px;margin:10vh auto;padding:24px"><h1>Link tidak tersedia</h1><p>' . $escaped . '</p></body></html>';
+    exit;
+}
+
+function share_url($token, array $parameters = [])
+{
+    return 'filemanager.php?' . http_build_query(array_merge(['share' => $token], $parameters));
+}
+
+function share_send_file($path, $download)
+{
+    if (!is_file($path) || !is_readable($path)) {
+        share_page_error('File tidak ditemukan.', 404);
+    }
+    $name = basename($path);
+    $mime = 'application/octet-stream';
+    if (function_exists('mime_content_type')) {
+        $detected = mime_content_type($path);
+        if (is_string($detected) && $detected !== '') {
+            $mime = $detected;
+        }
+    }
+    $disposition = !$download && share_is_previewable_mime($mime) ? 'inline' : 'attachment';
+    $fallbackName = preg_replace('/[^A-Za-z0-9._-]/', '_', $name);
+    header('Content-Type: ' . $mime);
+    header('Content-Disposition: ' . $disposition . '; filename="' . $fallbackName . '"; filename*=UTF-8\'\'' . rawurlencode($name));
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}
+
+function share_make_zip(array $share)
+{
+    if (!class_exists('ZipArchive')) {
+        share_page_error('Fitur ZIP tidak tersedia pada server.', 500);
+    }
+    $root = realpath($share['target_path']);
+    if ($root === false || !is_dir($root)) {
+        share_page_error('Folder tidak ditemukan.', 404);
+    }
+    $temp = tempnam(sys_get_temp_dir(), 'file-share-');
+    if ($temp === false) {
+        share_page_error('Tidak dapat membuat arsip sementara.', 500);
+    }
+    $zip = new ZipArchive();
+    if ($zip->open($temp, ZipArchive::OVERWRITE) !== true) {
+        @unlink($temp);
+        share_page_error('Tidak dapat membuat arsip ZIP.', 500);
+    }
+
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::LEAVES_ONLY
+        );
+        foreach ($iterator as $entry) {
+            if (!$entry->isFile() || $entry->isLink()) {
+                continue;
+            }
+            $relative = substr($entry->getPathname(), strlen($root) + 1);
+            $parts = preg_split('~[\\\\/]~', $relative);
+            if (array_filter($parts, function ($part) { return $part !== '' && $part[0] === '.'; })) {
+                continue;
+            }
+            if (!$zip->addFile($entry->getPathname(), str_replace('\\', '/', $relative))) {
+                throw new RuntimeException('Tidak dapat menambahkan file ke arsip.');
+            }
+        }
+        if (!$zip->close()) {
+            throw new RuntimeException('Tidak dapat menyelesaikan arsip.');
+        }
+    } catch (Throwable $e) {
+        $zip->close();
+        @unlink($temp);
+        error_log('Shared folder ZIP failed: ' . $e->getMessage());
+        share_page_error('Gagal membuat arsip folder. Periksa akses file dan kapasitas penyimpanan server.', 500);
+    }
+
+    $name = basename($root) . '.zip';
+    $fallbackName = preg_replace('/[^A-Za-z0-9._-]/', '_', $name);
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $fallbackName . '"; filename*=UTF-8\'\'' . rawurlencode($name));
+    header('Content-Length: ' . filesize($temp));
+    readfile($temp);
+    @unlink($temp);
+    exit;
+}
+
+function fm_render_public_share()
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_start();
+    }
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: no-referrer');
+    header('Cache-Control: no-store, private');
+
+    $token = $_GET['share'] ?? '';
+    $share = share_find($token);
+    if (!$share) {
+        share_page_error('Link tidak valid atau telah dicabut.');
+    }
+    if (share_expired($share)) {
+        share_page_error('Masa berlaku link ini telah berakhir.', 410);
+    }
+
+    $permissions = share_permissions($share);
+    $hasPin = !empty($share['pin_hash']);
+    $formToken = $_SESSION['share_form_tokens'][$token] ?? null;
+    if (!$formToken) {
+        $formToken = bin2hex(random_bytes(32));
+        $_SESSION['share_form_tokens'][$token] = $formToken;
+    }
+
+    if (!share_has_grant($token)) {
+        $pinError = '';
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock'])) {
+            if (!isset($_POST['form_token']) || !hash_equals($formToken, (string) $_POST['form_token'])) {
+                share_page_error('Form sudah kedaluwarsa. Muat ulang halaman dan coba lagi.', 400);
+            }
+            if ($hasPin) {
+                if (share_pin_is_locked($token)) {
+                    share_page_error('Terlalu banyak PIN yang salah. Coba lagi dalam 15 menit.', 429);
+                }
+                if (!password_verify((string) ($_POST['pin'] ?? ''), $share['pin_hash'])) {
+                    share_pin_record_failure($token);
+                    $pinError = 'PIN salah.';
+                } else {
+                    share_pin_clear_failures($token);
+                }
+            }
+            if ($pinError === '') {
+                if (!share_grant_access($share)) {
+                    share_page_error('Link telah mencapai batas akses.', 410);
+                }
+                header('Location: ' . share_url($token));
+                exit;
+            }
+        }
+        if (!share_has_grant($token)) {
+            $escapedError = htmlspecialchars($pinError, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $escapedFormToken = htmlspecialchars($formToken, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $pinField = $hasPin ? '<label>PIN <input type="password" name="pin" required autocomplete="one-time-code"></label>' : '<p>Tekan lanjutkan untuk membuka file atau folder yang dibagikan.</p>';
+            echo '<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Buka link berbagi</title><body style="font:16px system-ui;max-width:420px;margin:12vh auto;padding:24px"><h1>Link berbagi</h1><p style="color:#b91c1c">' . $escapedError . '</p><form method="post"><input type="hidden" name="form_token" value="' . $escapedFormToken . '">' . $pinField . '<button name="unlock" value="1">Lanjutkan</button></form></body></html>';
+            exit;
+        }
+    }
+
+    if (share_expired($share)) {
+        share_page_error('Masa berlaku link ini telah berakhir.', 410);
+    }
+    if (isset($_GET['zip'])) {
+        if ($share['target_type'] !== 'folder' || empty($permissions['download'])) {
+            share_page_error('Izin download folder tidak tersedia.', 403);
+        }
+        share_make_zip($share);
+    }
+    if (isset($_GET['media'])) {
+        if (empty($permissions['preview'])) {
+            share_page_error('Izin preview tidak tersedia.', 403);
+        }
+        if ($share['target_type'] === 'folder' && (string) $_GET['media'] !== '' && empty($permissions['browse'])) {
+            share_page_error('Izin menjelajahi folder tidak tersedia.', 403);
+        }
+        $mediaPath = share_resolve_path($share, (string) $_GET['media']);
+        if ($mediaPath === false || !is_file($mediaPath)) {
+            share_page_error('File tidak ditemukan.', 404);
+        }
+        share_send_file($mediaPath, false);
+    }
+    if (isset($_GET['download'])) {
+        if (empty($permissions['download'])) {
+            share_page_error('Izin download tidak tersedia.', 403);
+        }
+        if ($share['target_type'] === 'folder' && (string) $_GET['download'] !== '' && empty($permissions['browse'])) {
+            share_page_error('Izin menjelajahi folder tidak tersedia.', 403);
+        }
+        $downloadPath = share_resolve_path($share, (string) $_GET['download']);
+        if ($downloadPath === false || !is_file($downloadPath)) {
+            share_page_error('File tidak ditemukan.', 404);
+        }
+        share_send_file($downloadPath, true);
+    }
+
+    $relative = share_relative_path((string) ($_GET['item'] ?? ''));
+    if ($relative === false || ($share['target_type'] === 'file' && $relative !== '')) {
+        share_page_error('Lokasi tidak valid.', 404);
+    }
+    if ($share['target_type'] === 'folder' && $relative !== '' && empty($permissions['browse'])) {
+        share_page_error('Izin menjelajahi folder tidak tersedia.', 403);
+    }
+    $currentPath = share_resolve_path($share, $relative);
+    if ($currentPath === false) {
+        share_page_error('Lokasi tidak ditemukan.', 404);
+    }
+
+    if (isset($_POST['submit_proposal'])) {
+        if (empty($permissions['propose']) || !share_is_text_file($currentPath)) {
+            share_page_error('Usulan perubahan tidak diizinkan untuk file ini.', 403);
+        }
+        if (!isset($_POST['form_token']) || !hash_equals($formToken, (string) $_POST['form_token'])) {
+            share_page_error('Form sudah kedaluwarsa. Muat ulang halaman dan coba lagi.', 400);
+        }
+        $content = (string) ($_POST['content'] ?? '');
+        if (strlen($content) > 262144) {
+            share_page_error('Usulan maksimal 256 KB.', 413);
+        }
+        $originalHash = hash_file('sha256', $currentPath);
+        if (!is_string($originalHash)) {
+            share_page_error('Tidak dapat membaca file sumber.', 500);
+        }
+        try {
+            $stmt = share_db()->prepare('INSERT INTO file_share_proposals (share_id, relative_path, original_hash, proposed_content, submitted_at) VALUES (?, ?, ?, ?, ?)');
+            $stmt->execute([
+                (int) $share['id'],
+                $share['target_type'] === 'file' ? '' : $relative,
+                $originalHash,
+                $content,
+                gmdate('Y-m-d H:i:s')
+            ]);
+        } catch (PDOException $e) {
+            error_log('File share proposal failed: ' . $e->getMessage());
+            share_page_error('Usulan tidak dapat disimpan. Silakan coba lagi nanti.', 500);
+        }
+        header('Location: ' . share_url($token, $relative !== '' ? ['item' => $relative] : []));
+        exit;
+    }
+
+    $h = function ($value) {
+        return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    };
+    $title = basename($share['target_path']);
+    $parent = $relative !== '' ? dirname($relative) : '';
+    if ($parent === '.') {
+        $parent = '';
+    }
+    ?>
+    <!doctype html>
+    <html lang="id">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <meta name="robots" content="noindex,nofollow">
+        <title><?= $h($title) ?> - Shared file</title>
+        <style>
+            body{font:16px system-ui,sans-serif;max-width:1000px;margin:32px auto;padding:0 18px;color:#1f2937}
+            .card{border:1px solid #d1d5db;border-radius:12px;padding:20px;margin:18px 0}
+            a,button{color:#155eef} table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:10px;border-bottom:1px solid #e5e7eb}
+            pre,textarea{white-space:pre-wrap;overflow:auto;background:#f3f4f6;padding:14px;border-radius:8px}
+            textarea{box-sizing:border-box;width:100%;min-height:260px;font:14px ui-monospace,monospace}
+            img,video,audio,iframe{max-width:100%}.actions{display:flex;gap:14px;flex-wrap:wrap}
+        </style>
+    </head>
+    <body>
+        <h1><?= $h($title) ?></h1>
+        <?php if ($share['target_type'] === 'folder'): ?>
+            <p><?= $h($relative === '' ? 'Folder berbagi' : $relative) ?></p>
+            <div class="actions">
+                <?php if ($relative !== ''): ?><a href="<?= $h(share_url($token, $parent !== '' ? ['item' => $parent] : [])) ?>">← Folder sebelumnya</a><?php endif; ?>
+                <?php if (!empty($permissions['download'])): ?><a href="<?= $h(share_url($token, ['zip' => 1])) ?>">Download folder ZIP</a><?php endif; ?>
+            </div>
+            <?php if (!empty($permissions['browse']) && is_dir($currentPath)): ?>
+                <div class="card"><table><thead><tr><th>Nama</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>
+                <?php
+                $entries = scandir($currentPath);
+                if ($entries === false) {
+                    share_page_error('Folder tidak dapat dibaca.', 500);
+                }
+                foreach ($entries as $entry):
+                    if ($entry === '.' || $entry === '..' || $entry[0] === '.' || is_link($currentPath . DIRECTORY_SEPARATOR . $entry)) {
+                        continue;
+                    }
+                    $entryRelative = trim(($relative !== '' ? $relative . '/' : '') . $entry, '/');
+                    $entryPath = $currentPath . DIRECTORY_SEPARATOR . $entry;
+                    $isDirectory = is_dir($entryPath);
+                    ?>
+                    <tr><td><?= $h($entry) ?></td><td><?= $isDirectory ? 'Folder' : 'File' ?></td><td>
+                        <?php if ($isDirectory): ?><a href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>">Buka</a>
+                        <?php else: ?>
+                            <?php if (!empty($permissions['preview'])): ?><a href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>">Buka</a><?php endif; ?>
+                            <?php if (!empty($permissions['download'])): ?> <a href="<?= $h(share_url($token, ['download' => $entryRelative])) ?>">Download</a><?php endif; ?>
+                        <?php endif; ?>
+                    </td></tr>
+                <?php endforeach; ?>
+                </tbody></table></div>
+            <?php elseif (!empty($permissions['preview']) && is_file($currentPath)): ?>
+                <?php $mime = function_exists('mime_content_type') ? (mime_content_type($currentPath) ?: '') : ''; ?>
+                <div class="card">
+                    <?php if (strpos($mime, 'image/') === 0 && share_is_previewable_mime($mime)): ?><img src="<?= $h(share_url($token, ['media' => $relative])) ?>" alt="<?= $h(basename($currentPath)) ?>">
+                    <?php elseif (strpos($mime, 'video/') === 0 && share_is_previewable_mime($mime)): ?><video src="<?= $h(share_url($token, ['media' => $relative])) ?>" controls></video>
+                    <?php elseif (strpos($mime, 'audio/') === 0 && share_is_previewable_mime($mime)): ?><audio src="<?= $h(share_url($token, ['media' => $relative])) ?>" controls></audio>
+                    <?php elseif ($mime === 'application/pdf'): ?><iframe src="<?= $h(share_url($token, ['media' => $relative])) ?>" title="PDF preview" style="width:100%;height:75vh"></iframe>
+                    <?php elseif (share_is_text_file($currentPath)): ?><?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?><pre><?= $h($text) ?></pre>
+                    <?php else: ?><p>Preview tidak tersedia untuk tipe file ini.</p><?php endif; ?>
+                </div>
+                <?php if (!empty($permissions['propose']) && share_is_text_file($currentPath)): ?>
+                    <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
+                    <div class="card"><h2>Usulkan perubahan</h2><p>Perubahan akan dikirim sebagai usulan untuk ditinjau admin; file asli tidak berubah sampai disetujui.</p>
+                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea name="content" maxlength="262144"><?= $h($text) ?></textarea><button name="submit_proposal" value="1">Kirim usulan</button></form>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        <?php else: ?>
+            <p><?= $h(basename($share['target_path'])) ?></p>
+            <div class="actions">
+                <?php if (!empty($permissions['preview'])): ?><a href="<?= $h(share_url($token, ['media' => ''])) ?>" target="_blank" rel="noopener">Preview</a><?php endif; ?>
+                <?php if (!empty($permissions['download'])): ?><a href="<?= $h(share_url($token, ['download' => ''])) ?>">Download</a><?php endif; ?>
+            </div>
+            <?php if (!empty($permissions['preview']) && share_is_text_file($currentPath)): ?>
+                <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
+                <div class="card"><h2>Preview</h2><pre><?= $h($text) ?></pre></div>
+                <?php if (!empty($permissions['propose'])): ?>
+                    <div class="card"><h2>Usulkan perubahan</h2><p>Perubahan akan ditinjau admin sebelum diterapkan.</p>
+                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea name="content" maxlength="262144"><?= $h($text) ?></textarea><button name="submit_proposal" value="1">Kirim usulan</button></form>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        <?php endif; ?>
+    </body>
+    </html>
+    <?php
+}
+
+function fm_render_share_admin()
+{
+    if (empty($_SESSION['share_admin_token'])) {
+        $_SESSION['share_admin_token'] = bin2hex(random_bytes(32));
+    }
+    $db = share_db();
+    $flash = $_SESSION['share_admin_flash'] ?? '';
+    unset($_SESSION['share_admin_flash']);
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (!isset($_POST['csrf']) || !hash_equals($_SESSION['share_admin_token'], (string) $_POST['csrf'])) {
+            http_response_code(400);
+            exit('Sesi form tidak valid. Muat ulang halaman.');
+        }
+        $action = $_POST['action'] ?? '';
+        try {
+            if ($action === 'revoke') {
+                $stmt = $db->prepare('UPDATE file_shares SET revoked = 1 WHERE id = ?');
+                $stmt->execute([(int) ($_POST['share_id'] ?? 0)]);
+                $_SESSION['share_admin_flash'] = $stmt->rowCount() ? 'Link berbagi telah dicabut.' : 'Link tidak ditemukan.';
+            } elseif ($action === 'review') {
+                $proposalId = (int) ($_POST['proposal_id'] ?? 0);
+                $decision = $_POST['decision'] ?? '';
+                if (!in_array($decision, ['approve', 'reject'], true)) {
+                    throw new RuntimeException('Keputusan review tidak valid.');
+                }
+                $stmt = $db->prepare("SELECT p.*, s.target_path, s.target_type, s.id AS share_id
+                    FROM file_share_proposals p
+                    JOIN file_shares s ON s.id = p.share_id
+                    WHERE p.id = ? AND p.status = 'pending'");
+                $stmt->execute([$proposalId]);
+                $proposal = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$proposal) {
+                    throw new RuntimeException('Usulan tidak ditemukan atau sudah ditinjau.');
+                }
+
+                if ($decision === 'approve') {
+                    $reviewShare = ['target_path' => $proposal['target_path'], 'target_type' => $proposal['target_type']];
+                    $filePath = share_resolve_path($reviewShare, $proposal['relative_path']);
+                    if ($filePath === false || !share_is_text_file($filePath) || !is_writable($filePath)) {
+                        throw new RuntimeException('File sudah tidak tersedia atau tidak dapat ditulis.');
+                    }
+                    $currentHash = hash_file('sha256', $filePath);
+                    if (!is_string($currentHash) || !hash_equals($proposal['original_hash'], $currentHash)) {
+                        throw new RuntimeException('Konflik: file asli berubah sejak usulan dibuat. Usulan tidak diterapkan.');
+                    }
+
+                    $tempPath = tempnam(dirname($filePath), '.share-proposal-');
+                    if ($tempPath === false || file_put_contents($tempPath, $proposal['proposed_content']) === false) {
+                        if ($tempPath !== false) {
+                            @unlink($tempPath);
+                        }
+                        throw new RuntimeException('Tidak dapat menyiapkan file perubahan.');
+                    }
+                    @chmod($tempPath, fileperms($filePath) & 0777);
+                    clearstatcache(true, $filePath);
+                    $currentHash = hash_file('sha256', $filePath);
+                    if (!is_string($currentHash) || !hash_equals($proposal['original_hash'], $currentHash)) {
+                        @unlink($tempPath);
+                        throw new RuntimeException('Konflik: file asli berubah selama proses review. Usulan tidak diterapkan.');
+                    }
+                    $backupPath = $filePath . '.share-backup-' . bin2hex(random_bytes(6));
+                    if (!rename($filePath, $backupPath)) {
+                        @unlink($tempPath);
+                        throw new RuntimeException('Tidak dapat menyiapkan penggantian file.');
+                    }
+                    if (!rename($tempPath, $filePath)) {
+                        rename($backupPath, $filePath);
+                        @unlink($tempPath);
+                        throw new RuntimeException('Perubahan gagal diterapkan; file asli dipulihkan.');
+                    }
+                    @unlink($backupPath);
+                }
+
+                $newStatus = $decision === 'approve' ? 'approved' : 'rejected';
+                $stmt = $db->prepare('UPDATE file_share_proposals SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ? AND status = ?');
+                $stmt->execute([$newStatus, $_SESSION['username'] ?? 'admin', gmdate('Y-m-d H:i:s'), $proposalId, 'pending']);
+                if ($stmt->rowCount() !== 1) {
+                    throw new RuntimeException('Status usulan tidak dapat diperbarui.');
+                }
+                $_SESSION['share_admin_flash'] = $decision === 'approve' ? 'Usulan diterapkan.' : 'Usulan ditolak.';
+            } else {
+                throw new RuntimeException('Aksi tidak dikenal.');
+            }
+        } catch (Throwable $e) {
+            $_SESSION['share_admin_flash'] = 'Gagal: ' . $e->getMessage();
+        }
+        header('Location: filemanager.php?share_admin=1');
+        exit;
+    }
+
+    $shares = $db->query('SELECT * FROM file_shares ORDER BY created_at DESC, id DESC')->fetchAll(PDO::FETCH_ASSOC);
+    $proposals = $db->query("SELECT p.*, s.target_path, s.target_type, s.token
+        FROM file_share_proposals p
+        JOIN file_shares s ON s.id = p.share_id
+        ORDER BY CASE p.status WHEN 'pending' THEN 0 ELSE 1 END, p.submitted_at DESC")->fetchAll(PDO::FETCH_ASSOC);
+    $escape = function ($value) {
+        return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    };
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') ? 'https' : 'http';
+    $scriptDirectory = str_replace('\\', '/', dirname($_SERVER['PHP_SELF']));
+    $basePath = $scriptDirectory === '.' ? '' : rtrim($scriptDirectory, '/');
+    ?>
+    <!doctype html>
+    <html lang="id">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Kelola Link Berbagi</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body{max-width:1200px;margin:28px auto;padding:0 18px}.diff{max-height:360px;overflow:auto;background:#111827;color:#e5e7eb;padding:14px;border-radius:8px;white-space:pre-wrap;font:13px ui-monospace,monospace}
+            .diff .add{color:#86efac}.diff .remove{color:#fca5a5}.diff .same{color:#9ca3af}
+        </style>
+    </head>
+    <body>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div><h1 class="h3 mb-1">Link berbagi</h1><p class="text-muted mb-0">Kelola masa berlaku, kuota akses, izin, dan usulan perubahan file.</p></div>
+            <a class="btn btn-outline-primary" href="filemanager.php?p=">Kembali ke File Manager</a>
+        </div>
+        <?php if ($flash !== ''): ?><div class="alert alert-info"><?= $escape($flash) ?></div><?php endif; ?>
+
+        <section class="mb-5">
+            <h2 class="h4">Link yang dibuat</h2>
+            <div class="table-responsive"><table class="table table-striped align-middle">
+                <thead><tr><th>Target</th><th>Akses</th><th>Kedaluwarsa</th><th>Izin</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                <?php foreach ($shares as $share): ?>
+                    <?php
+                    $permissions = share_permissions($share);
+                    $publicUrl = $scheme . '://' . $_SERVER['HTTP_HOST'] . $basePath . '/filemanager.php?share=' . $share['token'];
+                    $accessLabel = (int) $share['max_accesses'] === 0
+                        ? (int) $share['access_count'] . ' / tanpa batas'
+                        : (int) $share['access_count'] . ' / ' . (int) $share['max_accesses'];
+                    ?>
+                    <tr>
+                        <td><strong><?= $escape(basename($share['target_path'])) ?></strong><br><small class="text-muted"><?= $escape($share['target_path']) ?></small><br><a href="<?= $escape($publicUrl) ?>" target="_blank" rel="noopener">Buka link</a></td>
+                        <td><?= $escape($accessLabel) ?> sesi</td>
+                        <td><?= $share['expires_at'] ? $escape($share['expires_at']) . ' UTC' : 'Tidak kedaluwarsa' ?></td>
+                        <td><?= $escape(implode(', ', array_keys(array_filter($permissions))) ?: 'Tidak ada') ?><?= $share['pin_hash'] ? ', PIN' : '' ?></td>
+                        <td><?= (int) $share['revoked'] ? 'Dicabut' : (share_expired($share) ? 'Kedaluwarsa' : 'Aktif') ?></td>
+                        <td><?php if (!(int) $share['revoked']): ?><form method="post"><input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>"><input type="hidden" name="action" value="revoke"><input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cabut link ini?')">Cabut</button></form><?php endif; ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                <?php if (!$shares): ?><tr><td colspan="6" class="text-muted">Belum ada link berbagi. Buat melalui menu konteks file atau folder.</td></tr><?php endif; ?>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section>
+            <h2 class="h4">Usulan perubahan file</h2>
+            <p class="text-muted">Persetujuan hanya diterapkan jika file asli belum berubah sejak usulan dibuat; jika berubah, usulan ditandai konflik dan tidak menimpa file.</p>
+            <?php foreach ($proposals as $proposal): ?>
+                <?php
+                $reviewShare = ['target_path' => $proposal['target_path'], 'target_type' => $proposal['target_type']];
+                $filePath = share_resolve_path($reviewShare, $proposal['relative_path']);
+                $original = $filePath !== false && is_file($filePath) ? file_get_contents($filePath) : false;
+                $diff = is_string($original)
+                    ? share_diff_lines($original, $proposal['proposed_content'])
+                    : [['kind' => 'notice', 'text' => 'File sumber tidak tersedia; usulan tidak dapat diterapkan.']];
+                $proposalName = $proposal['relative_path'] !== '' ? $proposal['relative_path'] : basename($proposal['target_path']);
+                ?>
+                <article class="card mb-3">
+                    <div class="card-header d-flex justify-content-between"><strong><?= $escape($proposalName) ?></strong><span><?= $escape($proposal['status']) ?> · <?= $escape($proposal['submitted_at']) ?> UTC</span></div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-2">Link token: <?= $escape(substr($proposal['token'], 0, 10)) ?>…</p>
+                        <pre class="diff"><?php foreach ($diff as $line): ?><span class="<?= $escape($line['kind']) ?>"><?= $escape(($line['kind'] === 'add' ? '+ ' : ($line['kind'] === 'remove' ? '- ' : '  ')) . $line['text']) . "\n" ?></span><?php endforeach; ?></pre>
+                        <?php if ($proposal['status'] === 'pending'): ?>
+                            <form method="post" class="d-flex gap-2">
+                                <input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>">
+                                <input type="hidden" name="action" value="review">
+                                <input type="hidden" name="proposal_id" value="<?= (int) $proposal['id'] ?>">
+                                <button class="btn btn-success" name="decision" value="approve" onclick="return confirm('Terapkan usulan ke file asli?')">Review &amp; terapkan</button>
+                                <button class="btn btn-outline-danger" name="decision" value="reject" onclick="return confirm('Tolak usulan ini?')">Tolak</button>
+                            </form>
+                        <?php else: ?><small class="text-muted">Ditinjau oleh <?= $escape($proposal['reviewed_by'] ?? 'admin') ?> pada <?= $escape($proposal['reviewed_at'] ?? '') ?> UTC</small><?php endif; ?>
+                    </div>
+                </article>
+            <?php endforeach; ?>
+            <?php if (!$proposals): ?><p class="text-muted">Belum ada usulan perubahan.</p><?php endif; ?>
+        </section>
+    </body>
+    </html>
+    <?php
+}
+
+if (isset($_GET['share'])) {
+    fm_render_public_share();
+    exit;
+}
+
 require_once __DIR__ . '/index.php';
+
+if (isset($_GET['share_admin'])) {
+    if (!has_permission('filemanager', 'write')) {
+        http_response_code(403);
+        exit('Akses ditolak.');
+    }
+    fm_render_share_admin();
+    exit;
+}
 
 // RBAC Check for FileManager
 if (!has_permission('filemanager', 'read')) {
@@ -704,6 +1483,136 @@ $show_disk_usage = isset($cfg->data['show_disk_usage']) ? $cfg->data['show_disk_
       if (!verifyToken($_POST['token'])) {
           header('HTTP/1.0 401 Unauthorized');
           die("Invalid Token.");
+      }
+
+      if (isset($_POST['type']) && $_POST['type'] === 'share_create') {
+          header('Content-Type: application/json');
+          $relativePath = share_relative_path($_POST['relative_path'] ?? null);
+          if ($relativePath === false || $relativePath === '') {
+              echo json_encode(['success' => false, 'message' => 'Lokasi berbagi tidak valid.']);
+              exit;
+          }
+
+          $root = realpath(FM_ROOT_PATH);
+          $candidate = $root === false ? false : $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+          $segments = explode('/', $relativePath);
+          $walkPath = $root;
+          foreach ($segments as $segment) {
+              $walkPath .= DIRECTORY_SEPARATOR . $segment;
+              if (is_link($walkPath)) {
+                  $candidate = false;
+                  break;
+              }
+          }
+          $targetPath = $candidate === false ? false : realpath($candidate);
+          $rootPrefix = $root === false ? '' : rtrim($root, '\\/') . DIRECTORY_SEPARATOR;
+          if ($targetPath === false || ($targetPath !== $root && strncmp($targetPath, $rootPrefix, strlen($rootPrefix)) !== 0)
+              || (!is_file($targetPath) && !is_dir($targetPath))) {
+              echo json_encode(['success' => false, 'message' => 'File atau folder tidak ditemukan atau tidak dapat dibagikan.']);
+              exit;
+          }
+
+          $permissions = [];
+          $submittedPermissions = $_POST['permissions'] ?? [];
+          if (!is_array($submittedPermissions)) {
+              echo json_encode(['success' => false, 'message' => 'Izin berbagi tidak valid.']);
+              exit;
+          }
+          foreach (['browse', 'preview', 'download', 'propose'] as $permission) {
+              if (isset($submittedPermissions[$permission]) && $submittedPermissions[$permission] === '1') {
+                  $permissions[$permission] = true;
+              }
+          }
+          if (!$permissions) {
+              echo json_encode(['success' => false, 'message' => 'Pilih minimal satu izin.']);
+              exit;
+          }
+          if (!empty($permissions['propose']) && empty($permissions['preview'])) {
+              echo json_encode(['success' => false, 'message' => 'Izin usulan perubahan memerlukan izin preview.']);
+              exit;
+          }
+          if (!empty($permissions['propose']) && is_dir($targetPath) && empty($permissions['browse'])) {
+              echo json_encode(['success' => false, 'message' => 'Izin usulan perubahan pada folder memerlukan izin jelajah folder.']);
+              exit;
+          }
+          if (is_dir($targetPath) && !empty($permissions['preview']) && empty($permissions['browse'])) {
+              echo json_encode(['success' => false, 'message' => 'Izin preview file pada folder memerlukan izin jelajah folder.']);
+              exit;
+          }
+          if (is_file($targetPath)) {
+              unset($permissions['browse']);
+          }
+
+          $pin = trim((string) ($_POST['pin'] ?? ''));
+          if ($pin !== '' && (strlen($pin) < 4 || strlen($pin) > 64)) {
+              echo json_encode(['success' => false, 'message' => 'PIN harus berisi 4 sampai 64 karakter.']);
+              exit;
+          }
+          $maxAccesses = filter_var($_POST['max_accesses'] ?? '0', FILTER_VALIDATE_INT);
+          if ($maxAccesses === false || $maxAccesses < 0 || $maxAccesses > 1000000) {
+              echo json_encode(['success' => false, 'message' => 'Batas akses harus angka antara 0 sampai 1.000.000 (0 = tanpa batas).']);
+              exit;
+          }
+
+          $expiresAt = null;
+          if (!empty($_POST['expiry_enabled'])) {
+              try {
+                  if (($_POST['expiry_mode'] ?? 'duration') === 'date') {
+                      $inputDate = (string) ($_POST['expires_at'] ?? '');
+                      $expiry = DateTime::createFromFormat('Y-m-d\TH:i:s.v\Z', $inputDate, new DateTimeZone('UTC'));
+                      if (!$expiry || $expiry->format('Y-m-d\TH:i:s.v\Z') !== $inputDate) {
+                          throw new InvalidArgumentException('Tanggal kedaluwarsa tidak valid.');
+                      }
+                  } elseif (($_POST['expiry_mode'] ?? 'duration') === 'duration') {
+                      $amount = filter_var($_POST['expiry_amount'] ?? '7', FILTER_VALIDATE_INT);
+                      $unit = $_POST['expiry_unit'] ?? 'days';
+                      $unitSeconds = ['minutes' => 60, 'hours' => 3600, 'days' => 86400, 'weeks' => 604800];
+                      if ($amount === false || $amount < 1 || $amount > 3650 || !isset($unitSeconds[$unit])) {
+                          throw new InvalidArgumentException('Durasi kedaluwarsa tidak valid.');
+                      }
+                      $expiry = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
+                      $expiry->modify('+' . ($amount * $unitSeconds[$unit]) . ' seconds');
+                  } else {
+                      throw new InvalidArgumentException('Mode kedaluwarsa tidak valid.');
+                  }
+                  if ($expiry->getTimestamp() <= time()) {
+                      throw new InvalidArgumentException('Masa berlaku harus di waktu mendatang.');
+                  }
+                  $expiry->setTimezone(new DateTimeZone('UTC'));
+                  $expiresAt = $expiry->format('Y-m-d H:i:s');
+              } catch (Exception $e) {
+                  echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                  exit;
+              }
+          }
+
+          $token = bin2hex(random_bytes(24));
+          try {
+              $stmt = share_db()->prepare('INSERT INTO file_shares (token, target_path, target_type, permissions, pin_hash, max_accesses, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+              $stmt->execute([
+                  $token,
+                  $targetPath,
+                  is_dir($targetPath) ? 'folder' : 'file',
+                  json_encode($permissions),
+                  $pin !== '' ? password_hash($pin, PASSWORD_DEFAULT) : null,
+                  $maxAccesses,
+                  $expiresAt,
+                  $_SESSION['username'] ?? 'admin',
+                  gmdate('Y-m-d H:i:s')
+              ]);
+          } catch (PDOException $e) {
+              error_log('File share creation failed: ' . $e->getMessage());
+              http_response_code(500);
+              echo json_encode(['success' => false, 'message' => 'Link berbagi gagal disimpan.']);
+              exit;
+          }
+          $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+              || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') ? 'https' : 'http';
+          $scriptDirectory = str_replace('\\', '/', dirname($_SERVER['PHP_SELF']));
+          $basePath = $scriptDirectory === '.' ? '' : rtrim($scriptDirectory, '/');
+          $url = $scheme . '://' . $_SERVER['HTTP_HOST'] . $basePath . '/filemanager.php?share=' . $token;
+          echo json_encode(['success' => true, 'url' => $url]);
+          exit;
       }
 
       // Server-side Favorites stored in the current user session
@@ -6129,6 +7038,11 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           <a class="nav-link p-2" href="adminer.php" title="Database"><i class="fa fa-database"></i><span class="d-md-none ms-1">Database</span></a>
                       </li>
 <?php if (!FM_READONLY): ?>
+                      <li class="nav-item me-1">
+                          <a class="nav-link p-2" href="filemanager.php?share_admin=1" title="Kelola link berbagi"><i class="fa fa-share-alt"></i><span class="d-md-none ms-1">Link berbagi</span></a>
+                      </li>
+<?php endif; ?>
+<?php if (!FM_READONLY): ?>
                           <!-- <li class="nav-item me-1">
                               <a title="<?php echo lng('Upload') ?>" class="nav-link p-2" href="?p=<?php echo urlencode(FM_PATH) ?>&amp;upload">
                                   <i class="fa fa-cloud-upload" aria-hidden="true"></i><span class="d-md-none ms-1"><?php echo lng('Upload') ?></span>
@@ -8629,6 +9543,8 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                            <div class="fm-cm-item" data-act="preview"><i class="fa fa-eye" style="width:18px;margin-right:8px;"></i>Preview</div>
                            <div class="fm-cm-item" data-act="download"><i class="fa fa-download" style="width:18px;margin-right:8px;"></i>Download</div>
                            <div class="fm-cm-item" data-act="link"><i class="fa fa-link" style="width:18px;margin-right:8px;"></i>Copy Direct Link</div>
+                           <?php if (!FM_READONLY): ?><div class="fm-cm-item" data-act="share"><i class="fa fa-share-alt" style="width:18px;margin-right:8px;"></i>Create share link</div><?php endif; ?>
+                           <div class="fm-cm-item" data-act="manage-shares"><i class="fa fa-list" style="width:18px;margin-right:8px;"></i>Manage share links</div>
                            <div class="fm-cm-sep" style="height:1px;margin:6px 0;background:#333"></div>
                            <div class="fm-cm-item" data-act="create-file"><i class="fa fa-file-o" style="width:18px;margin-right:8px;"></i>Create File</div>
                            <div class="fm-cm-item" data-act="create-folder"><i class="fa fa-folder" style="width:18px;margin-right:8px;"></i>Create Folder</div>
@@ -8670,13 +9586,13 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                 const act = item.dataset.act;
                                 
                                 // Hide everything except Create when in general mode
-                                if (type === 'general' && !['create-file', 'create-folder', 'upload-file', 'paste'].includes(act)) {
+                                if (type === 'general' && !['create-file', 'create-folder', 'upload-file', 'paste', 'manage-shares'].includes(act)) {
                                     item.style.display = 'none';
                                 } else if (type === 'folder') {
-                                    if (['preview','download','extract'].includes(act)) item.style.display = 'none';
+                                    if (['preview','download','extract','manage-shares'].includes(act)) item.style.display = 'none';
                                 } else if (type === 'file') {
                                     if (act === 'extract' && !isArchive) item.style.display = 'none';
-                                    if (['create-file', 'create-folder'].includes(act)) item.style.display = 'none';
+                                    if (['create-file', 'create-folder', 'manage-shares'].includes(act)) item.style.display = 'none';
                                 }
                             });
                             
@@ -8733,7 +9649,7 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                            const act = e.target.closest('.fm-cm-item')?.dataset?.act;
                            if (!act) return;
                             
-                           const isGeneralAction = ['create-file', 'create-folder', 'upload-file', 'paste'].includes(act);
+                           const isGeneralAction = ['create-file', 'create-folder', 'upload-file', 'paste', 'manage-shares'].includes(act);
                            if (!isGeneralAction && !currentTarget) return;
                            
                            const type = currentTarget ? currentTarget.getAttribute('data-type') : 'general';
@@ -8756,6 +9672,10 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                                 const directUrl = baseUrl + relativePath + '/' + name;
                                 if (navigator.clipboard) navigator.clipboard.writeText(directUrl).then(() => { if (window.showToast) window.showToast('Copied!'); else window.showToast('Copied to clipboard'); });
                                 else window.open(directUrl, '_blank');
+                           } else if (act === 'share') {
+                               createShareLink(path, name, type);
+                           } else if (act === 'manage-shares') {
+                               window.location.href = 'filemanager.php?share_admin=1';
                            } else if (act === 'create-file') { openCreateModal('file'); }
                            else if (act === 'create-folder') { openCreateModal('folder'); }
                            else if (act === 'rename') {
@@ -8821,6 +9741,137 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                    initContextMenu();
                    enableDragDrop();
                });
+
+              async function createShareLink(path, name, type) {
+                  const isFolder = type === 'folder';
+                  const result = await Swal.fire({
+                      title: 'Buat link berbagi',
+                      html: `<div class="text-start">
+                          <p class="small text-muted text-break">${escapeShareText((path ? path + '/' : '') + name)}</p>
+                          ${isFolder ? '<label class="d-block mb-2"><input type="checkbox" id="share-browse" checked> Jelajahi folder</label>' : ''}
+                          <label class="d-block mb-2"><input type="checkbox" id="share-preview" checked> Preview file</label>
+                          <label class="d-block mb-2"><input type="checkbox" id="share-download" checked> Download file / ZIP folder</label>
+                          <label class="d-block mb-2"><input type="checkbox" id="share-propose"> Izinkan usulan perubahan file teks (review admin)</label>
+                          <label class="form-label mt-2">PIN opsional (minimal 4 karakter)</label>
+                          <input class="form-control" type="password" id="share-pin" autocomplete="new-password">
+                          <label class="form-label mt-2">Batas sesi akses (0 = tanpa batas)</label>
+                          <input class="form-control" type="number" id="share-max-accesses" min="0" max="1000000" value="0">
+                          <label class="d-block mt-3"><input type="checkbox" id="share-expiry-enabled" checked> Atur masa berlaku</label>
+                          <select class="form-select mt-2" id="share-expiry-mode"><option value="duration">Durasi</option><option value="date">Tanggal dan waktu</option></select>
+                          <div id="share-duration-fields" class="input-group mt-2"><input class="form-control" type="number" id="share-expiry-amount" min="1" max="3650" value="7"><select class="form-select" id="share-expiry-unit"><option value="minutes">Menit</option><option value="hours">Jam</option><option value="days" selected>Hari</option><option value="weeks">Minggu</option></select></div>
+                          <input class="form-control mt-2" type="datetime-local" id="share-expires-at" style="display:none">
+                      </div>`,
+                      showCancelButton: true,
+                      confirmButtonText: 'Buat link',
+                      cancelButtonText: 'Batal',
+                      didOpen: () => {
+                          const mode = document.getElementById('share-expiry-mode');
+                          const updateExpiryInputs = () => {
+                              const isDate = mode.value === 'date';
+                              document.getElementById('share-duration-fields').style.display = isDate ? 'none' : 'flex';
+                              document.getElementById('share-expires-at').style.display = isDate ? '' : 'none';
+                          };
+                          mode.addEventListener('change', updateExpiryInputs);
+                          document.getElementById('share-expiry-enabled').addEventListener('change', event => {
+                              document.querySelectorAll('#share-expiry-mode,#share-duration-fields,#share-expires-at').forEach(input => {
+                                  input.disabled = !event.target.checked;
+                              });
+                          });
+                      },
+                      preConfirm: () => {
+                          const permissions = {};
+                          ['browse', 'preview', 'download', 'propose'].forEach(permission => {
+                              const input = document.getElementById('share-' + permission);
+                              if (input && input.checked) permissions[permission] = '1';
+                          });
+                          if (!Object.keys(permissions).length) {
+                              Swal.showValidationMessage('Pilih minimal satu izin.');
+                              return false;
+                          }
+                          if (permissions.propose && (!permissions.preview || (isFolder && !permissions.browse))) {
+                              Swal.showValidationMessage('Usulan perubahan memerlukan preview; untuk folder, aktifkan juga jelajah folder.');
+                              return false;
+                          }
+                          if (isFolder && permissions.preview && !permissions.browse) {
+                              Swal.showValidationMessage('Preview file pada folder memerlukan izin jelajah folder.');
+                              return false;
+                          }
+                          const pin = document.getElementById('share-pin').value;
+                          if (pin && (pin.length < 4 || pin.length > 64)) {
+                              Swal.showValidationMessage('PIN harus berisi 4 sampai 64 karakter.');
+                              return false;
+                          }
+                          if (document.getElementById('share-expiry-enabled').checked
+                              && document.getElementById('share-expiry-mode').value === 'date'
+                              && !document.getElementById('share-expires-at').value) {
+                              Swal.showValidationMessage('Pilih tanggal dan waktu kedaluwarsa.');
+                              return false;
+                          }
+                          return {
+                              permissions,
+                              pin,
+                              max_accesses: document.getElementById('share-max-accesses').value,
+                              expiry_enabled: document.getElementById('share-expiry-enabled').checked ? '1' : '',
+                              expiry_mode: document.getElementById('share-expiry-mode').value,
+                              expiry_amount: document.getElementById('share-expiry-amount').value,
+                              expiry_unit: document.getElementById('share-expiry-unit').value,
+                              expires_at: document.getElementById('share-expiry-mode').value === 'date'
+                                  && document.getElementById('share-expires-at').value
+                                  ? new Date(document.getElementById('share-expires-at').value).toISOString()
+                                  : ''
+                          };
+                      }
+                  });
+                  if (!result.isConfirmed) return;
+
+                  const body = new URLSearchParams({
+                      ajax: '1',
+                      type: 'share_create',
+                      token: window.csrf,
+                      relative_path: (path ? path + '/' : '') + name,
+                      pin: result.value.pin,
+                      max_accesses: result.value.max_accesses,
+                      expiry_enabled: result.value.expiry_enabled,
+                      expiry_mode: result.value.expiry_mode,
+                      expiry_amount: result.value.expiry_amount,
+                      expiry_unit: result.value.expiry_unit,
+                      expires_at: result.value.expires_at
+                  });
+                  Object.entries(result.value.permissions).forEach(([key, value]) => body.append('permissions[' + key + ']', value));
+                  try {
+                      const response = await fetch(window.location.pathname + window.location.search, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                          body
+                      });
+                      const data = await response.json();
+                      if (!response.ok || !data.success) throw new Error(data.message || 'Tidak dapat membuat link.');
+                      await Swal.fire({
+                          title: 'Link berhasil dibuat',
+                          html: `<input class="form-control" readonly value="${escapeShareText(data.url)}">`,
+                          confirmButtonText: 'Salin link',
+                          showCancelButton: true,
+                          cancelButtonText: 'Tutup'
+                      }).then(async choice => {
+                          if (choice.isConfirmed && navigator.clipboard) {
+                              try {
+                                  await navigator.clipboard.writeText(data.url);
+                                  if (window.showToast) window.showToast('Link disalin.');
+                              } catch {
+                                  if (window.showToast) window.showToast('Link dibuat. Salin dari kotak di atas.');
+                              }
+                          }
+                      });
+                  } catch (error) {
+                      Swal.fire('Gagal membuat link', error.message, 'error');
+                  }
+              }
+
+              function escapeShareText(value) {
+                  return String(value).replace(/[&<>"']/g, character => ({
+                      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                  })[character]);
+              }
 
 
 
