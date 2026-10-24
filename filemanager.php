@@ -410,8 +410,157 @@ function share_page_error($message, $status = 404)
 {
     http_response_code($status);
     $escaped = htmlspecialchars($message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    echo '<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Share tidak tersedia</title><body style="font:16px system-ui;max-width:680px;margin:10vh auto;padding:24px"><h1>Link tidak tersedia</h1><p>' . $escaped . '</p></body></html>';
+    fm_share_render_page_start('Link tidak tersedia', 'Link berbagi');
+    echo '<section class="fm-share-card fm-share-error"><div class="fm-share-card-icon"><i class="fa fa-link"></i></div><h2>Link tidak tersedia</h2><p>' . $escaped . '</p></section>';
+    fm_share_render_page_end();
     exit;
+}
+
+function fm_share_render_page_start($title, $section = '')
+{
+    $title = htmlspecialchars((string) $title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $bootstrapCss = file_exists(__DIR__ . '/assets/vendor/bootstrap/bootstrap.min.css')
+        ? 'assets/vendor/bootstrap/bootstrap.min.css'
+        : 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css';
+    $fontAwesomeCss = file_exists(__DIR__ . '/assets/vendor/fontawesome4/css/font-awesome.min.css')
+        ? 'assets/vendor/fontawesome4/css/font-awesome.min.css'
+        : 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
+    ?>
+    <!doctype html>
+    <html lang="id" data-bs-theme="dark">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <meta name="robots" content="noindex,nofollow">
+        <title><?= $title ?> - RFILE Manager</title>
+        <link rel="stylesheet" href="<?= htmlspecialchars($bootstrapCss, ENT_QUOTES, 'UTF-8') ?>">
+        <link rel="stylesheet" href="<?= htmlspecialchars($fontAwesomeCss, ENT_QUOTES, 'UTF-8') ?>">
+        <style>
+            :root {
+                color-scheme: dark;
+                --bg-body: #000;
+                --bg-sidebar: #0a0a0a;
+                --bg-card: #111;
+                --bg-hover: #222;
+                --bg-input: #1a1a1a;
+                --border-color: #333;
+                --text-primary: #fff;
+                --text-secondary: #aaa;
+                --accent: #fff;
+                --danger: #ff4444;
+                --success: #00c851;
+                --share-radius: 8px;
+            }
+            html, body { min-height: 100%; }
+            body {
+                margin: 0;
+                background: var(--bg-body);
+                color: var(--text-primary);
+                font: 15px 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            }
+            a { color: var(--text-primary); text-decoration: none; }
+            a:hover { color: var(--text-primary); text-decoration: underline; }
+            .fm-share-shell { width: min(1180px, 100%); margin: 0 auto; padding: 0 24px 48px; }
+            .fm-share-nav {
+                min-height: 58px; display: flex; align-items: center; justify-content: space-between;
+                gap: 16px; border-bottom: 1px solid var(--border-color); margin-bottom: 28px;
+            }
+            .fm-share-brand { display: inline-flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
+            .fm-share-brand i { color: var(--text-secondary); }
+            .fm-share-breadcrumb { color: var(--text-secondary); font-size: 13px; margin-left: 4px; }
+            .fm-share-nav-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+            .fm-share-main { min-width: 0; }
+            .fm-share-heading { margin-bottom: 22px; }
+            .fm-share-heading h1 { font-size: clamp(22px, 3vw, 30px); font-weight: 600; margin: 0 0 6px; overflow-wrap: anywhere; }
+            .fm-share-heading p, .fm-share-muted { color: var(--text-secondary) !important; margin: 0; }
+            .fm-share-card {
+                background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color);
+                border-radius: var(--share-radius); padding: 20px; margin: 16px 0;
+            }
+            .fm-share-card h2 { font-size: 18px; margin: 0 0 14px; }
+            .fm-share-card p:last-child { margin-bottom: 0; }
+            .fm-share-card-icon { color: var(--text-secondary); font-size: 24px; margin-bottom: 12px; }
+            .fm-share-error { max-width: 640px; }
+            .fm-share-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+            .fm-share-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0; }
+            .fm-share-table-wrap { overflow-x: auto; border: 1px solid var(--border-color); border-radius: var(--share-radius); }
+            .fm-share-table { width: 100%; margin: 0; color: var(--text-primary); vertical-align: middle; }
+            .fm-share-table > :not(caption) > * > * {
+                color: var(--text-primary); background: var(--bg-card); border-color: var(--border-color); padding: 12px;
+            }
+            .fm-share-table thead th { background: var(--bg-sidebar); font-weight: 600; white-space: nowrap; }
+            .fm-share-table tbody tr:hover > * { background: var(--bg-hover); }
+            .fm-share-table .text-muted, .fm-share-card .text-muted { color: var(--text-secondary) !important; }
+            .fm-share-path { overflow-wrap: anywhere; }
+            .fm-share-preview {
+                display: flex; justify-content: center; align-items: center; min-height: 180px;
+                background: var(--bg-sidebar); border: 1px solid var(--border-color); border-radius: 6px; overflow: auto;
+            }
+            .fm-share-preview img, .fm-share-preview video { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
+            .fm-share-preview audio { width: min(560px, 100%); }
+            .fm-share-preview iframe { width: 100%; height: 75vh; border: 0; }
+            .fm-share-code, .fm-share-diff {
+                margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+                background: var(--bg-sidebar); border: 1px solid var(--border-color); border-radius: 6px;
+                color: var(--text-primary); font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+            }
+            .fm-share-proposal textarea, .fm-share-auth input {
+                width: 100%; background: var(--bg-input); border: 1px solid var(--border-color);
+                border-radius: 4px; color: var(--text-primary); padding: 10px 12px;
+            }
+            .fm-share-proposal textarea { min-height: 280px; font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
+            .fm-share-auth { max-width: 460px; margin: min(10vh, 100px) auto; }
+            .fm-share-auth label { display: block; margin: 16px 0 6px; color: var(--text-secondary); }
+            .fm-share-auth .btn { margin-top: 16px; }
+            .fm-share-diff .add { color: #86efac; }
+            .fm-share-diff .remove { color: #fca5a5; }
+            .fm-share-diff .same { color: var(--text-secondary); }
+            .fm-share-badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-color); border-radius: 999px; padding: 4px 10px; color: var(--text-secondary); font-size: 12px; }
+            .fm-share-card .form-control, .fm-share-card .form-select {
+                background-color: var(--bg-input); border-color: var(--border-color); color: var(--text-primary);
+            }
+            .fm-share-card .form-control:focus, .fm-share-card .form-select:focus {
+                background-color: var(--bg-input); border-color: var(--accent); color: var(--text-primary); box-shadow: none;
+            }
+            .fm-share-card .form-check-input { background-color: var(--bg-input); border-color: var(--border-color); }
+            .fm-share-card .form-check-input:checked { background-color: var(--text-primary); border-color: var(--text-primary); }
+            .fm-share-card .alert { background: var(--bg-sidebar); border-color: var(--border-color); color: var(--text-primary); }
+            .fm-share-card .btn-outline-primary, .fm-share-nav .btn-outline-primary {
+                color: var(--text-primary); border-color: var(--border-color);
+            }
+            .fm-share-card .btn-outline-primary:hover, .fm-share-nav .btn-outline-primary:hover {
+                background: var(--bg-hover); border-color: var(--text-primary); color: var(--text-primary);
+            }
+            @media (max-width: 640px) {
+                .fm-share-shell { padding: 0 14px 32px; }
+                .fm-share-nav { align-items: flex-start; padding: 14px 0; margin-bottom: 20px; }
+                .fm-share-nav-actions { justify-content: flex-end; }
+                .fm-share-card { padding: 16px; }
+                .fm-share-table { min-width: 720px; }
+            }
+        </style>
+    </head>
+    <body>
+    <div class="fm-share-shell">
+        <header class="fm-share-nav">
+            <a class="fm-share-brand" href="filemanager.php?p="><i class="fa fa-folder-open-o" aria-hidden="true"></i><span>RFILE Manager</span><?php if ($section !== ''): ?><span class="fm-share-breadcrumb">/ <?= htmlspecialchars((string) $section, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span><?php endif; ?></a>
+            <?php if (isset($_SESSION['user_id'])): ?>
+                <div class="fm-share-nav-actions"><a class="btn btn-sm btn-outline-primary" href="filemanager.php?share_admin=1"><i class="fa fa-share-alt me-1"></i>Kelola berbagi</a><a class="btn btn-sm btn-outline-primary" href="filemanager.php?p="><i class="fa fa-arrow-left me-1"></i>File Manager</a></div>
+            <?php endif; ?>
+        </header>
+        <main class="fm-share-main">
+            <div class="fm-share-heading"><h1><?= $title ?></h1><?php if ($section !== ''): ?><p><?= htmlspecialchars((string) $section, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></p><?php endif; ?></div>
+    <?php
+}
+
+function fm_share_render_page_end()
+{
+    ?>
+        </main>
+    </div>
+    </body>
+    </html>
+    <?php
 }
 
 function share_url($token, array $parameters = [])
@@ -552,8 +701,24 @@ function fm_render_public_share()
         if (!share_has_grant($token)) {
             $escapedError = htmlspecialchars($pinError, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             $escapedFormToken = htmlspecialchars($formToken, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-            $pinField = $hasPin ? '<label>PIN <input type="password" name="pin" required autocomplete="one-time-code"></label>' : '<p>Tekan lanjutkan untuk membuka file atau folder yang dibagikan.</p>';
-            echo '<!doctype html><html lang="id"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Buka link berbagi</title><body style="font:16px system-ui;max-width:420px;margin:12vh auto;padding:24px"><h1>Link berbagi</h1><p style="color:#b91c1c">' . $escapedError . '</p><form method="post"><input type="hidden" name="form_token" value="' . $escapedFormToken . '">' . $pinField . '<button name="unlock" value="1">Lanjutkan</button></form></body></html>';
+            fm_share_render_page_start('Link berbagi', 'Akses file atau folder yang dibagikan');
+            ?>
+            <section class="fm-share-card fm-share-auth">
+                <div class="fm-share-card-icon"><i class="fa fa-lock"></i></div>
+                <h2><?= $hasPin ? 'Masukkan PIN' : 'Konfirmasi akses' ?></h2>
+                <p class="fm-share-muted"><?= $hasPin ? 'Link ini dilindungi PIN.' : 'Lanjutkan untuk membuka konten yang dibagikan.' ?></p>
+                <?php if ($pinError !== ''): ?><div class="alert alert-danger mt-3 mb-0" role="alert"><?= $escapedError ?></div><?php endif; ?>
+                <form method="post">
+                    <input type="hidden" name="form_token" value="<?= $escapedFormToken ?>">
+                    <?php if ($hasPin): ?>
+                        <label for="share-pin">PIN</label>
+                        <input class="form-control" id="share-pin" type="password" name="pin" required autocomplete="one-time-code" autofocus>
+                    <?php endif; ?>
+                    <button class="btn btn-primary" name="unlock" value="1"><i class="fa fa-unlock-alt me-1"></i>Lanjutkan</button>
+                </form>
+            </section>
+            <?php
+            fm_share_render_page_end();
             exit;
         }
     }
@@ -646,33 +811,19 @@ function fm_render_public_share()
     if ($parent === '.') {
         $parent = '';
     }
+    fm_share_render_page_start($title, $share['target_type'] === 'folder' ? 'Folder berbagi' : 'File berbagi');
     ?>
-    <!doctype html>
-    <html lang="id">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <meta name="robots" content="noindex,nofollow">
-        <title><?= $h($title) ?> - Shared file</title>
-        <style>
-            body{font:16px system-ui,sans-serif;max-width:1000px;margin:32px auto;padding:0 18px;color:#1f2937}
-            .card{border:1px solid #d1d5db;border-radius:12px;padding:20px;margin:18px 0}
-            a,button{color:#155eef} table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:10px;border-bottom:1px solid #e5e7eb}
-            pre,textarea{white-space:pre-wrap;overflow:auto;background:#f3f4f6;padding:14px;border-radius:8px}
-            textarea{box-sizing:border-box;width:100%;min-height:260px;font:14px ui-monospace,monospace}
-            img,video,audio,iframe{max-width:100%}.actions{display:flex;gap:14px;flex-wrap:wrap}
-        </style>
-    </head>
-    <body>
-        <h1><?= $h($title) ?></h1>
-        <?php if ($share['target_type'] === 'folder'): ?>
-            <p><?= $h($relative === '' ? 'Folder berbagi' : $relative) ?></p>
-            <div class="actions">
-                <?php if ($relative !== ''): ?><a href="<?= $h(share_url($token, $parent !== '' ? ['item' => $parent] : [])) ?>">← Folder sebelumnya</a><?php endif; ?>
-                <?php if (!empty($permissions['download'])): ?><a href="<?= $h(share_url($token, ['zip' => 1])) ?>">Download folder ZIP</a><?php endif; ?>
+        <div class="fm-share-toolbar">
+            <span class="fm-share-badge"><i class="fa fa-<?= $share['target_type'] === 'folder' ? 'folder-open-o' : 'file-o' ?>"></i><?= $h($relative !== '' ? $relative : $title) ?></span>
+            <div class="fm-share-actions">
+                <?php if ($share['target_type'] === 'folder' && $relative !== ''): ?><a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, $parent !== '' ? ['item' => $parent] : [])) ?>"><i class="fa fa-arrow-left me-1"></i>Folder sebelumnya</a><?php endif; ?>
+                <?php if ($share['target_type'] === 'folder' && !empty($permissions['download'])): ?><a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, ['zip' => 1])) ?>"><i class="fa fa-download me-1"></i>Download ZIP</a><?php endif; ?>
+                <?php if ($share['target_type'] === 'file' && !empty($permissions['download'])): ?><a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, ['download' => ''])) ?>"><i class="fa fa-download me-1"></i>Download</a><?php endif; ?>
             </div>
+        </div>
+        <?php if ($share['target_type'] === 'folder'): ?>
             <?php if (!empty($permissions['browse']) && is_dir($currentPath)): ?>
-                <div class="card"><table><thead><tr><th>Nama</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>
+                <div class="fm-share-card p-0 overflow-hidden"><div class="fm-share-table-wrap border-0"><table class="table fm-share-table"><thead><tr><th>Nama</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>
                 <?php
                 $entries = scandir($currentPath);
                 if ($entries === false) {
@@ -687,50 +838,47 @@ function fm_render_public_share()
                     $isDirectory = is_dir($entryPath);
                     ?>
                     <tr><td><?= $h($entry) ?></td><td><?= $isDirectory ? 'Folder' : 'File' ?></td><td>
-                        <?php if ($isDirectory): ?><a href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>">Buka</a>
+                        <?php if ($isDirectory): ?><a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>"><i class="fa fa-folder-open-o me-1"></i>Buka</a>
                         <?php else: ?>
-                            <?php if (!empty($permissions['preview'])): ?><a href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>">Buka</a><?php endif; ?>
-                            <?php if (!empty($permissions['download'])): ?> <a href="<?= $h(share_url($token, ['download' => $entryRelative])) ?>">Download</a><?php endif; ?>
+                            <?php if (!empty($permissions['preview'])): ?><a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, ['item' => $entryRelative])) ?>"><i class="fa fa-eye me-1"></i>Preview</a><?php endif; ?>
+                            <?php if (!empty($permissions['download'])): ?> <a class="btn btn-sm btn-outline-primary" href="<?= $h(share_url($token, ['download' => $entryRelative])) ?>"><i class="fa fa-download me-1"></i>Download</a><?php endif; ?>
                         <?php endif; ?>
                     </td></tr>
                 <?php endforeach; ?>
-                </tbody></table></div>
+                </tbody></table></div></div>
             <?php elseif (!empty($permissions['preview']) && is_file($currentPath)): ?>
                 <?php $mime = function_exists('mime_content_type') ? (mime_content_type($currentPath) ?: '') : ''; ?>
-                <div class="card">
+                <section class="fm-share-card">
+                    <h2><i class="fa fa-eye me-2"></i>Preview</h2>
+                    <div class="fm-share-preview">
                     <?php if (strpos($mime, 'image/') === 0 && share_is_previewable_mime($mime)): ?><img src="<?= $h(share_url($token, ['media' => $relative])) ?>" alt="<?= $h(basename($currentPath)) ?>">
                     <?php elseif (strpos($mime, 'video/') === 0 && share_is_previewable_mime($mime)): ?><video src="<?= $h(share_url($token, ['media' => $relative])) ?>" controls></video>
                     <?php elseif (strpos($mime, 'audio/') === 0 && share_is_previewable_mime($mime)): ?><audio src="<?= $h(share_url($token, ['media' => $relative])) ?>" controls></audio>
-                    <?php elseif ($mime === 'application/pdf'): ?><iframe src="<?= $h(share_url($token, ['media' => $relative])) ?>" title="PDF preview" style="width:100%;height:75vh"></iframe>
-                    <?php elseif (share_is_text_file($currentPath)): ?><?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?><pre><?= $h($text) ?></pre>
+                    <?php elseif ($mime === 'application/pdf'): ?><iframe src="<?= $h(share_url($token, ['media' => $relative])) ?>" title="PDF preview"></iframe>
+                    <?php elseif (share_is_text_file($currentPath)): ?><?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?><pre class="fm-share-code"><?= $h($text) ?></pre>
                     <?php else: ?><p>Preview tidak tersedia untuk tipe file ini.</p><?php endif; ?>
-                </div>
+                    </div>
+                </section>
                 <?php if (!empty($permissions['propose']) && share_is_text_file($currentPath)): ?>
                     <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
-                    <div class="card"><h2>Usulkan perubahan</h2><p>Perubahan akan dikirim sebagai usulan untuk ditinjau admin; file asli tidak berubah sampai disetujui.</p>
-                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea name="content" maxlength="262144"><?= $h($text) ?></textarea><button name="submit_proposal" value="1">Kirim usulan</button></form>
-                    </div>
+                    <section class="fm-share-card fm-share-proposal"><h2><i class="fa fa-code-fork me-2"></i>Usulkan perubahan</h2><p class="fm-share-muted">Perubahan akan dikirim untuk ditinjau admin. File asli tidak berubah sebelum disetujui.</p>
+                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea class="form-control" name="content" maxlength="262144"><?= $h($text) ?></textarea><div class="fm-share-actions mt-3"><button class="btn btn-primary" name="submit_proposal" value="1"><i class="fa fa-paper-plane me-1"></i>Kirim usulan</button></div></form>
+                    </section>
                 <?php endif; ?>
             <?php endif; ?>
         <?php else: ?>
-            <p><?= $h(basename($share['target_path'])) ?></p>
-            <div class="actions">
-                <?php if (!empty($permissions['preview'])): ?><a href="<?= $h(share_url($token, ['media' => ''])) ?>" target="_blank" rel="noopener">Preview</a><?php endif; ?>
-                <?php if (!empty($permissions['download'])): ?><a href="<?= $h(share_url($token, ['download' => ''])) ?>">Download</a><?php endif; ?>
-            </div>
             <?php if (!empty($permissions['preview']) && share_is_text_file($currentPath)): ?>
                 <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
-                <div class="card"><h2>Preview</h2><pre><?= $h($text) ?></pre></div>
+                <section class="fm-share-card"><h2><i class="fa fa-eye me-2"></i>Preview</h2><pre class="fm-share-code"><?= $h($text) ?></pre></section>
                 <?php if (!empty($permissions['propose'])): ?>
-                    <div class="card"><h2>Usulkan perubahan</h2><p>Perubahan akan ditinjau admin sebelum diterapkan.</p>
-                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea name="content" maxlength="262144"><?= $h($text) ?></textarea><button name="submit_proposal" value="1">Kirim usulan</button></form>
-                    </div>
+                    <section class="fm-share-card fm-share-proposal"><h2><i class="fa fa-code-fork me-2"></i>Usulkan perubahan</h2><p class="fm-share-muted">Perubahan akan ditinjau admin sebelum diterapkan.</p>
+                        <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea class="form-control" name="content" maxlength="262144"><?= $h($text) ?></textarea><div class="fm-share-actions mt-3"><button class="btn btn-primary" name="submit_proposal" value="1"><i class="fa fa-paper-plane me-1"></i>Kirim usulan</button></div></form>
+                    </section>
                 <?php endif; ?>
             <?php endif; ?>
         <?php endif; ?>
-    </body>
-    </html>
     <?php
+    fm_share_render_page_end();
 }
 
 function fm_render_share_admin()
@@ -836,29 +984,14 @@ function fm_render_share_admin()
         || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') ? 'https' : 'http';
     $scriptDirectory = str_replace('\\', '/', dirname($_SERVER['PHP_SELF']));
     $basePath = $scriptDirectory === '.' ? '' : rtrim($scriptDirectory, '/');
+    fm_share_render_page_start('Link berbagi', 'Kelola berbagi');
     ?>
-    <!doctype html>
-    <html lang="id">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Kelola Link Berbagi</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <style>
-            body{max-width:1200px;margin:28px auto;padding:0 18px}.diff{max-height:360px;overflow:auto;background:#111827;color:#e5e7eb;padding:14px;border-radius:8px;white-space:pre-wrap;font:13px ui-monospace,monospace}
-            .diff .add{color:#86efac}.diff .remove{color:#fca5a5}.diff .same{color:#9ca3af}
-        </style>
-    </head>
-    <body>
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <div><h1 class="h3 mb-1">Link berbagi</h1><p class="text-muted mb-0">Kelola masa berlaku, kuota akses, izin, dan usulan perubahan file.</p></div>
-            <a class="btn btn-outline-primary" href="filemanager.php?p=">Kembali ke File Manager</a>
-        </div>
-        <?php if ($flash !== ''): ?><div class="alert alert-info"><?= $escape($flash) ?></div><?php endif; ?>
+        <p class="fm-share-muted mb-4">Kelola masa berlaku, kuota akses, izin, dan usulan perubahan file.</p>
+        <?php if ($flash !== ''): ?><div class="fm-share-card" role="status"><i class="fa fa-info-circle me-2"></i><?= $escape($flash) ?></div><?php endif; ?>
 
-        <section class="mb-5">
-            <h2 class="h4">Link yang dibuat</h2>
-            <div class="table-responsive"><table class="table table-striped align-middle">
+        <section class="fm-share-card">
+            <h2><i class="fa fa-link me-2"></i>Link yang dibuat</h2>
+            <div class="fm-share-table-wrap"><table class="table fm-share-table">
                 <thead><tr><th>Target</th><th>Akses</th><th>Kedaluwarsa</th><th>Izin</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($shares as $share): ?>
@@ -870,12 +1003,12 @@ function fm_render_share_admin()
                         : (int) $share['access_count'] . ' / ' . (int) $share['max_accesses'];
                     ?>
                     <tr>
-                        <td><strong><?= $escape(basename($share['target_path'])) ?></strong><br><small class="text-muted"><?= $escape($share['target_path']) ?></small><br><a href="<?= $escape($publicUrl) ?>" target="_blank" rel="noopener">Buka link</a></td>
+                        <td class="fm-share-path"><strong><?= $escape(basename($share['target_path'])) ?></strong><br><small class="text-muted"><?= $escape($share['target_path']) ?></small><br><a href="<?= $escape($publicUrl) ?>" target="_blank" rel="noopener"><i class="fa fa-external-link me-1"></i>Buka link</a></td>
                         <td><?= $escape($accessLabel) ?> sesi</td>
                         <td><?= $share['expires_at'] ? $escape($share['expires_at']) . ' UTC' : 'Tidak kedaluwarsa' ?></td>
                         <td><?= $escape(implode(', ', array_keys(array_filter($permissions))) ?: 'Tidak ada') ?><?= $share['pin_hash'] ? ', PIN' : '' ?></td>
-                        <td><?= (int) $share['revoked'] ? 'Dicabut' : (share_expired($share) ? 'Kedaluwarsa' : 'Aktif') ?></td>
-                        <td><?php if (!(int) $share['revoked']): ?><form method="post"><input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>"><input type="hidden" name="action" value="revoke"><input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cabut link ini?')">Cabut</button></form><?php endif; ?></td>
+                        <td><span class="fm-share-badge"><?= (int) $share['revoked'] ? 'Dicabut' : (share_expired($share) ? 'Kedaluwarsa' : 'Aktif') ?></span></td>
+                        <td><?php if (!(int) $share['revoked']): ?><form method="post"><input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>"><input type="hidden" name="action" value="revoke"><input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cabut link ini?')"><i class="fa fa-ban me-1"></i>Cabut</button></form><?php endif; ?></td>
                     </tr>
                 <?php endforeach; ?>
                 <?php if (!$shares): ?><tr><td colspan="6" class="text-muted">Belum ada link berbagi. Buat melalui menu konteks file atau folder.</td></tr><?php endif; ?>
@@ -883,9 +1016,9 @@ function fm_render_share_admin()
             </table></div>
         </section>
 
-        <section>
-            <h2 class="h4">Usulan perubahan file</h2>
-            <p class="text-muted">Persetujuan hanya diterapkan jika file asli belum berubah sejak usulan dibuat; jika berubah, usulan ditandai konflik dan tidak menimpa file.</p>
+        <section class="fm-share-card">
+            <h2><i class="fa fa-code-fork me-2"></i>Usulan perubahan file</h2>
+            <p class="fm-share-muted">Persetujuan hanya diterapkan jika file asli belum berubah sejak usulan dibuat; jika berubah, usulan ditandai konflik dan tidak menimpa file.</p>
             <?php foreach ($proposals as $proposal): ?>
                 <?php
                 $reviewShare = ['target_path' => $proposal['target_path'], 'target_type' => $proposal['target_type']];
@@ -896,18 +1029,18 @@ function fm_render_share_admin()
                     : [['kind' => 'notice', 'text' => 'File sumber tidak tersedia; usulan tidak dapat diterapkan.']];
                 $proposalName = $proposal['relative_path'] !== '' ? $proposal['relative_path'] : basename($proposal['target_path']);
                 ?>
-                <article class="card mb-3">
-                    <div class="card-header d-flex justify-content-between"><strong><?= $escape($proposalName) ?></strong><span><?= $escape($proposal['status']) ?> · <?= $escape($proposal['submitted_at']) ?> UTC</span></div>
-                    <div class="card-body">
+                <article class="fm-share-card">
+                    <div class="fm-share-toolbar"><strong class="fm-share-path"><?= $escape($proposalName) ?></strong><span class="fm-share-badge"><?= $escape($proposal['status']) ?> · <?= $escape($proposal['submitted_at']) ?> UTC</span></div>
+                    <div>
                         <p class="text-muted small mb-2">Link token: <?= $escape(substr($proposal['token'], 0, 10)) ?>…</p>
-                        <pre class="diff"><?php foreach ($diff as $line): ?><span class="<?= $escape($line['kind']) ?>"><?= $escape(($line['kind'] === 'add' ? '+ ' : ($line['kind'] === 'remove' ? '- ' : '  ')) . $line['text']) . "\n" ?></span><?php endforeach; ?></pre>
+                        <pre class="fm-share-diff"><?php foreach ($diff as $line): ?><span class="<?= $escape($line['kind']) ?>"><?= $escape(($line['kind'] === 'add' ? '+ ' : ($line['kind'] === 'remove' ? '- ' : '  ')) . $line['text']) . "\n" ?></span><?php endforeach; ?></pre>
                         <?php if ($proposal['status'] === 'pending'): ?>
-                            <form method="post" class="d-flex gap-2">
+                            <form method="post" class="fm-share-actions mt-3">
                                 <input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>">
                                 <input type="hidden" name="action" value="review">
                                 <input type="hidden" name="proposal_id" value="<?= (int) $proposal['id'] ?>">
-                                <button class="btn btn-success" name="decision" value="approve" onclick="return confirm('Terapkan usulan ke file asli?')">Review &amp; terapkan</button>
-                                <button class="btn btn-outline-danger" name="decision" value="reject" onclick="return confirm('Tolak usulan ini?')">Tolak</button>
+                                <button class="btn btn-primary" name="decision" value="approve" onclick="return confirm('Terapkan usulan ke file asli?')"><i class="fa fa-check me-1"></i>Review &amp; terapkan</button>
+                                <button class="btn btn-outline-danger" name="decision" value="reject" onclick="return confirm('Tolak usulan ini?')"><i class="fa fa-times me-1"></i>Tolak</button>
                             </form>
                         <?php else: ?><small class="text-muted">Ditinjau oleh <?= $escape($proposal['reviewed_by'] ?? 'admin') ?> pada <?= $escape($proposal['reviewed_at'] ?? '') ?> UTC</small><?php endif; ?>
                     </div>
@@ -915,9 +1048,8 @@ function fm_render_share_admin()
             <?php endforeach; ?>
             <?php if (!$proposals): ?><p class="text-muted">Belum ada usulan perubahan.</p><?php endif; ?>
         </section>
-    </body>
-    </html>
     <?php
+    fm_share_render_page_end();
 }
 
 if (isset($_GET['share'])) {
@@ -8827,6 +8959,54 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       --bs-body-color: #ffffff;
                   }
 
+                  .fm-share-swal-popup {
+                      background: var(--bg-card) !important;
+                      border: 1px solid var(--border-color);
+                      border-radius: 10px;
+                      color: var(--text-primary);
+                  }
+                  .fm-share-swal-popup .swal2-title,
+                  .fm-share-swal-popup .swal2-html-container {
+                      color: var(--text-primary) !important;
+                  }
+                  .fm-share-swal-popup { max-height: calc(100vh - 32px); }
+                  .fm-share-swal-popup .swal2-html-container { text-align: left; overflow-y: auto; }
+                  .fm-share-swal-popup .form-label,
+                  .fm-share-swal-popup .form-check-label { color: var(--text-primary); }
+                  .fm-share-swal-popup .form-check { min-height: 1.5rem; margin: 0 0 8px; }
+                  .fm-share-swal-popup .form-check-input {
+                      background-color: var(--bg-input);
+                      border-color: var(--border-color);
+                  }
+                  .fm-share-swal-popup .form-check-input:checked {
+                      background-color: var(--text-primary);
+                      border-color: var(--text-primary);
+                  }
+                  .fm-share-swal-popup .form-control,
+                  .fm-share-swal-popup .form-select {
+                      background-color: var(--bg-input) !important;
+                      border-color: var(--border-color) !important;
+                      color: var(--text-primary) !important;
+                  }
+                  .fm-share-swal-popup .form-control:focus,
+                  .fm-share-swal-popup .form-select:focus {
+                      border-color: var(--text-primary) !important;
+                      box-shadow: none !important;
+                  }
+                  .fm-share-swal-confirm,
+                  .fm-share-swal-cancel {
+                      border-radius: 4px;
+                      font-weight: 600;
+                      padding: 8px 16px;
+                  }
+                  .fm-share-swal-confirm { background: var(--text-primary); color: var(--bg-body); }
+                  .fm-share-swal-confirm:hover { background: #ddd; color: var(--bg-body); }
+                  .fm-share-swal-cancel { background: var(--bg-hover); color: var(--text-primary); }
+                  .fm-share-swal-validation {
+                      background: var(--bg-hover);
+                      color: var(--text-primary);
+                  }
+
                   body {
                       background-color: var(--bg-body) !important;
                       color: var(--text-primary) !important;
@@ -9746,17 +9926,17 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                   const isFolder = type === 'folder';
                   const result = await Swal.fire({
                       title: 'Buat link berbagi',
-                      html: `<div class="text-start">
-                          <p class="small text-muted text-break">${escapeShareText((path ? path + '/' : '') + name)}</p>
-                          ${isFolder ? '<label class="d-block mb-2"><input type="checkbox" id="share-browse" checked> Jelajahi folder</label>' : ''}
-                          <label class="d-block mb-2"><input type="checkbox" id="share-preview" checked> Preview file</label>
-                          <label class="d-block mb-2"><input type="checkbox" id="share-download" checked> Download file / ZIP folder</label>
-                          <label class="d-block mb-2"><input type="checkbox" id="share-propose"> Izinkan usulan perubahan file teks (review admin)</label>
-                          <label class="form-label mt-2">PIN opsional (minimal 4 karakter)</label>
+                      html: `<div class="fm-share-swal-form">
+                          <p class="small text-muted text-break mb-3">${escapeShareText((path ? path + '/' : '') + name)}</p>
+                          ${isFolder ? '<div class="form-check"><input class="form-check-input" type="checkbox" id="share-browse" checked><label class="form-check-label" for="share-browse">Jelajahi folder</label></div>' : ''}
+                          <div class="form-check"><input class="form-check-input" type="checkbox" id="share-preview" checked><label class="form-check-label" for="share-preview">Preview file</label></div>
+                          <div class="form-check"><input class="form-check-input" type="checkbox" id="share-download" checked><label class="form-check-label" for="share-download">Download file / ZIP folder</label></div>
+                          <div class="form-check"><input class="form-check-input" type="checkbox" id="share-propose"><label class="form-check-label" for="share-propose">Izinkan usulan perubahan file teks (review admin)</label></div>
+                          <label class="form-label mt-2" for="share-pin">PIN opsional (minimal 4 karakter)</label>
                           <input class="form-control" type="password" id="share-pin" autocomplete="new-password">
-                          <label class="form-label mt-2">Batas sesi akses (0 = tanpa batas)</label>
+                          <label class="form-label mt-2" for="share-max-accesses">Batas sesi akses (0 = tanpa batas)</label>
                           <input class="form-control" type="number" id="share-max-accesses" min="0" max="1000000" value="0">
-                          <label class="d-block mt-3"><input type="checkbox" id="share-expiry-enabled" checked> Atur masa berlaku</label>
+                          <div class="form-check mt-3"><input class="form-check-input" type="checkbox" id="share-expiry-enabled" checked><label class="form-check-label" for="share-expiry-enabled">Atur masa berlaku</label></div>
                           <select class="form-select mt-2" id="share-expiry-mode"><option value="duration">Durasi</option><option value="date">Tanggal dan waktu</option></select>
                           <div id="share-duration-fields" class="input-group mt-2"><input class="form-control" type="number" id="share-expiry-amount" min="1" max="3650" value="7"><select class="form-select" id="share-expiry-unit"><option value="minutes">Menit</option><option value="hours">Jam</option><option value="days" selected>Hari</option><option value="weeks">Minggu</option></select></div>
                           <input class="form-control mt-2" type="datetime-local" id="share-expires-at" style="display:none">
@@ -9764,6 +9944,13 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       showCancelButton: true,
                       confirmButtonText: 'Buat link',
                       cancelButtonText: 'Batal',
+                      buttonsStyling: false,
+                      customClass: {
+                          popup: 'fm-share-swal-popup',
+                          confirmButton: 'fm-share-swal-confirm',
+                          cancelButton: 'fm-share-swal-cancel',
+                          validationMessage: 'fm-share-swal-validation'
+                      },
                       didOpen: () => {
                           const mode = document.getElementById('share-expiry-mode');
                           const updateExpiryInputs = () => {
@@ -9848,10 +10035,17 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                       if (!response.ok || !data.success) throw new Error(data.message || 'Tidak dapat membuat link.');
                       await Swal.fire({
                           title: 'Link berhasil dibuat',
-                          html: `<input class="form-control" readonly value="${escapeShareText(data.url)}">`,
+                          html: `<label class="form-label" for="share-created-url">Salin atau bagikan tautan ini:</label><input class="form-control" id="share-created-url" readonly value="${escapeShareText(data.url)}">`,
                           confirmButtonText: 'Salin link',
                           showCancelButton: true,
-                          cancelButtonText: 'Tutup'
+                          cancelButtonText: 'Tutup',
+                          buttonsStyling: false,
+                          customClass: {
+                              popup: 'fm-share-swal-popup',
+                              confirmButton: 'fm-share-swal-confirm',
+                              cancelButton: 'fm-share-swal-cancel'
+                          },
+                          didOpen: () => document.getElementById('share-created-url').select()
                       }).then(async choice => {
                           if (choice.isConfirmed && navigator.clipboard) {
                               try {
@@ -9863,7 +10057,13 @@ function fm_download_file($fileLocation, $fileName, $chunkSize = 1024)
                           }
                       });
                   } catch (error) {
-                      Swal.fire('Gagal membuat link', error.message, 'error');
+                      Swal.fire({
+                          title: 'Gagal membuat link',
+                          text: error.message,
+                          icon: 'error',
+                          customClass: { popup: 'fm-share-swal-popup', confirmButton: 'fm-share-swal-confirm' },
+                          buttonsStyling: false
+                      });
                   }
               }
 
