@@ -199,6 +199,22 @@ function share_db()
         locked_until INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (token, ip_hash)
     )");
+    $db->exec("CREATE TABLE IF NOT EXISTS file_share_visitors (
+        share_id INTEGER NOT NULL,
+        visitor_hash TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        PRIMARY KEY (share_id, visitor_hash),
+        FOREIGN KEY (share_id) REFERENCES file_shares(id)
+    )");
+    $db->exec("CREATE TABLE IF NOT EXISTS file_share_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        share_id INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        relative_path TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (share_id) REFERENCES file_shares(id)
+    )");
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_file_share_events_created_at ON file_share_events(created_at DESC)');
     return $db;
 }
 
@@ -228,6 +244,22 @@ function share_expired(array $share)
 function share_has_grant($token)
 {
     return !empty($_SESSION['file_share_grants'][$token]);
+}
+
+function share_valid_fingerprint($visitorId)
+{
+    return is_string($visitorId) && preg_match('/^[A-Za-z0-9_-]{8,128}$/', $visitorId) === 1;
+}
+
+function share_fingerprint_hash($token, $visitorId)
+{
+    return hash('sha256', $token . "\0" . $visitorId);
+}
+
+function share_log_event(array $share, $eventType, $relativePath = '')
+{
+    $stmt = share_db()->prepare('INSERT INTO file_share_events (share_id, event_type, relative_path, created_at) VALUES (?, ?, ?, ?)');
+    $stmt->execute([(int) $share['id'], $eventType, $relativePath, gmdate('Y-m-d H:i:s')]);
 }
 
 function share_pin_ip_hash()
@@ -271,24 +303,54 @@ function share_pin_clear_failures($token)
     $stmt->execute([$token, share_pin_ip_hash()]);
 }
 
-function share_grant_access(array $share)
+function share_grant_access(array $share, $visitorId)
 {
     $token = $share['token'];
     if (share_has_grant($token)) {
         return true;
     }
-    if (share_expired($share)) {
+    if (share_expired($share) || !share_valid_fingerprint($visitorId)) {
         return false;
     }
 
-    $stmt = share_db()->prepare("UPDATE file_shares
-        SET access_count = access_count + 1
-        WHERE id = ? AND revoked = 0
-          AND (expires_at IS NULL OR expires_at > datetime('now'))
-          AND (max_accesses = 0 OR access_count < max_accesses)");
-    $stmt->execute([(int) $share['id']]);
-    if ($stmt->rowCount() !== 1) {
-        return false;
+    $db = share_db();
+    $visitorHash = share_fingerprint_hash($token, $visitorId);
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare('SELECT 1 FROM file_share_visitors WHERE share_id = ? AND visitor_hash = ?');
+        $stmt->execute([(int) $share['id'], $visitorHash]);
+        $knownVisitor = (bool) $stmt->fetchColumn();
+
+        $stmt = $db->prepare("SELECT 1 FROM file_shares
+            WHERE id = ? AND revoked = 0
+              AND (expires_at IS NULL OR expires_at > datetime('now'))");
+        $stmt->execute([(int) $share['id']]);
+        if (!$stmt->fetchColumn()) {
+            $db->rollBack();
+            return false;
+        }
+
+        if (!$knownVisitor) {
+            $stmt = $db->prepare("UPDATE file_shares
+                SET access_count = access_count + 1
+                WHERE id = ? AND revoked = 0
+                  AND (expires_at IS NULL OR expires_at > datetime('now'))
+                  AND (max_accesses = 0 OR access_count < max_accesses)");
+            $stmt->execute([(int) $share['id']]);
+            if ($stmt->rowCount() !== 1) {
+                $db->rollBack();
+                return false;
+            }
+            $stmt = $db->prepare('INSERT INTO file_share_visitors (share_id, visitor_hash, first_seen_at) VALUES (?, ?, ?)');
+            $stmt->execute([(int) $share['id'], $visitorHash, gmdate('Y-m-d H:i:s')]);
+            share_log_event($share, 'access');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
     }
 
     $_SESSION['file_share_grants'][$token] = true;
@@ -512,10 +574,19 @@ function fm_share_render_page_start($title, $section = '')
             .fm-share-auth { max-width: 460px; margin: min(10vh, 100px) auto; }
             .fm-share-auth label { display: block; margin: 16px 0 6px; color: var(--text-secondary); }
             .fm-share-auth .btn { margin-top: 16px; }
+            .fm-share-privacy { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
             .fm-share-diff .add { color: #86efac; }
             .fm-share-diff .remove { color: #fca5a5; }
             .fm-share-diff .same { color: var(--text-secondary); }
             .fm-share-badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-color); border-radius: 999px; padding: 4px 10px; color: var(--text-secondary); font-size: 12px; }
+            .fm-share-settings > summary { list-style: none; cursor: pointer; }
+            .fm-share-settings > summary::-webkit-details-marker { display: none; }
+            .fm-share-settings-form {
+                min-width: 250px; max-width: 320px; margin-top: 8px; padding: 12px;
+                white-space: normal; background: var(--bg-sidebar); border: 1px solid var(--border-color);
+                border-radius: 6px;
+            }
+            .fm-share-settings-form .form-label { font-size: 13px; }
             .fm-share-card .form-control, .fm-share-card .form-select {
                 background-color: var(--bg-input); border-color: var(--border-color); color: var(--text-primary);
             }
@@ -691,11 +762,15 @@ function fm_render_public_share()
                 }
             }
             if ($pinError === '') {
-                if (!share_grant_access($share)) {
+                $visitorId = (string) ($_POST['visitor_id'] ?? '');
+                if (!share_valid_fingerprint($visitorId)) {
+                    $pinError = 'Identitas browser belum tersedia. Aktifkan JavaScript dan coba lagi.';
+                } elseif (!share_grant_access($share, $visitorId)) {
                     share_page_error('Link telah mencapai batas akses.', 410);
+                } else {
+                    header('Location: ' . share_url($token));
+                    exit;
                 }
-                header('Location: ' . share_url($token));
-                exit;
             }
         }
         if (!share_has_grant($token)) {
@@ -708,15 +783,65 @@ function fm_render_public_share()
                 <h2><?= $hasPin ? 'Masukkan PIN' : 'Konfirmasi akses' ?></h2>
                 <p class="fm-share-muted"><?= $hasPin ? 'Link ini dilindungi PIN.' : 'Lanjutkan untuk membuka konten yang dibagikan.' ?></p>
                 <?php if ($pinError !== ''): ?><div class="alert alert-danger mt-3 mb-0" role="alert"><?= $escapedError ?></div><?php endif; ?>
-                <form method="post">
+                <p class="fm-share-privacy mt-3"><i class="fa fa-info-circle me-1"></i>Untuk menerapkan batas akses, FingerprintJS dari CDN resminya membuat ID browser di perangkat Anda. Jika CDN diblokir, ID acak disimpan di penyimpanan lokal browser. ID dikirim ke server dan disimpan sebagai hash khusus link ini; ID mentah tidak disimpan. Identifikasi ini dapat diubah atau dipalsukan dan bukan jaminan keamanan.</p>
+                <form method="post" id="share-access-form">
                     <input type="hidden" name="form_token" value="<?= $escapedFormToken ?>">
+                    <input type="hidden" name="visitor_id" id="share-visitor-id" value="">
                     <?php if ($hasPin): ?>
                         <label for="share-pin">PIN</label>
                         <input class="form-control" id="share-pin" type="password" name="pin" required autocomplete="one-time-code" autofocus>
                     <?php endif; ?>
-                    <button class="btn btn-primary" name="unlock" value="1"><i class="fa fa-unlock-alt me-1"></i>Lanjutkan</button>
+                    <button class="btn btn-primary" type="submit" name="unlock" value="1"><i class="fa fa-unlock-alt me-1"></i>Lanjutkan</button>
+                    <p id="share-fingerprint-status" class="fm-share-muted small mt-2 mb-0" role="status"></p>
                 </form>
             </section>
+            <script type="module">
+                const form = document.getElementById('share-access-form');
+                const visitorInput = document.getElementById('share-visitor-id');
+                const status = document.getElementById('share-fingerprint-status');
+                const submitButton = form.querySelector('button[type="submit"]');
+                let fingerprintPromise;
+                let resubmitting = false;
+
+                function getFallbackVisitorId() {
+                    const storageKey = 'rfile_share_visitor_id';
+                    let visitorId = localStorage.getItem(storageKey);
+                    if (!/^fallback_[a-f0-9]{32}$/.test(visitorId || '')) {
+                        const bytes = new Uint8Array(16);
+                        crypto.getRandomValues(bytes);
+                        visitorId = 'fallback_' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+                        localStorage.setItem(storageKey, visitorId);
+                    }
+                    return visitorId;
+                }
+
+                form.addEventListener('submit', async event => {
+                    if (resubmitting) return;
+                    event.preventDefault();
+                    submitButton.disabled = true;
+                    status.textContent = 'Menyiapkan ID browser untuk menghitung kuota akses...';
+                    try {
+                        try {
+                            fingerprintPromise ||= import('https://openfpcdn.io/fingerprintjs/v5')
+                                .then(FingerprintJS => FingerprintJS.load())
+                                .then(agent => agent.get())
+                                .then(result => result.visitorId);
+                            visitorInput.value = await fingerprintPromise;
+                        } catch (fingerprintError) {
+                            fingerprintPromise = null;
+                            visitorInput.value = getFallbackVisitorId();
+                            status.textContent = 'FingerprintJS tidak tersedia; kuota akan memakai ID acak di penyimpanan lokal browser.';
+                            console.warn('FingerprintJS is unavailable; using a local browser ID.', fingerprintError);
+                        }
+                        resubmitting = true;
+                        form.requestSubmit(submitButton);
+                    } catch (error) {
+                        submitButton.disabled = false;
+                        status.textContent = 'ID browser tidak dapat disiapkan. Periksa pengaturan penyimpanan browser dan coba lagi.';
+                        console.error('Unable to initialize a browser ID:', error);
+                    }
+                });
+            </script>
             <?php
             fm_share_render_page_end();
             exit;
@@ -730,6 +855,7 @@ function fm_render_public_share()
         if ($share['target_type'] !== 'folder' || empty($permissions['download'])) {
             share_page_error('Izin download folder tidak tersedia.', 403);
         }
+        share_log_event($share, 'download_zip');
         share_make_zip($share);
     }
     if (isset($_GET['media'])) {
@@ -743,6 +869,7 @@ function fm_render_public_share()
         if ($mediaPath === false || !is_file($mediaPath)) {
             share_page_error('File tidak ditemukan.', 404);
         }
+        share_log_event($share, 'preview', (string) $_GET['media']);
         share_send_file($mediaPath, false);
     }
     if (isset($_GET['download'])) {
@@ -756,6 +883,7 @@ function fm_render_public_share()
         if ($downloadPath === false || !is_file($downloadPath)) {
             share_page_error('File tidak ditemukan.', 404);
         }
+        share_log_event($share, 'download', (string) $_GET['download']);
         share_send_file($downloadPath, true);
     }
 
@@ -769,6 +897,11 @@ function fm_render_public_share()
     $currentPath = share_resolve_path($share, $relative);
     if ($currentPath === false) {
         share_page_error('Lokasi tidak ditemukan.', 404);
+    }
+    if ($share['target_type'] === 'folder' && is_dir($currentPath) && !empty($permissions['browse'])) {
+        share_log_event($share, 'browse', $relative);
+    } elseif (is_file($currentPath) && !empty($permissions['preview']) && share_is_text_file($currentPath)) {
+        share_log_event($share, 'preview', $relative);
     }
 
     if (isset($_POST['submit_proposal'])) {
@@ -867,10 +1000,21 @@ function fm_render_public_share()
                 <?php endif; ?>
             <?php endif; ?>
         <?php else: ?>
-            <?php if (!empty($permissions['preview']) && share_is_text_file($currentPath)): ?>
-                <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
-                <section class="fm-share-card"><h2><i class="fa fa-eye me-2"></i>Preview</h2><pre class="fm-share-code"><?= $h($text) ?></pre></section>
-                <?php if (!empty($permissions['propose'])): ?>
+            <?php if (!empty($permissions['preview']) && is_file($currentPath)): ?>
+                <?php $mime = function_exists('mime_content_type') ? (mime_content_type($currentPath) ?: '') : ''; ?>
+                <section class="fm-share-card">
+                    <h2><i class="fa fa-eye me-2"></i>Preview</h2>
+                    <div class="fm-share-preview">
+                    <?php if (strpos($mime, 'image/') === 0 && share_is_previewable_mime($mime)): ?><img src="<?= $h(share_url($token, ['media' => ''])) ?>" alt="<?= $h(basename($currentPath)) ?>">
+                    <?php elseif (strpos($mime, 'video/') === 0 && share_is_previewable_mime($mime)): ?><video src="<?= $h(share_url($token, ['media' => ''])) ?>" controls></video>
+                    <?php elseif (strpos($mime, 'audio/') === 0 && share_is_previewable_mime($mime)): ?><audio src="<?= $h(share_url($token, ['media' => ''])) ?>" controls></audio>
+                    <?php elseif ($mime === 'application/pdf'): ?><iframe src="<?= $h(share_url($token, ['media' => ''])) ?>" title="PDF preview"></iframe>
+                    <?php elseif (share_is_text_file($currentPath)): ?><?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?><pre class="fm-share-code"><?= $h($text) ?></pre>
+                    <?php else: ?><p>Preview tidak tersedia untuk tipe file ini.</p><?php endif; ?>
+                    </div>
+                </section>
+                <?php if (!empty($permissions['propose']) && share_is_text_file($currentPath)): ?>
+                    <?php $text = file_get_contents($currentPath); if ($text === false) share_page_error('File tidak dapat dibaca.', 500); ?>
                     <section class="fm-share-card fm-share-proposal"><h2><i class="fa fa-code-fork me-2"></i>Usulkan perubahan</h2><p class="fm-share-muted">Perubahan akan ditinjau admin sebelum diterapkan.</p>
                         <form method="post"><input type="hidden" name="form_token" value="<?= $h($formToken) ?>"><textarea class="form-control" name="content" maxlength="262144"><?= $h($text) ?></textarea><div class="fm-share-actions mt-3"><button class="btn btn-primary" name="submit_proposal" value="1"><i class="fa fa-paper-plane me-1"></i>Kirim usulan</button></div></form>
                     </section>
@@ -901,6 +1045,42 @@ function fm_render_share_admin()
                 $stmt = $db->prepare('UPDATE file_shares SET revoked = 1 WHERE id = ?');
                 $stmt->execute([(int) ($_POST['share_id'] ?? 0)]);
                 $_SESSION['share_admin_flash'] = $stmt->rowCount() ? 'Link berbagi telah dicabut.' : 'Link tidak ditemukan.';
+            } elseif ($action === 'update') {
+                $shareId = filter_var($_POST['share_id'] ?? null, FILTER_VALIDATE_INT);
+                $maxAccesses = filter_var($_POST['max_accesses'] ?? null, FILTER_VALIDATE_INT);
+                if ($shareId === false || $shareId < 1 || $maxAccesses === false || $maxAccesses < 0 || $maxAccesses > 1000000) {
+                    throw new InvalidArgumentException('ID link atau batas pengunjung tidak valid.');
+                }
+                $stmt = $db->prepare('SELECT access_count FROM file_shares WHERE id = ? AND revoked = 0');
+                $stmt->execute([$shareId]);
+                $accessCount = $stmt->fetchColumn();
+                if ($accessCount === false) {
+                    throw new RuntimeException('Link tidak ditemukan atau telah dicabut.');
+                }
+                if ($maxAccesses !== 0 && $maxAccesses < (int) $accessCount) {
+                    throw new InvalidArgumentException('Batas tidak boleh lebih kecil dari jumlah pengunjung yang sudah tercatat.');
+                }
+
+                $expiryInput = trim((string) ($_POST['expires_at'] ?? ''));
+                $expiresAt = null;
+                if ($expiryInput !== '') {
+                    $expiry = DateTime::createFromFormat('!Y-m-d\TH:i', $expiryInput, new DateTimeZone('UTC'));
+                    $dateErrors = DateTime::getLastErrors();
+                    if (!$expiry
+                        || ($dateErrors !== false && ($dateErrors['warning_count'] || $dateErrors['error_count']))
+                        || $expiry->format('Y-m-d\TH:i') !== $expiryInput
+                        || $expiry->getTimestamp() <= time()) {
+                        throw new InvalidArgumentException('Masa berlaku harus berupa tanggal dan waktu UTC di masa mendatang.');
+                    }
+                    $expiresAt = $expiry->format('Y-m-d H:i:s');
+                }
+
+                $stmt = $db->prepare('UPDATE file_shares SET max_accesses = ?, expires_at = ? WHERE id = ? AND revoked = 0 AND (? = 0 OR access_count <= ?)');
+                $stmt->execute([$maxAccesses, $expiresAt, $shareId, $maxAccesses, $maxAccesses]);
+                if ($stmt->rowCount() !== 1) {
+                    throw new RuntimeException('Pengaturan gagal disimpan; jumlah pengunjung mungkin telah berubah. Muat ulang halaman.');
+                }
+                $_SESSION['share_admin_flash'] = 'Pengaturan link berbagi diperbarui.';
             } elseif ($action === 'review') {
                 $proposalId = (int) ($_POST['proposal_id'] ?? 0);
                 $decision = $_POST['decision'] ?? '';
@@ -973,6 +1153,11 @@ function fm_render_share_admin()
     }
 
     $shares = $db->query('SELECT * FROM file_shares ORDER BY created_at DESC, id DESC')->fetchAll(PDO::FETCH_ASSOC);
+    $events = $db->query("SELECT e.event_type, e.relative_path, e.created_at, s.target_path
+        FROM file_share_events e
+        JOIN file_shares s ON s.id = e.share_id
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
     $proposals = $db->query("SELECT p.*, s.target_path, s.target_type, s.token
         FROM file_share_proposals p
         JOIN file_shares s ON s.id = p.share_id
@@ -986,13 +1171,13 @@ function fm_render_share_admin()
     $basePath = $scriptDirectory === '.' ? '' : rtrim($scriptDirectory, '/');
     fm_share_render_page_start('Link berbagi', 'Kelola berbagi');
     ?>
-        <p class="fm-share-muted mb-4">Kelola masa berlaku, kuota akses, izin, dan usulan perubahan file.</p>
+        <p class="fm-share-muted mb-4">Kelola masa berlaku, kuota pengunjung, izin, dan usulan perubahan file. FingerprintJS (atau ID acak lokal jika CDN terblokir) hanya dipakai untuk menghitung kuota; identitas browser dapat berubah atau dipalsukan dan bukan pengganti PIN. Riwayat aktivitas dimulai setelah pembaruan ini; angka akses link lama tetap dipertahankan dan sebelumnya dihitung per sesi.</p>
         <?php if ($flash !== ''): ?><div class="fm-share-card" role="status"><i class="fa fa-info-circle me-2"></i><?= $escape($flash) ?></div><?php endif; ?>
 
         <section class="fm-share-card">
             <h2><i class="fa fa-link me-2"></i>Link yang dibuat</h2>
             <div class="fm-share-table-wrap"><table class="table fm-share-table">
-                <thead><tr><th>Target</th><th>Akses</th><th>Kedaluwarsa</th><th>Izin</th><th>Status</th><th></th></tr></thead>
+                <thead><tr><th>Target</th><th>Pengunjung</th><th>Kedaluwarsa (UTC)</th><th>Izin</th><th>Status</th><th>Aksi</th></tr></thead>
                 <tbody>
                 <?php foreach ($shares as $share): ?>
                     <?php
@@ -1003,15 +1188,57 @@ function fm_render_share_admin()
                         : (int) $share['access_count'] . ' / ' . (int) $share['max_accesses'];
                     ?>
                     <tr>
-                        <td class="fm-share-path"><strong><?= $escape(basename($share['target_path'])) ?></strong><br><small class="text-muted"><?= $escape($share['target_path']) ?></small><br><a href="<?= $escape($publicUrl) ?>" target="_blank" rel="noopener"><i class="fa fa-external-link me-1"></i>Buka link</a></td>
-                        <td><?= $escape($accessLabel) ?> sesi</td>
+                        <td class="fm-share-path"><strong><?= $escape(basename($share['target_path'])) ?></strong><br><small class="text-muted"><?= $escape($share['target_path']) ?></small></td>
+                        <td><?= $escape($accessLabel) ?> browser unik</td>
                         <td><?= $share['expires_at'] ? $escape($share['expires_at']) . ' UTC' : 'Tidak kedaluwarsa' ?></td>
                         <td><?= $escape(implode(', ', array_keys(array_filter($permissions))) ?: 'Tidak ada') ?><?= $share['pin_hash'] ? ', PIN' : '' ?></td>
                         <td><span class="fm-share-badge"><?= (int) $share['revoked'] ? 'Dicabut' : (share_expired($share) ? 'Kedaluwarsa' : 'Aktif') ?></span></td>
-                        <td><?php if (!(int) $share['revoked']): ?><form method="post"><input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>"><input type="hidden" name="action" value="revoke"><input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cabut link ini?')"><i class="fa fa-ban me-1"></i>Cabut</button></form><?php endif; ?></td>
+                        <td><div class="fm-share-actions">
+                            <?php if (!(int) $share['revoked']): ?><a class="btn btn-sm btn-outline-primary" href="<?= $escape($publicUrl) ?>" target="_blank" rel="noopener"><i class="fa fa-external-link me-1"></i>Buka</a><?php endif; ?>
+                            <button type="button" class="btn btn-sm btn-outline-primary" data-share-copy="<?= $escape($publicUrl) ?>"><i class="fa fa-copy me-1"></i>Salin</button>
+                            <?php if (!(int) $share['revoked']): ?>
+                                <details class="fm-share-settings">
+                                    <summary class="btn btn-sm btn-outline-primary"><i class="fa fa-cog me-1"></i>Atur</summary>
+                                    <form method="post" class="fm-share-settings-form">
+                                        <input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>">
+                                        <input type="hidden" name="action" value="update">
+                                        <input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>">
+                                        <label class="form-label" for="share-expiry-<?= (int) $share['id'] ?>">Kedaluwarsa (UTC; kosong = tanpa batas)</label>
+                                        <input class="form-control mb-2" id="share-expiry-<?= (int) $share['id'] ?>" type="datetime-local" name="expires_at" value="<?= $escape($share['expires_at'] ? str_replace(' ', 'T', substr($share['expires_at'], 0, 16)) : '') ?>">
+                                        <label class="form-label" for="share-limit-<?= (int) $share['id'] ?>">Batas pengunjung (0 = tanpa batas)</label>
+                                        <input class="form-control mb-3" id="share-limit-<?= (int) $share['id'] ?>" type="number" name="max_accesses" min="<?= (int) $share['access_count'] ?>" max="1000000" value="<?= (int) $share['max_accesses'] ?>">
+                                        <button class="btn btn-primary btn-sm" type="submit"><i class="fa fa-save me-1"></i>Simpan</button>
+                                    </form>
+                                </details>
+                                <form method="post"><input type="hidden" name="csrf" value="<?= $escape($_SESSION['share_admin_token']) ?>"><input type="hidden" name="action" value="revoke"><input type="hidden" name="share_id" value="<?= (int) $share['id'] ?>"><button class="btn btn-sm btn-outline-danger" onclick="return confirm('Cabut link ini?')"><i class="fa fa-ban me-1"></i>Cabut</button></form>
+                            <?php endif; ?>
+                        </div></td>
                     </tr>
                 <?php endforeach; ?>
                 <?php if (!$shares): ?><tr><td colspan="6" class="text-muted">Belum ada link berbagi. Buat melalui menu konteks file atau folder.</td></tr><?php endif; ?>
+                </tbody>
+            </table></div>
+        </section>
+
+        <section class="fm-share-card">
+            <h2><i class="fa fa-history me-2"></i>Riwayat akses</h2>
+            <p class="fm-share-muted mb-3">Aktivitas terbaru, maksimal 200 entri. Riwayat tidak menyimpan IP, user-agent, atau ID fingerprint mentah. Rate limit PIN menyimpan hash alamat IP.</p>
+            <div class="fm-share-table-wrap"><table class="table fm-share-table">
+                <thead><tr><th>Waktu (UTC)</th><th>Link</th><th>Aktivitas</th><th>File/folder</th></tr></thead>
+                <tbody>
+                <?php $eventLabels = ['access' => 'Akses pertama', 'browse' => 'Jelajah folder', 'preview' => 'Preview', 'download' => 'Download', 'download_zip' => 'Download ZIP']; ?>
+                <?php foreach ($events as $event): ?>
+                    <?php
+                    $eventPath = $event['relative_path'] !== '' ? $event['relative_path'] : basename($event['target_path']);
+                    ?>
+                    <tr>
+                        <td><?= $escape($event['created_at']) ?></td>
+                        <td class="fm-share-path"><?= $escape(basename($event['target_path'])) ?></td>
+                        <td><?= $escape($eventLabels[$event['event_type']] ?? $event['event_type']) ?></td>
+                        <td class="fm-share-path"><?= $escape($eventPath) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                <?php if (!$events): ?><tr><td colspan="4" class="text-muted">Belum ada aktivitas akses.</td></tr><?php endif; ?>
                 </tbody>
             </table></div>
         </section>
@@ -1048,6 +1275,19 @@ function fm_render_share_admin()
             <?php endforeach; ?>
             <?php if (!$proposals): ?><p class="text-muted">Belum ada usulan perubahan.</p><?php endif; ?>
         </section>
+        <script>
+            document.querySelectorAll('[data-share-copy]').forEach(button => {
+                button.addEventListener('click', async () => {
+                    const url = button.getAttribute('data-share-copy');
+                    try {
+                        await navigator.clipboard.writeText(url);
+                        button.innerHTML = '<i class="fa fa-check me-1"></i>Tersalin';
+                    } catch (error) {
+                        window.prompt('Salin link berbagi:', url);
+                    }
+                });
+            });
+        </script>
     <?php
     fm_share_render_page_end();
 }
@@ -5135,37 +5375,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const marquee = document.getElementById('marquee-box');
     let isMarquee = false, startM = {x:0, y:0};
 
-    mainPane.addEventListener('mousedown', function(e) {
-        if (e.target !== mainPane && !e.target.classList.contains('table-responsive')) return;
-        if (e.button !== 0) return; // Left click only
-        
-        isMarquee = true;
-        const rect = mainPane.getBoundingClientRect();
-        startM = { x: e.clientX - rect.left, y: e.clientY - rect.top + mainPane.scrollTop };
-        
-        marquee.style.left = startM.x + 'px';
-        marquee.style.top = startM.y + 'px';
-        marquee.style.width = '0px';
-        marquee.style.height = '0px';
-        marquee.style.display = 'block';
-    });
-
-    document.addEventListener('mousemove', function(e) {
-        if (!isMarquee) return;
-        const rect = mainPane.getBoundingClientRect();
-        const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top + mainPane.scrollTop };
-        
-        const x = Math.min(startM.x, cur.x);
-        const y = Math.min(startM.y, cur.y);
-        const w = Math.abs(startM.x - cur.x);
-         const h = Math.abs(startM.y - cur.y);
-        
-        marquee.style.left = x + 'px';
-        marquee.style.top = y + 'px';
-        marquee.style.width = w + 'px';
-        marquee.style.height = h + 'px';
-        
-        // Select logic
+    function syncMarqueeSelection() {
+        if (!marquee || !isMarquee) return;
         const mRect = marquee.getBoundingClientRect();
         const allItems = document.querySelectorAll('tr[data-name], .grid-item[data-name]');
         allItems.forEach(item => {
@@ -5177,6 +5388,40 @@ document.addEventListener('DOMContentLoaded', function() {
             else item.classList.remove('explorer-selected');
         });
         updateMultiSelectInfo();
+    }
+
+    mainPane.addEventListener('mousedown', function(e) {
+        if (e.button !== 0) return;
+        if (e.target.closest('input, a, button, select, textarea, .context-menu-trigger, .tree-header, tr, .grid-item')) return;
+        if (e.target !== mainPane && !e.target.classList.contains('table-responsive') && !e.target.closest('.grid-view-container')) return;
+
+        isMarquee = true;
+        const rect = mainPane.getBoundingClientRect();
+        startM = { x: e.clientX - rect.left, y: e.clientY - rect.top + mainPane.scrollTop };
+
+        marquee.style.left = startM.x + 'px';
+        marquee.style.top = startM.y + 'px';
+        marquee.style.width = '0px';
+        marquee.style.height = '0px';
+        marquee.style.display = 'block';
+    });
+
+    document.addEventListener('mousemove', function(e) {
+        if (!isMarquee) return;
+        const rect = mainPane.getBoundingClientRect();
+        const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top + mainPane.scrollTop };
+
+        const x = Math.min(startM.x, cur.x);
+        const y = Math.min(startM.y, cur.y);
+        const w = Math.abs(startM.x - cur.x);
+        const h = Math.abs(startM.y - cur.y);
+
+        marquee.style.left = x + 'px';
+        marquee.style.top = y + 'px';
+        marquee.style.width = w + 'px';
+        marquee.style.height = h + 'px';
+
+        if (w > 4 || h > 4) syncMarqueeSelection();
     });
 
     document.addEventListener('mouseup', function() {
@@ -5188,7 +5433,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Deselect
     mainPane.addEventListener('click', function(e) {
-        if (!e.target.closest('tr, .grid-item')) {
+        if (e.target.closest('tr, .grid-item')) return;
+        if (!e.target.closest('#marquee-box')) {
             detailsPane.classList.add('hidden');
             items.forEach(i => i.classList.remove('explorer-selected'));
         }
