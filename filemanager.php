@@ -821,20 +821,33 @@ function fm_render_public_share()
                     submitButton.disabled = true;
                     status.textContent = 'Menyiapkan ID browser untuk menghitung kuota akses...';
                     try {
+                        let resolvedVisitorId = '';
                         try {
                             fingerprintPromise ||= import('https://openfpcdn.io/fingerprintjs/v5')
                                 .then(FingerprintJS => FingerprintJS.load())
                                 .then(agent => agent.get())
                                 .then(result => result.visitorId);
-                            visitorInput.value = await fingerprintPromise;
+
+                            resolvedVisitorId = await Promise.race([
+                                fingerprintPromise,
+                                new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('FingerprintJS timeout')), 2500);
+                                })
+                            ]);
                         } catch (fingerprintError) {
                             fingerprintPromise = null;
-                            visitorInput.value = getFallbackVisitorId();
-                            status.textContent = 'FingerprintJS tidak tersedia; kuota akan memakai ID acak di penyimpanan lokal browser.';
+                            resolvedVisitorId = getFallbackVisitorId();
+                            status.textContent = 'FingerprintJS tidak tersedia atau terlalu lambat; kuota akan memakai ID acak di penyimpanan lokal browser.';
                             console.warn('FingerprintJS is unavailable; using a local browser ID.', fingerprintError);
                         }
+
+                        if (!resolvedVisitorId) {
+                            resolvedVisitorId = getFallbackVisitorId();
+                        }
+
+                        visitorInput.value = resolvedVisitorId;
                         resubmitting = true;
-                        form.requestSubmit(submitButton);
+                        form.submit();
                     } catch (error) {
                         submitButton.disabled = false;
                         status.textContent = 'ID browser tidak dapat disiapkan. Periksa pengaturan penyimpanan browser dan coba lagi.';
