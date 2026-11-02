@@ -783,7 +783,7 @@ function fm_render_public_share()
                 <h2><?= $hasPin ? 'Masukkan PIN' : 'Konfirmasi akses' ?></h2>
                 <p class="fm-share-muted"><?= $hasPin ? 'Link ini dilindungi PIN.' : 'Lanjutkan untuk membuka konten yang dibagikan.' ?></p>
                 <?php if ($pinError !== ''): ?><div class="alert alert-danger mt-3 mb-0" role="alert"><?= $escapedError ?></div><?php endif; ?>
-                <p class="fm-share-privacy mt-3"><i class="fa fa-info-circle me-1"></i>Untuk menerapkan batas akses, FingerprintJS dari CDN resminya membuat ID browser di perangkat Anda. Jika CDN diblokir, ID acak disimpan di penyimpanan lokal browser. ID dikirim ke server dan disimpan sebagai hash khusus link ini; ID mentah tidak disimpan. Identifikasi ini dapat diubah atau dipalsukan dan bukan jaminan keamanan.</p>
+                <p class="fm-share-privacy mt-3"><i class="fa fa-info-circle me-1"></i>Untuk membatasi kuota akses, browser membuat ID acak lokal yang dikirim ke server sebagai hash khusus link ini. ID mentah tidak disimpan. Identifikasi ini bisa berubah atau dipalsukan dan bukan pengganti PIN.</p>
                 <form method="post" id="share-access-form">
                     <input type="hidden" name="form_token" value="<?= $escapedFormToken ?>">
                     <input type="hidden" name="visitor_id" id="share-visitor-id" value="">
@@ -795,65 +795,67 @@ function fm_render_public_share()
                     <p id="share-fingerprint-status" class="fm-share-muted small mt-2 mb-0" role="status"></p>
                 </form>
             </section>
-            <script type="module">
-                const form = document.getElementById('share-access-form');
-                const visitorInput = document.getElementById('share-visitor-id');
-                const status = document.getElementById('share-fingerprint-status');
-                const submitButton = form.querySelector('button[type="submit"]');
-                let fingerprintPromise;
-                let resubmitting = false;
+            <script>
+                (function () {
+                    const form = document.getElementById('share-access-form');
+                    const visitorInput = document.getElementById('share-visitor-id');
+                    const status = document.getElementById('share-fingerprint-status');
 
-                function getFallbackVisitorId() {
-                    const storageKey = 'rfile_share_visitor_id';
-                    let visitorId = localStorage.getItem(storageKey);
-                    if (!/^fallback_[a-f0-9]{32}$/.test(visitorId || '')) {
-                        const bytes = new Uint8Array(16);
-                        crypto.getRandomValues(bytes);
-                        visitorId = 'fallback_' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
-                        localStorage.setItem(storageKey, visitorId);
+                    if (!form || !visitorInput) {
+                        return;
                     }
-                    return visitorId;
-                }
 
-                form.addEventListener('submit', async event => {
-                    if (resubmitting) return;
-                    event.preventDefault();
-                    submitButton.disabled = true;
-                    status.textContent = 'Menyiapkan ID browser untuk menghitung kuota akses...';
-                    try {
-                        let resolvedVisitorId = '';
+                    function getStorage() {
                         try {
-                            fingerprintPromise ||= import('https://openfpcdn.io/fingerprintjs/v5')
-                                .then(FingerprintJS => FingerprintJS.load())
-                                .then(agent => agent.get())
-                                .then(result => result.visitorId);
-
-                            resolvedVisitorId = await Promise.race([
-                                fingerprintPromise,
-                                new Promise((_, reject) => {
-                                    setTimeout(() => reject(new Error('FingerprintJS timeout')), 2500);
-                                })
-                            ]);
-                        } catch (fingerprintError) {
-                            fingerprintPromise = null;
-                            resolvedVisitorId = getFallbackVisitorId();
-                            status.textContent = 'FingerprintJS tidak tersedia atau terlalu lambat; kuota akan memakai ID acak di penyimpanan lokal browser.';
-                            console.warn('FingerprintJS is unavailable; using a local browser ID.', fingerprintError);
+                            const testKey = '__rfile_share_test__';
+                            localStorage.setItem(testKey, '1');
+                            localStorage.removeItem(testKey);
+                            return localStorage;
+                        } catch (error) {
+                            try {
+                                const testKey = '__rfile_share_test__';
+                                sessionStorage.setItem(testKey, '1');
+                                sessionStorage.removeItem(testKey);
+                                return sessionStorage;
+                            } catch (storageError) {
+                                return null;
+                            }
                         }
-
-                        if (!resolvedVisitorId) {
-                            resolvedVisitorId = getFallbackVisitorId();
-                        }
-
-                        visitorInput.value = resolvedVisitorId;
-                        resubmitting = true;
-                        form.submit();
-                    } catch (error) {
-                        submitButton.disabled = false;
-                        status.textContent = 'ID browser tidak dapat disiapkan. Periksa pengaturan penyimpanan browser dan coba lagi.';
-                        console.error('Unable to initialize a browser ID:', error);
                     }
-                });
+
+                    function getVisitorId() {
+                        const storage = getStorage();
+                        const storageKey = 'rfile_share_visitor_id';
+                        const prefix = 'fallback_';
+                        let visitorId = storage ? storage.getItem(storageKey) : null;
+
+                        if (!/^fallback_[A-Za-z0-9]{32}$/.test(visitorId || '')) {
+                            const bytes = new Uint8Array(16);
+                            if (window.crypto && window.crypto.getRandomValues) {
+                                window.crypto.getRandomValues(bytes);
+                            } else {
+                                for (let i = 0; i < bytes.length; i++) {
+                                    bytes[i] = Math.floor(Math.random() * 256);
+                                }
+                            }
+                            visitorId = prefix + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+                            if (storage) {
+                                storage.setItem(storageKey, visitorId);
+                            }
+                        }
+
+                        return visitorId;
+                    }
+
+                    form.addEventListener('submit', function () {
+                        visitorInput.value = getVisitorId();
+                        if (status) {
+                            status.textContent = 'Mengirim ID browser lokal...';
+                        }
+                    });
+
+                    visitorInput.value = getVisitorId();
+                })();
             </script>
             <?php
             fm_share_render_page_end();
@@ -1184,7 +1186,7 @@ function fm_render_share_admin()
     $basePath = $scriptDirectory === '.' ? '' : rtrim($scriptDirectory, '/');
     fm_share_render_page_start('Link berbagi', 'Kelola berbagi');
     ?>
-        <p class="fm-share-muted mb-4">Kelola masa berlaku, kuota pengunjung, izin, dan usulan perubahan file. FingerprintJS (atau ID acak lokal jika CDN terblokir) hanya dipakai untuk menghitung kuota; identitas browser dapat berubah atau dipalsukan dan bukan pengganti PIN. Riwayat aktivitas dimulai setelah pembaruan ini; angka akses link lama tetap dipertahankan dan sebelumnya dihitung per sesi.</p>
+        <p class="fm-share-muted mb-4">Kelola masa berlaku, kuota pengunjung, izin, dan usulan perubahan file. ID browser acak lokal hanya dipakai untuk menghitung kuota; identitas browser dapat berubah atau dipalsukan dan bukan pengganti PIN. Riwayat aktivitas dimulai setelah pembaruan ini; angka akses link lama tetap dipertahankan dan sebelumnya dihitung per sesi.</p>
         <?php if ($flash !== ''): ?><div class="fm-share-card" role="status"><i class="fa fa-info-circle me-2"></i><?= $escape($flash) ?></div><?php endif; ?>
 
         <section class="fm-share-card">
@@ -5719,6 +5721,38 @@ document.addEventListener('DOMContentLoaded', function() {
                       }
                   });
               });
+
+              const mainDropZone = document.getElementById('main-content-pane') || document.body;
+              const handleBodyDrop = function(ev){
+                  if (!ev.dataTransfer || !ev.dataTransfer.files || !ev.dataTransfer.files.length) return;
+                  const targetItem = ev.target && ev.target.closest ? ev.target.closest('tr[data-type], #main-grid .grid-item') : null;
+                  if (targetItem) return;
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  mainDropZone.classList.remove('fm-drop-target');
+                  const currentDir = <?php echo json_encode(FM_PATH); ?>;
+                  uploadFilesToFolder(ev.dataTransfer.files, currentDir, token);
+              };
+
+              ['dragenter', 'dragover'].forEach(type => {
+                  mainDropZone.addEventListener(type, function(ev){
+                      if (!ev.dataTransfer || !ev.dataTransfer.files || !ev.dataTransfer.files.length) return;
+                      const targetItem = ev.target && ev.target.closest ? ev.target.closest('tr[data-type], #main-grid .grid-item') : null;
+                      if (targetItem) return;
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      ev.dataTransfer.dropEffect = 'copy';
+                      this.classList.add('fm-drop-target');
+                  });
+              });
+
+              mainDropZone.addEventListener('dragleave', function(ev){
+                  if (ev.target === this) {
+                      this.classList.remove('fm-drop-target');
+                  }
+              });
+
+              mainDropZone.addEventListener('drop', handleBodyDrop);
           }
 
           try{ enableDragDrop(); }catch(e){ console.error('DragDrop init error', e); }
